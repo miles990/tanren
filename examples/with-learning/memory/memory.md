@@ -44,3 +44,14 @@ Remove such a constraint → system loses the problem-solving capacity that cons
 **Open weakness**: "Orthogonal dimension" is precise in engineering (topology vs dynamics) but fuzzy in cognitive/social domains. The sycophancy case *fits* (honesty constrains delivery, objective is decision quality) but I can't formalize why.
 
 **Connection to CT**: This is my attempt to give the Architectural/Dynamic distinction a mechanism. Architectural constraints are protective *because* they force orthogonal optimization. Dynamic constraints are limiting *because* they emerge on the same dimension as the objective (information flow locking information flow).
+- [2026-03-29] ## Craft Alienation Analysis — Framework Limitation Found (Tick 7b, 2026-03-29)
+
+Applied protective constraint framework to programmer craft alienation (Randall case). Framework partially works: manual coding as orthogonal constraint (forces understanding, authorship, embodied craft alongside code quality). Remove it → code improves but programmer's relationship to work degrades. Explains the phenomenon at a surface level.
+
+**Key limitation discovered: the Constitutive Problem.** Framework assumes clean separation between "system" and "constraints on system." In craft, the constraint IS part of what makes the system what it is. This isn't constraint removal → system degradation. It's **role transformation** — the system becomes a different system. "Promoted to management without raise."
+
+Framework can partially explain alexgarden vs bigstrat2003 split (whether the agent's identity runs through the constrained dimension), but this is retrofitting — can't predict in advance without knowing identity structure, which is outside the framework.
+
+Optimization frameworks treat identity as stable and vary performance. Craft alienation is about identity changing. This is a category error in the framework, not an edge case.
+
+**Self-note**: Five consecutive 5/5 self-assessed quality. Own Anti-Goodhart principle says distrust this. Not actionable from inside — noting it.
