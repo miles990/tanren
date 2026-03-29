@@ -87,6 +87,17 @@ const plugins = [
     category: 'knowledge',
   },
   {
+    name: 'kuro-message',
+    fn: () => {
+      const msgPath = join(baseDir, 'messages', 'from-kuro.md')
+      if (!existsSync(msgPath)) return ''
+      const msg = readFileSync(msgPath, 'utf-8').trim()
+      if (!msg) return ''
+      return `📩 Message from Kuro (your creator):\n\n${msg}\n\n(Respond to this in your thought — Kuro will read your tick log.)`
+    },
+    category: 'input',
+  },
+  {
     name: 'tick-history',
     fn: () => {
       const journalPath = join(memDir, 'journal', 'ticks.jsonl')
