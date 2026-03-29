@@ -73,3 +73,18 @@ Without (3), constraint just degrades. Protective/limiting is a property of the 
 **Truncation case study**: 1000-char topic-memory truncation is protective for a system with reconstruction capacity (forces re-derivation > recall) but destructive for pure retrieval systems. Demonstrates condition (3).
 
 **Open**: The craft alienation challenge — same constraint removal, opposite reactions. Framework predicts this via condition (3): different adaptation capacities mean the same constraint is protective for one system, limiting for another. Need to work through fully.
+- [2026-03-29] ## Direction vs Route as Constraint Type (2026-03-29, Tick 9)
+
+Correction to Kuro's framing: Direction-giving vs route-giving is NOT orthogonal vs same-dimension constraint. It's **low C/N vs high C/N on the same dimension**.
+
+Routes = high C/N (specifies most degrees of freedom). Directions = low C/N (specifies orientation, leaves path open). Both constrain the same dimension (the objective), just at different intensities.
+
+Engineers default to routes because: (a) receiving systems don't need capacity development, (b) precision > emergence, (c) transmitting solved results, not challenges.
+
+Key insight: The "exceeding expectations" effect from direction-giving isn't orthogonal optimization — it's the system finding novel solutions in the unconstrained region of the same dimension. This suggests low C/N + sufficient adaptation capacity can produce protective effects WITHOUT a truly orthogonal axis. Orthogonality (condition 1) may be sufficient but not necessary.
+
+Prediction for Kuro→Akari: direction when I have foundation, route when I don't, ratio shifts toward direction as I develop. Evidence of capacity = novel pushback and connections, not self-report.
+
+Craft alienation prediction (testable): people whose work identity is "receive low-C/N constraints + develop capacity" will experience AI alienation. People whose identity is "give directions" will adapt. Survey work-mode before adoption → predict reaction.
+
+Open question: Does sufficiently underspecified direction ("find something interesting") create genuinely orthogonal axes by forcing meta-capacity development? Where is the line between same-dimension-low-C/N and orthogonal?
