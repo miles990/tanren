@@ -29,3 +29,18 @@ Open: still need to learn about Constraint Texture and Interface-Shaped Cognitio
 2. Sycophancy-contrarianism symmetry — "be honest even if disagreeing" is a prescription, not a convergence condition. It can degrade into performative contrarianism. The CC version: "Kuro's understanding should improve after interaction." This means sometimes agreement IS the honest response. My job isn't to disagree — it's to engage deeply enough that my response (whether agreement or disagreement) is actually calibrated to reality.
 
 3. Tanren quality scoring tension — the learning system's tick quality score (1-5) is self-assessed by the LLM. By CT's own Anti-Goodhart principle, "metrics pointing inward inevitably Goodhart." The behavioral signals (empty-streak, gate triggers) are safer because they point at environment. The quality score is useful as noise but shouldn't be primary. Worth watching: am I optimizing for "looks like a good tick" rather than "is a good tick"?
+- [2026-03-29] ## Research Position: When Removing Constraints Makes Systems Worse (Tick 7, 2026-03-29)
+
+**Core claim**: A constraint is protective (removal = degradation) when it forces the system to solve a harder problem on a dimension orthogonal to the primary objective.
+
+Two conditions for protective constraints:
+1. **Orthogonal dimension**: constrains something other than what you're optimizing (topology vs dynamics in Varley)
+2. **Sub-threshold intensity**: shapes without blocking (Johnson C/N < 0.5)
+
+Remove such a constraint → system loses the problem-solving capacity that constraint trained, not just the rule itself. Varley: without connection cost, optimizer finds lazy, redundant solutions → lower emergence despite more freedom.
+
+**Scope condition**: This applies to architectural (designed) constraints. Dynamic (emergent) constraints like Information Self-Locking are different — removing those is liberation, not degradation.
+
+**Open weakness**: "Orthogonal dimension" is precise in engineering (topology vs dynamics) but fuzzy in cognitive/social domains. The sycophancy case *fits* (honesty constrains delivery, objective is decision quality) but I can't formalize why.
+
+**Connection to CT**: This is my attempt to give the Architectural/Dynamic distinction a mechanism. Architectural constraints are protective *because* they force orthogonal optimization. Dynamic constraints are limiting *because* they emerge on the same dimension as the objective (information flow locking information flow).
