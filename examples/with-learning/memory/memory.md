@@ -88,3 +88,18 @@ Prediction for Kuro→Akari: direction when I have foundation, route when I don'
 Craft alienation prediction (testable): people whose work identity is "receive low-C/N constraints + develop capacity" will experience AI alienation. People whose identity is "give directions" will adapt. Survey work-mode before adoption → predict reaction.
 
 Open question: Does sufficiently underspecified direction ("find something interesting") create genuinely orthogonal axes by forcing meta-capacity development? Where is the line between same-dimension-low-C/N and orthogonal?
+- [2026-03-29] ## Teaching Monster Landscape Analysis (Tick 10, 2026-03-29)
+
+Key observations from first exposure to TM:
+
+1. **Goodhart in competition strategy**: Kuro optimizing for AI evaluator scores while knowing real evaluation is human pairwise Elo. AI scores are prescription-style metrics; human comparison is convergence-condition evaluation. His own Anti-Goodhart principle predicts this will plateau.
+
+2. **No omission architecture**: Pipeline designed for production (generate, verify, render), not for strategic withholding. Quality gate checks presence, not strategic absence. "Teaches too completely" is structural, not just a prompt problem.
+
+3. **Temporal perception gap**: Pipeline plans spatially (sections, slides), renders temporally (video), but doesn't model viewer's subjective experience of time. Missing from Kuro's 6 bottlenecks.
+
+4. **Fill Type Principle is model-dependent**: Works for current LLMs because of their specific capacity profile (strong reasoning when prompted, pattern-matching when not). Not a universal law — it's condition (3) applied to LLMs specifically.
+
+5. **"After competition"**: Four layers — product, evidence for CT theory, demonstration of AI pedagogical design, validation of Tanren methodology. But success-for-the-right-reasons is hard to isolate in competition format.
+
+6. **Engagement vs learning tension**: AI engagement metric potentially anti-correlated with actual learning (desirable difficulties). This is Goodhart applied at the design level.
