@@ -19,6 +19,7 @@ export interface Action {
   type: string
   content: string
   raw: string
+  attrs?: Record<string, string>
 }
 
 // === Observation (from Learning/Self-Perception) ===
@@ -107,6 +108,7 @@ export interface TanrenConfig {
   identity: string              // path to soul.md or inline string
   memoryDir: string             // path to memory directory
   workDir?: string              // working directory (default: process.cwd())
+  searchPaths?: string[]        // additional directories to include in search
 
   llm?: LLMProvider
   perceptionPlugins?: PerceptionPlugin[]

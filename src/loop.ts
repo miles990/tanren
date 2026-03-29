@@ -46,7 +46,7 @@ export interface AgentLoop {
 }
 
 export function createLoop(config: TanrenConfig): AgentLoop {
-  const memory = createMemorySystem(config.memoryDir)
+  const memory = createMemorySystem(config.memoryDir, config.searchPaths)
   const llm: LLMProvider = config.llm ?? createClaudeCliProvider()
   const perception = createPerception(config.perceptionPlugins ?? [])
   const gateSystem = createGateSystem(config.gates ?? [])

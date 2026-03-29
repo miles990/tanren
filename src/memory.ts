@@ -14,7 +14,7 @@ import { join, relative, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import type { MemorySystem, SearchResult } from './types.js'
 
-export function createMemorySystem(memoryDir: string): MemorySystem {
+export function createMemorySystem(memoryDir: string, searchPaths?: string[]): MemorySystem {
   // Ensure directory structure exists
   ensureDir(memoryDir)
   ensureDir(join(memoryDir, 'topics'))
@@ -45,7 +45,22 @@ export function createMemorySystem(memoryDir: string): MemorySystem {
     },
 
     async search(query: string): Promise<SearchResult[]> {
-      return grepSearch(memoryDir, query)
+      // Search own memory first
+      const results = grepSearch(memoryDir, query)
+      // Then search additional paths (read-only knowledge sources)
+      if (searchPaths?.length) {
+        for (const sp of searchPaths) {
+          if (!existsSync(sp)) continue
+          const external = grepSearch(sp, query)
+          // Prefix external results with source label
+          const label = sp.split('/').pop() ?? sp
+          for (const r of external) {
+            results.push({ ...r, file: `[${label}] ${r.file}` })
+          }
+          if (results.length >= 50) break
+        }
+      }
+      return results.slice(0, 50)
     },
 
     async remember(content: string, opts?: { topic?: string }): Promise<void> {

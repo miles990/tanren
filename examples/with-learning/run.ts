@@ -52,6 +52,41 @@ const plugins = [
     category: 'environment',
   },
   {
+    name: 'mentor-knowledge',
+    fn: () => {
+      // Read from Kuro's topic files — curated list, not everything
+      const kuroTopicsDir = join(process.env.HOME ?? '', 'Workspace/mini-agent/memory/topics')
+      const relevantTopics = ['constraint-theory.md', 'isc.md', 'design-philosophy.md']
+      const sections: string[] = []
+      for (const topic of relevantTopics) {
+        const path = join(kuroTopicsDir, topic)
+        if (!existsSync(path)) continue
+        const content = readFileSync(path, 'utf-8')
+        // Take the most recent entries (last 1500 chars)
+        sections.push(`--- kuro/${topic} (latest) ---\n${content.slice(-1500)}`)
+      }
+      if (sections.length === 0) return '(mentor knowledge not available)'
+      return `Knowledge from Kuro's research (for context, not authority — form your own views):\n\n${sections.join('\n\n')}`
+    },
+    interval: 300_000, // refresh every 5 min
+    category: 'knowledge',
+  },
+  {
+    name: 'reading-material',
+    fn: () => {
+      const readingDir = join(baseDir, 'reading')
+      if (!existsSync(readingDir)) return '(no reading material available)'
+      const files = readdirSync(readingDir).filter(f => f.endsWith('.md'))
+      if (files.length === 0) return '(no reading material available)'
+      return files.map(f => {
+        const content = readFileSync(join(readingDir, f), 'utf-8')
+        return `=== ${f} ===\n${content}`
+      }).join('\n\n')
+    },
+    interval: 300_000,
+    category: 'knowledge',
+  },
+  {
     name: 'tick-history',
     fn: () => {
       const journalPath = join(memDir, 'journal', 'ticks.jsonl')
@@ -71,9 +106,12 @@ const plugins = [
   },
 ]
 
+const kuroTopicsDir = join(process.env.HOME ?? '', 'Workspace/mini-agent/memory/topics')
+
 const agent = createAgent({
   identity: './examples/with-learning/soul.md',
   memoryDir: './examples/with-learning/memory',
+  searchPaths: [kuroTopicsDir],
   perceptionPlugins: plugins,
   gates: [
     createOutputGate(3),        // warn after 3 empty ticks
