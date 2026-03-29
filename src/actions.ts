@@ -46,14 +46,23 @@ export function createActionRegistry(): ActionRegistry {
  */
 function parseActions(response: string): Action[] {
   const actions: Action[] = []
-  const regex = /<action:(\w[\w-]*)>([\s\S]*?)<\/action:\1>/g
+  const regex = /<action:(\w[\w-]*)((?:\s+\w+="[^"]*")*)>([\s\S]*?)<\/action:\1>/g
   let match: RegExpExecArray | null
 
   while ((match = regex.exec(response)) !== null) {
+    const attrs: Record<string, string> = {}
+    if (match[2]) {
+      const attrRegex = /(\w+)="([^"]*)"/g
+      let attrMatch: RegExpExecArray | null
+      while ((attrMatch = attrRegex.exec(match[2])) !== null) {
+        attrs[attrMatch[1]] = attrMatch[2]
+      }
+    }
     actions.push({
       type: match[1],
-      content: match[2].trim(),
+      content: match[3].trim(),
       raw: match[0],
+      attrs,
     })
   }
 
@@ -66,7 +75,7 @@ export const builtinActions: ActionHandler[] = [
   {
     type: 'remember',
     async execute(action, context) {
-      const topicMatch = action.content.match(/^#(\S+)\s+/)
+      const topicMatch = action.content.match(/^#([a-zA-Z][\w-]*)\s+/)
       if (topicMatch) {
         await context.memory.remember(
           action.content.slice(topicMatch[0].length),
@@ -81,12 +90,19 @@ export const builtinActions: ActionHandler[] = [
   {
     type: 'write',
     async execute(action, context) {
-      // Format: first line is path, rest is content
+      // Support attrs: <action:write path="file.md">content</action:write>
+      if (action.attrs?.path) {
+        await context.memory.write(action.attrs.path, action.content)
+        return `Written: ${action.attrs.path}`
+      }
+      // Fallback: first line is path, rest is content
       const newlineIdx = action.content.indexOf('\n')
       if (newlineIdx === -1) {
         return '[write action: missing content (expected path on first line, content after)]'
       }
-      const path = action.content.slice(0, newlineIdx).trim()
+      let path = action.content.slice(0, newlineIdx).trim()
+      // Strip "path: " prefix if LLM uses YAML-style format
+      if (path.startsWith('path:')) path = path.slice(5).trim()
       const content = action.content.slice(newlineIdx + 1)
       await context.memory.write(path, content)
       return `Written: ${path}`
