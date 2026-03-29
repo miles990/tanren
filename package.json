@@ -1,0 +1,39 @@
+{
+  "name": "tanren",
+  "version": "0.1.0",
+  "description": "Minimal AI agent framework with built-in learning. Forged through experience.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node --test dist/**/*.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "dist",
+    "gates"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "framework",
+    "learning",
+    "autonomous"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2"
+  }
+}
