@@ -9,7 +9,7 @@
  * state. If killed mid-cycle, the next start picks up where it left off.
  */
 
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs'
+import { writeFileSync, readFileSync, appendFileSync, existsSync, unlinkSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   TanrenConfig,
@@ -79,6 +79,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   const maxRecentTicks = 20
   const checkpointPath = join(config.memoryDir, 'state', '.checkpoint.json')
   const gateStatePath = join(config.memoryDir, 'state', 'gate-state.json')
+  const journalDir = join(config.memoryDir, 'journal')
+  const tickJournalPath = join(journalDir, 'ticks.jsonl')
 
   let running = false
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -191,6 +193,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Update observation quality from learning assessment
       tickResult.observation.outputQuality = learningResult.quality
     }
+
+    // Persist tick to journal (append-only JSONL)
+    persistTick(journalDir, tickJournalPath, tickResult)
 
     // Auto-commit memory changes
     await memory.autoCommit().catch(() => {})
@@ -342,4 +347,63 @@ function saveGateState(path: string, state: Record<string, unknown>): void {
   try {
     writeFileSync(path, JSON.stringify(state, null, 2), 'utf-8')
   } catch { /* best effort */ }
+}
+
+function persistTick(journalDir: string, journalPath: string, tick: TickResult): void {
+  try {
+    if (!existsSync(journalDir)) {
+      mkdirSync(journalDir, { recursive: true })
+    }
+    const entry = JSON.stringify({
+      t: tick.timestamp,
+      thought: tick.thought,
+      actions: tick.actions.map(a => ({ type: a.type, content: a.content })),
+      observation: {
+        outputExists: tick.observation.outputExists,
+        quality: tick.observation.outputQuality,
+        actionsExecuted: tick.observation.actionsExecuted,
+        actionsFailed: tick.observation.actionsFailed,
+        duration: tick.observation.duration,
+        feedback: tick.observation.environmentFeedback,
+      },
+      gates: tick.gateResults.filter(g => g.action !== 'pass'),
+      perception: tick.perception.slice(0, 500),  // truncate for space
+    })
+    appendFileSync(journalPath, entry + '\n', 'utf-8')
+
+    // Human-readable tick log (one file per tick)
+    const ticksDir = join(journalDir, 'ticks')
+    if (!existsSync(ticksDir)) {
+      mkdirSync(ticksDir, { recursive: true })
+    }
+    const existing = readdirSync(ticksDir).filter(f => f.endsWith('.md')).length
+    const tickNum = String(existing + 1).padStart(3, '0')
+    const date = new Date(tick.timestamp).toISOString().replace('T', ' ').slice(0, 19)
+    const duration = (tick.observation.duration / 1000).toFixed(1)
+    const gateNotes = tick.gateResults
+      .filter(g => g.action !== 'pass')
+      .map(g => `- [${g.action}] ${(g as { message: string }).message}`)
+      .join('\n')
+
+    const md = [
+      `# Tick ${tickNum}`,
+      ``,
+      `**Time**: ${date}  `,
+      `**Duration**: ${duration}s  `,
+      `**Actions**: ${tick.observation.actionsExecuted} executed, ${tick.observation.actionsFailed} failed  `,
+      `**Quality**: ${tick.observation.outputQuality}/5`,
+      gateNotes ? `\n## Gate Results\n${gateNotes}` : '',
+      ``,
+      `## Thought`,
+      ``,
+      tick.thought,
+      ``,
+      `## Observation`,
+      ``,
+      tick.observation.environmentFeedback ?? '_No feedback_',
+      ``,
+    ].join('\n')
+
+    writeFileSync(join(ticksDir, `tick-${tickNum}.md`), md, 'utf-8')
+  } catch { /* best effort — don't break the loop */ }
 }
