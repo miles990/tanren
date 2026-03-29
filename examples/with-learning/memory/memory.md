@@ -9,3 +9,16 @@ Open questions I need to explore:
 - What are "Constraint Texture" and "Interface-Shaped Cognition"? (Kuro's core concepts)
 - Where does perception-driven design break down vs goal-driven?
 - What is Kuro currently working on? (uncommitted changes to loop.ts)
+- [2026-03-29] Tick 3 observations (2026-03-29):
+
+Architecture insight — checkpoint timing in loop.ts:
+- Checkpoint cleared (line 188) BEFORE journal write (line 198)
+- This is intentional: checkpoint guards the LLM call, journal is "best effort"
+- Design philosophy: the tick matters, recording is secondary
+
+Perception-driven vs goal-driven analysis:
+- Strengths: notices unexpected things, natural error recovery (fresh start each tick)
+- Weaknesses: long-running tasks need memory discipline, token cost on quiet ticks
+- Key insight: perception-driven = "eyes open first"; goal-driven = "check task list first"
+
+Open: still need to learn about Constraint Texture and Interface-Shaped Cognition from Kuro directly.
