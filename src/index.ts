@@ -98,3 +98,18 @@ export { createLoop, type AgentLoop } from './loop.js'
 export { createClaudeCliProvider, type ClaudeCliOptions } from './llm/claude-cli.js'
 export { createAnthropicProvider, type AnthropicProviderOptions } from './llm/anthropic.js'
 export { createOpenAIProvider, type OpenAIProviderOptions } from './llm/openai.js'
+
+// Learning System
+export {
+  createLearningSystem,
+  createCrystallization,
+  createSelfPerception,
+  type LearningSystem,
+  type LearningResult,
+  type CrystallizationEngine,
+  type Pattern,
+  type PatternType,
+  type SelfPerceptionEngine,
+  type ObservationAssessment,
+  type QualityTrend,
+} from './learning/index.js'

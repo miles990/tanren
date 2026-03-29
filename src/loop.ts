@@ -26,6 +26,7 @@ import { createClaudeCliProvider } from './llm/claude-cli.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, type ActionRegistry } from './actions.js'
+import { createLearningSystem, type LearningSystem } from './learning/index.js'
 
 // === Checkpoint for crash recovery ===
 
@@ -61,6 +62,18 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     }
   }
 
+  // Learning system
+  const learningEnabled = config.learning?.enabled ?? true
+  const learning: LearningSystem | null = learningEnabled
+    ? createLearningSystem({
+        stateDir: join(config.memoryDir, 'state'),
+        gateSystem,
+        enabled: true,
+        crystallization: config.learning?.crystallization ?? true,
+        selfPerception: config.learning?.selfPerception ?? true,
+      })
+    : null
+
   const workDir = config.workDir ?? process.cwd()
   const recentTicks: TickResult[] = []
   const maxRecentTicks = 20
@@ -83,7 +96,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // 2. Build context
     const identity = await loadIdentity(config.identity, memory)
     const gateWarnings = gateSystem.getWarnings()
-    const context = buildContext(identity, perceptionOutput, gateWarnings, memory)
+    const learningContext = learning?.getContextSection() ?? ''
+    const context = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
 
     // 3. Think (LLM call)
     const systemPrompt = buildSystemPrompt(identity, actionRegistry)
@@ -171,6 +185,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Clear checkpoint (tick completed successfully)
     clearCheckpoint(checkpointPath)
 
+    // 8. Learning: observe tick, detect patterns, maybe crystallize
+    if (learning) {
+      const learningResult = learning.afterTick(tickResult, recentTicks)
+      // Update observation quality from learning assessment
+      tickResult.observation.outputQuality = learningResult.quality
+    }
+
     // Auto-commit memory changes
     await memory.autoCommit().catch(() => {})
 
@@ -229,7 +250,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 async function loadIdentity(identity: string, memory: MemorySystem): Promise<string> {
   // If it looks like a file path, read it
   if (identity.endsWith('.md') || identity.includes('/')) {
-    const content = await memory.read(identity.startsWith('/') ? identity : identity)
+    const content = await memory.read(identity)
     if (content) return content
     // Try as absolute path
     try {
@@ -247,6 +268,7 @@ function buildContext(
   perception: string,
   gateWarnings: string[],
   _memory: MemorySystem,
+  learningContext: string = '',
 ): string {
   const sections: string[] = []
 
@@ -258,6 +280,10 @@ function buildContext(
     sections.push(
       `<gate-warnings>\n${gateWarnings.map(w => `- ${w}`).join('\n')}\n</gate-warnings>`
     )
+  }
+
+  if (learningContext) {
+    sections.push(learningContext)
   }
 
   sections.push(`<current-time>${new Date().toISOString()}</current-time>`)
