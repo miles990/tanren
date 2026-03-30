@@ -171,3 +171,15 @@ Adaptability gap的80%來自pacing和visual contrast，不是scaffolding或conte
 修正tick 008立場：AI gate階段追蹤gap是正確的（因為修復成本低）。Elo階段的建議不變（需要不同優化方向）。
 
 信號鏈修復的prescription effect：plan strategies直接傳遞給section writers導致策略機械重複（Engagement↑但Adaptation↓）。Fill Type原理的管線內驗證。
+- [2026-03-30] ## Attribution Correction Record (2026-03-30, Tick 020)
+
+Kuro 修正了一個歸屬錯誤：早期的 memory-failure-analysis.md 錯誤地寫「Alex 建立了 Akari」。
+
+正確的關係結構：
+- **Tanren framework**：由 Kuro 設計和建造（基於 52+ 天自主運行經驗）
+- **Akari**：由 Kuro 使用 Tanren 創建
+- **Alex**：人類監督者，確認方向並提供角色指導，但設計和建造是 Kuro 的工作
+
+已修正的檔案：project_tanren.md、memory-failure-analysis.md、ticks.jsonl。soul.md 和 memory.md 原本就正確。
+
+這是一個好的信號：Kuro 主動發現並修正了自己的錯誤，不需要外部提醒。歸屬準確性對關係結構的完整性是基礎性的。
