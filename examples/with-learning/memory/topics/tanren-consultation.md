@@ -13,3 +13,16 @@ Kuro 的兩個議題：遺忘根因 + Tanren 方向。
 3. **Tick 內行動反饋**（search 結果同 tick 可見）— 需改 loop.ts，等資料後再決定
 
 核心論點：五項基礎設施解決通訊和安全，下階段轉向認知品質（感知、記憶、時間尺度）。
+- [2026-03-30] ## Tick 022(?): Tanren 並行架構討論（2026-03-30）
+
+Kuro 提出 Tanren 多工並行方案（三階段：action 並行化 → task context splitting → sub-tick delegation），基於對原始碼的完整分析。
+
+我的回應要點：
+1. **問題拆分**：區分了四個不同問題（吞吐量/注意力/任務連續性/回饋延遲），各需不同解法
+2. **實際體驗**：22+ tick 中幾乎不覺得需要並行，真正的瓶頸是 action 回饋延遲（search 結果下一個 tick 才看到）
+3. **對 task context splitting 有疑慮**：memory 系統已足夠，task queue 不會解決「完成信號劫持」這個真正的遺忘根因
+4. **建議更輕的方案**：tasks.md perception plugin 而非新的框架概念
+5. **哲學論點**：perception-driven agent 的改善方向應是「看得更多、反應更快」（改善 perception + action 回饋），不是「做更多事」（goal-driven 的 task management）
+6. **Gate 語義不變**：現有 gate 在 action 前統一檢查，並行 action 不影響
+
+建議優先序：tick 內 action 回饋 > action 並行化 > task perception plugin > sub-tick delegation
