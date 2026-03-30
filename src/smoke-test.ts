@@ -12,7 +12,7 @@ import { createPerception } from './perception.js'
 import { createActionRegistry, builtinActions } from './actions.js'
 import { createGateSystem } from './gates.js'
 import { createLearningSystem } from './learning/index.js'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, copyFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -314,6 +314,116 @@ function testCrystallization() {
   rmSync(dir, { recursive: true })
 }
 
+function testDNABootstrap() {
+  console.log('\n--- DNA Bootstrap: Inherited Experience ---')
+
+  // Helper: create a failing tick (same as testCrystallization)
+  const makeFailTick = (i: number) => ({
+    perception: `tick ${i}`,
+    thought: `Attempting to fetch data, try #${i}`,
+    timestamp: Date.now() + i * 1000,
+    actions: [{ type: 'fetch', content: 'https://api.example.com/data', raw: '<action:fetch>https://api.example.com/data</action:fetch>' }],
+    gateResults: [] as GateResult[],
+    observation: {
+      outputExists: false,
+      outputQuality: 0,
+      confidenceCalibration: 0,
+      actionsExecuted: 0,
+      actionsFailed: 1,
+      duration: 3000,
+      environmentFeedback: 'action fetch failed: connection timeout after <n>ms',
+    },
+  })
+
+  // === Phase 1: Agent A learns from scratch ===
+  const dirA = mkdtempSync(join(tmpdir(), 'tanren-dna-a-'))
+  const gateSystemA = createGateSystem()
+  const learningA = createLearningSystem({
+    stateDir: dirA,
+    gateSystem: gateSystemA,
+    enabled: true,
+    crystallization: true,
+    selfPerception: true,
+  })
+
+  // 3 failures → crystallization
+  const allTicks: any[] = []
+  for (let i = 1; i <= 3; i++) {
+    const tick = makeFailTick(i)
+    learningA.afterTick(tick, allTicks)
+    allTicks.push(tick)
+  }
+  learningA.save()
+
+  // Verify Agent A crystallized a gate
+  const patternsA = learningA.getPatterns()
+  const crystallizedA = patternsA.filter(p => p.crystallized)
+  assert(crystallizedA.length >= 1, 'Agent A: crystallized gate after 3 failures')
+  assert(existsSync(join(dirA, 'crystallization.json')), 'Agent A: state saved to disk')
+
+  // === Phase 2: Agent B inherits Agent A's DNA ===
+  const dirB = mkdtempSync(join(tmpdir(), 'tanren-dna-b-'))
+  // Copy crystallization state (the "DNA")
+  copyFileSync(join(dirA, 'crystallization.json'), join(dirB, 'crystallization.json'))
+
+  const gateSystemB = createGateSystem()
+  const learningB = createLearningSystem({
+    stateDir: dirB,
+    gateSystem: gateSystemB,
+    enabled: true,
+    crystallization: true,
+    selfPerception: true,
+  })
+
+  // Agent B should have auto-gates from inherited DNA — no learning needed
+  const tickB = makeFailTick(1)
+  const gateContextB = {
+    tick: tickB,
+    recentTicks: [],
+    memory: { read: async () => null, search: async () => [] } as MemoryReader,
+    state: {},
+  }
+  const gateResultsB = gateSystemB.runAll(gateContextB)
+  const warningsB = gateResultsB.filter(r => r.action === 'warn')
+  assert(warningsB.length >= 1, 'Agent B: inherited gate fires on FIRST tick (DNA bootstrap)')
+  assert(
+    (warningsB[0] as { message: string }).message.includes('fetch'),
+    'Agent B: warning mentions the problematic action'
+  )
+
+  // === Phase 3: Agent C starts blank (control group) ===
+  const dirC = mkdtempSync(join(tmpdir(), 'tanren-dna-c-'))
+  const gateSystemC = createGateSystem()
+  const _learningC = createLearningSystem({
+    stateDir: dirC,
+    gateSystem: gateSystemC,
+    enabled: true,
+    crystallization: true,
+    selfPerception: true,
+  })
+
+  // Agent C has no inherited DNA — no auto-gates
+  const tickC = makeFailTick(1)
+  const gateContextC = {
+    tick: tickC,
+    recentTicks: [],
+    memory: { read: async () => null, search: async () => [] } as MemoryReader,
+    state: {},
+  }
+  const gateResultsC = gateSystemC.runAll(gateContextC)
+  const warningsC = gateResultsC.filter(r => r.action === 'warn')
+  assert(warningsC.length === 0, 'Agent C: NO protection without DNA (blank agent)')
+
+  // === Summary: B > C because of inherited experience ===
+  assert(warningsB.length > warningsC.length,
+    'DNA bootstrap proven: inherited agent has immediate protection, blank agent does not')
+
+  // Cleanup
+  rmSync(dirA, { recursive: true })
+  rmSync(dirB, { recursive: true })
+  rmSync(dirC, { recursive: true })
+}
+
 async function testFullCycle() {
   console.log('\n--- Full Cycle (mock LLM) ---')
   const dir = mkdtempSync(join(tmpdir(), 'tanren-full-'))
@@ -359,6 +469,7 @@ async function main() {
   testGates()
   testLearning()
   testCrystallization()
+  testDNABootstrap()
   await testFullCycle()
 
   console.log(`\n--- Results: ${passed} passed, ${failed} failed ---`)
