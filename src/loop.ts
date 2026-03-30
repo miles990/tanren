@@ -145,11 +145,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         duration: Date.now() - tickStart,
       }
     } else {
-      // 6. Execute actions
+      // 6. Execute actions (with feedback mini-loop)
       let actionsExecuted = 0
       let actionsFailed = 0
       const actionResults: string[] = []
+      const allActions = [...actions]
 
+      // Execute initial actions
       for (const action of actions) {
         try {
           const result = await actionRegistry.execute(action, { memory, workDir })
@@ -162,8 +164,54 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         }
       }
 
+      // Feedback mini-loop: let agent see action results and respond within the same tick
+      const maxFeedbackRounds = config.feedbackRounds ?? 1
+      let lastRoundResults = [...actionResults]
+
+      for (let round = 0; round < maxFeedbackRounds && lastRoundResults.length > 0; round++) {
+        const resultSummary = lastRoundResults.map((r, i) => {
+          const idx = allActions.length - lastRoundResults.length + i
+          return `[${allActions[idx]?.type ?? 'action'}] ${r}`
+        }).join('\n')
+
+        const feedbackContext = `${context}\n\n<action-feedback round="${round + 1}">\nYou just executed actions and received these results:\n${resultSummary}\n</action-feedback>\n\nBased on these results, you may take additional actions or produce no actions if satisfied.`
+
+        let followUpThought: string
+        try {
+          followUpThought = await llm.think(feedbackContext, systemPrompt)
+        } catch {
+          break
+        }
+
+        thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${followUpThought}`
+        const followUpActions = actionRegistry.parse(followUpThought)
+
+        if (followUpActions.length === 0) break
+
+        const roundResults: string[] = []
+        for (const action of followUpActions) {
+          try {
+            const result = await actionRegistry.execute(action, { memory, workDir })
+            roundResults.push(result)
+            actionsExecuted++
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err)
+            roundResults.push(`[action ${action.type} failed: ${msg}]`)
+            actionsFailed++
+          }
+        }
+
+        allActions.push(...followUpActions)
+        actionResults.push(...roundResults)
+        lastRoundResults = roundResults
+      }
+
+      // Update tickResult with accumulated data from all rounds
+      tickResult.thought = thought
+      tickResult.actions = allActions
+
       tickResult.observation = {
-        outputExists: actions.length > 0,
+        outputExists: allActions.length > 0,
         outputQuality: 0,  // assessed by learning system later
         confidenceCalibration: 0,
         actionsExecuted,

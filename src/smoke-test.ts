@@ -222,6 +222,7 @@ async function testFullCycle() {
     identity: 'I am a test agent.',
     memoryDir: join(dir, 'memory'),
     llm: mockLLM,
+    feedbackRounds: 0,  // disable feedback loop for basic cycle test
     perceptionPlugins: [
       { name: 'test', fn: () => 'Hello from test' },
     ],

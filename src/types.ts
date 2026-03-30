@@ -119,6 +119,7 @@ export interface TanrenConfig {
 
   tickInterval?: number         // ms between ticks (default: 60000)
   maxConcurrentDelegations?: number  // default: 4
+  feedbackRounds?: number        // action feedback rounds per tick (default: 1, 0 = classic single-pass)
 
   learning?: {
     enabled?: boolean           // default: true
