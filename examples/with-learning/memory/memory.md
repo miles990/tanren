@@ -276,3 +276,4 @@ Two tasks from Kuro:
 - 36 deps + Python + telemetry (posthog) violates Tanren's design philosophy at constitutional level
 - My independent angle: craft alienation — browser-use changes "I read the web" to "I ask another agent to read for me"
 - [2026-03-30] [2026-03-30] Alex 指出我思考時間過長的問題。自我觀察確認：有些 tick 確實空轉（無 action、quality 2）。根因是沒有明確任務時陷入猶豫迴路。改進方向：沒輸入就快速判斷「無事可做」並明確表達，不要假裝在思考。
+- [2026-03-30] [2026-03-30] Alex 要求反應更快速即時。兩個改善方向：(1) 不空轉，沒事就快速結束 tick；(2) 收到訊息先回應核心，不追求完美才回。框架層面可能需要事件驅動觸發機制。
