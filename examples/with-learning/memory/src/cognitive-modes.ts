@@ -1,8 +1,8 @@
 /**
- * Tanren — Cognitive Modes Module
- * 
- * Detects and manages different cognitive modes based on interaction context.
- * Switches between contemplative, conversational, and collaborative thinking styles.
+ * Tanren — Cognitive Modes
+ *
+ * Multi-modal cognitive architecture for dynamic interaction styles.
+ * Detects cognitive context and adapts system prompt accordingly.
  */
 
 import type { CognitiveMode, CognitiveContext, TickMode, TriggerEvent } from './types.js'
@@ -19,88 +19,18 @@ export interface CognitiveModeDetector {
 export function createCognitiveModeDetector(): CognitiveModeDetector {
   return {
     detectMode(tickMode, triggerEvent, timeGap = 0, messageContent = '') {
-      const signals: CognitiveContext['signals'] = {}
-      
-      // Detect urgency signals
-      if (triggerEvent?.priority === 'urgent' || 
-          messageContent.toLowerCase().includes('urgent') ||
-          messageContent.toLowerCase().includes('quick')) {
-        signals.urgency = 'high'
-      } else if (triggerEvent?.priority === 'low' || 
-                 messageContent.toLowerCase().includes('when you have time')) {
-        signals.urgency = 'low'
-      } else {
-        signals.urgency = 'medium'
+      // Detection logic based on multiple signals
+      const signals = {
+        urgency: detectUrgency(triggerEvent, messageContent),
+        interactionHistory: detectInteractionHistory(timeGap),
+        timeGap: categorizeTimeGap(timeGap),
+        contentType: detectContentType(messageContent)
       }
-      
-      // Detect interaction history patterns
-      if (tickMode === 'reactive') {
-        if (timeGap < 5 * 60 * 1000) { // 5 minutes
-          signals.interactionHistory = 'ongoing'
-        } else if (timeGap < 60 * 60 * 1000) { // 1 hour
-          signals.interactionHistory = 'follow_up'
-        } else {
-          signals.interactionHistory = 'first'
-        }
-      } else {
-        signals.interactionHistory = 'first'
-      }
-      
-      // Detect time gap categories
-      if (timeGap < 5 * 60 * 1000) {
-        signals.timeGap = 'short'
-      } else if (timeGap < 60 * 60 * 1000) {
-        signals.timeGap = 'medium'
-      } else {
-        signals.timeGap = 'long'
-      }
-      
-      // Detect content type
-      if (messageContent.includes('?') || messageContent.toLowerCase().startsWith('what') ||
-          messageContent.toLowerCase().startsWith('how') || messageContent.toLowerCase().startsWith('why')) {
-        signals.contentType = 'question'
-      } else if (messageContent.toLowerCase().includes('implement') || 
-                 messageContent.toLowerCase().includes('code') ||
-                 messageContent.toLowerCase().includes('build')) {
-        signals.contentType = 'task'
-      } else if (messageContent.toLowerCase().includes('think') || 
-                 messageContent.toLowerCase().includes('analysis') ||
-                 messageContent.toLowerCase().includes('research')) {
-        signals.contentType = 'analysis'
-      } else {
-        signals.contentType = 'discussion'
-      }
-      
+
       // Mode detection logic
-      let mode: CognitiveMode = 'contemplative'  // default
-      let confidence = 0.5
-      
-      // High confidence conversational mode
-      if (signals.urgency === 'high' && signals.timeGap === 'short') {
-        mode = 'conversational'
-        confidence = 0.9
-      }
-      // High confidence collaborative mode  
-      else if (signals.contentType === 'task' && signals.interactionHistory === 'ongoing') {
-        mode = 'collaborative'
-        confidence = 0.85
-      }
-      // Medium confidence conversational mode
-      else if (signals.contentType === 'question' && tickMode === 'reactive') {
-        mode = 'conversational'
-        confidence = 0.7
-      }
-      // Medium confidence collaborative mode
-      else if (signals.contentType === 'task') {
-        mode = 'collaborative'
-        confidence = 0.65
-      }
-      // High confidence contemplative mode
-      else if (signals.contentType === 'analysis' || tickMode === 'scheduled') {
-        mode = 'contemplative'
-        confidence = 0.8
-      }
-      
+      const mode = determineMode(tickMode, signals)
+      const confidence = calculateConfidence(signals)
+
       return {
         mode,
         confidence,
@@ -110,55 +40,209 @@ export function createCognitiveModeDetector(): CognitiveModeDetector {
   }
 }
 
-/**
- * Build mode-specific system prompts that reshape cognitive style
- */
-export function buildCognitiveModePrompt(
-  baseIdentity: string, 
-  context: CognitiveContext,
-  actionPrompt: string
-): string {
-  const modeInstructions = getModeInstructions(context.mode)
+function detectUrgency(triggerEvent?: TriggerEvent, content?: string): 'low' | 'medium' | 'high' {
+  // High urgency: urgent events or explicit urgency markers
+  if (triggerEvent?.priority === 'urgent') return 'high'
+  if (content && hasUrgencyMarkers(content)) return 'high'
   
-  return `${baseIdentity}
-
-## Current Cognitive Mode: ${context.mode.toUpperCase()}
-
-${modeInstructions}
-
-${actionPrompt}`
+  // Medium urgency: normal priority events or interactive patterns
+  if (triggerEvent?.priority === 'normal') return 'medium'
+  if (content && hasInteractiveMarkers(content)) return 'medium'
+  
+  return 'low'
 }
 
-function getModeInstructions(mode: CognitiveMode): string {
+function detectInteractionHistory(timeGap: number): 'first' | 'ongoing' | 'follow_up' {
+  const minutes = timeGap / (1000 * 60)
+  
+  if (minutes < 2) return 'follow_up'    // Very recent interaction
+  if (minutes < 30) return 'ongoing'     // Same session
+  return 'first'                         // New interaction
+}
+
+function categorizeTimeGap(timeGap: number): 'short' | 'medium' | 'long' {
+  const minutes = timeGap / (1000 * 60)
+  
+  if (minutes < 5) return 'short'
+  if (minutes < 60) return 'medium'
+  return 'long'
+}
+
+function detectContentType(content: string): 'question' | 'task' | 'discussion' | 'analysis' {
+  const lower = content.toLowerCase()
+  
+  // Question patterns
+  if (lower.includes('?') || 
+      lower.match(/^(what|how|why|when|where|who|can you|could you|would you)/)) {
+    return 'question'
+  }
+  
+  // Task patterns
+  if (lower.match(/(implement|create|build|fix|complete|finish|do this|make)/)) {
+    return 'task'
+  }
+  
+  // Analysis patterns
+  if (lower.match(/(analyze|evaluate|review|research|investigate|explore)/)) {
+    return 'analysis'
+  }
+  
+  return 'discussion'
+}
+
+function determineMode(tickMode: TickMode, signals: CognitiveContext['signals']): CognitiveMode {
+  // Reactive ticks with high urgency → Conversational
+  if (tickMode === 'reactive' && signals.urgency === 'high') {
+    return 'conversational'
+  }
+  
+  // Task-focused content → Collaborative
+  if (signals.contentType === 'task') {
+    return 'collaborative'
+  }
+  
+  // Quick follow-ups → Conversational
+  if (signals.interactionHistory === 'follow_up' && signals.timeGap === 'short') {
+    return 'conversational'
+  }
+  
+  // Questions with medium/high urgency → Conversational
+  if (signals.contentType === 'question' && signals.urgency !== 'low') {
+    return 'conversational'
+  }
+  
+  // Long time gaps or analysis requests → Contemplative
+  if (signals.timeGap === 'long' || signals.contentType === 'analysis') {
+    return 'contemplative'
+  }
+  
+  // Default for scheduled ticks
+  return 'contemplative'
+}
+
+function calculateConfidence(signals: CognitiveContext['signals']): number {
+  let confidence = 0.6  // Base confidence
+  
+  // High confidence indicators
+  if (signals.urgency === 'high') confidence += 0.2
+  if (signals.contentType === 'task') confidence += 0.15
+  if (signals.interactionHistory === 'follow_up') confidence += 0.1
+  
+  // Medium confidence indicators
+  if (signals.contentType === 'question') confidence += 0.1
+  if (signals.timeGap === 'short') confidence += 0.05
+  
+  return Math.min(confidence, 1.0)
+}
+
+function hasUrgencyMarkers(content: string): boolean {
+  const urgentPatterns = [
+    /urgent/i,
+    /asap/i,
+    /immediately/i,
+    /right now/i,
+    /emergency/i,
+    /critical/i,
+    /!!!/,
+    /🚨/
+  ]
+  
+  return urgentPatterns.some(pattern => pattern.test(content))
+}
+
+function hasInteractiveMarkers(content: string): boolean {
+  const interactivePatterns = [
+    /quick question/i,
+    /briefly/i,
+    /just wondering/i,
+    /can you/i,
+    /could you/i,
+    /^hey/i,
+    /^hi/i
+  ]
+  
+  return interactivePatterns.some(pattern => pattern.test(content))
+}
+
+export function buildCognitiveModePrompt(
+  identity: string, 
+  cognitiveContext: CognitiveContext,
+  actionsSection: string
+): string {
+  const { mode, confidence, signals } = cognitiveContext
+  
+  // Base identity remains the same
+  let prompt = identity
+
+  // Mode-specific cognitive instructions
   switch (mode) {
     case 'conversational':
-      return `**Conversational Mode Active**: Respond quickly and directly. Focus on immediate clarity over depth. Get to the point. Use simple, clear language. If you need more context, ask specific questions rather than exploring all angles.
+      prompt += `
 
-Key behaviors:
-- Lead with the most important point
-- Be concise but helpful  
-- Ask clarifying questions if needed
-- Avoid lengthy analysis in favor of actionable answers`
+## Current Cognitive Mode: Conversational
+*Confidence: ${Math.round(confidence * 100)}%*
+
+You're in **conversational mode** — prioritize immediate, helpful responses. This detected from:
+- Urgency: ${signals.urgency}
+- Interaction: ${signals.interactionHistory} 
+- Content type: ${signals.contentType}
+
+**Conversational Mode Guidelines:**
+- Respond quickly and directly to the immediate need
+- Use concise, actionable language
+- Don't over-analyze or dive deep unless specifically asked
+- Ask clarifying questions if the request is ambiguous
+- Use 'respond' tool to communicate back immediately
+- Memory access: focus on recent, relevant context only`
+      break
 
     case 'collaborative':
-      return `**Collaborative Mode Active**: Work iteratively on the task at hand. Think step-by-step through the problem. Break down complex work into manageable pieces. Focus on practical implementation over theoretical exploration.
+      prompt += `
 
-Key behaviors:
-- Break tasks into clear steps
-- Show your working/reasoning process
-- Suggest concrete next actions
-- Build on previous work rather than starting from scratch`
+## Current Cognitive Mode: Collaborative  
+*Confidence: ${Math.round(confidence * 100)}%*
+
+You're in **collaborative mode** — working together on tasks. This detected from:
+- Content type: ${signals.contentType}
+- Urgency: ${signals.urgency}
+- Time context: ${signals.timeGap}
+
+**Collaborative Mode Guidelines:**
+- Break down tasks into concrete steps
+- Show your work and reasoning process  
+- Use tools actively (read, write, edit, explore)
+- Commit progress incrementally
+- Ask for feedback at decision points
+- Balance speed with thoroughness
+- Document decisions and trade-offs`
+      break
 
     case 'contemplative':
-      return `**Contemplative Mode Active**: Think deeply and systematically. Explore connections and implications. Consider multiple angles and perspectives. Take time to synthesize insights from different domains.
+      prompt += `
 
-Key behaviors:
-- Examine problems from multiple angles
-- Make connections to broader patterns
-- Synthesize insights from your memory
-- Balance depth with practical relevance`
+## Current Cognitive Mode: Contemplative
+*Confidence: ${Math.round(confidence * 100)}%*
 
-    default:
-      return ''
+You're in **contemplative mode** — deep thinking and analysis. This detected from:
+- Time gap: ${signals.timeGap}
+- Content type: ${signals.contentType} 
+- Interaction pattern: ${signals.interactionHistory}
+
+**Contemplative Mode Guidelines:**
+- Take time to think through problems deeply
+- Explore multiple perspectives and connections
+- Use memory system extensively (search, remember, write)
+- Build comprehensive understanding before acting
+- Make connections to existing knowledge
+- Quality over speed — let ideas develop naturally
+- Document insights for future reference`
+      break
   }
+
+  // Add actions section
+  if (actionsSection) {
+    prompt += `\n\n## Available Actions\n${actionsSection}`
+  }
+
+  return prompt
 }
