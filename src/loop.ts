@@ -20,6 +20,10 @@ import type {
   GateResult,
   MemorySystem,
   LLMProvider,
+  ToolUseLLMProvider,
+  ConversationMessage,
+  ContentBlock,
+  ToolUseResponse,
 } from './types.js'
 import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
@@ -81,15 +85,36 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   const gateStatePath = join(config.memoryDir, 'state', 'gate-state.json')
   const journalDir = join(config.memoryDir, 'journal')
   const tickJournalPath = join(journalDir, 'ticks.jsonl')
+  const liveStatusPath = join(config.memoryDir, 'state', 'live-status.json')
 
   let running = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  let tickCount = 0
+
+  // Initialize tick count from existing ticks
+  try {
+    const ticksDir = join(journalDir, 'ticks')
+    if (existsSync(ticksDir)) {
+      tickCount = readdirSync(ticksDir).filter(f => f.endsWith('.md')).length
+    }
+  } catch { /* start from 0 */ }
+
+  function writeLiveStatus(status: Record<string, unknown>): void {
+    try {
+      writeFileSync(liveStatusPath, JSON.stringify({ ...status, ts: Date.now() }), 'utf-8')
+    } catch { /* best effort */ }
+  }
+
+  // Write initial idle status
+  writeLiveStatus({ phase: 'idle', tickNumber: tickCount, running: false })
 
   // Load persistent gate state
   const gateState = loadGateState(gateStatePath)
 
   async function tick(): Promise<TickResult> {
     const tickStart = Date.now()
+    tickCount++
+    writeLiveStatus({ phase: 'perceive', tickStart, tickNumber: tickCount, running })
 
     // 1. Perceive
     const perceptionOutput = await perception.perceive()
@@ -102,17 +127,40 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const context = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
 
     // 3. Think (LLM call)
-    const systemPrompt = buildSystemPrompt(identity, actionRegistry)
+    writeLiveStatus({ phase: 'think', tickStart, tickNumber: tickCount, running, perceptionBytes: perceptionOutput.length })
+    const systemPrompt = buildSystemPrompt(identity, actionRegistry)  // always built (used in feedback loop)
     let thought: string
-    try {
-      thought = await llm.think(context, systemPrompt)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      thought = `[LLM error: ${msg}]`
+    let structuredActions: Action[] | null = null
+
+    if (isToolUseProvider(llm)) {
+      // Structured tool use path — LLM gets native tool definitions
+      const toolDefs = actionRegistry.toToolDefinitions()
+      const toolSystemPrompt = buildToolUseSystemPrompt(identity)
+      const messages: ConversationMessage[] = [{ role: 'user', content: context }]
+
+      try {
+        const response = await llm.thinkWithTools(messages, toolSystemPrompt, toolDefs)
+        const parsed = parseToolUseResponse(response, actionRegistry)
+        thought = parsed.thought
+        structuredActions = parsed.actions
+        // Store conversation for multi-turn feedback loop
+        messages.push({ role: 'assistant', content: response.content })
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        thought = `[LLM error: ${msg}]`
+      }
+    } else {
+      // Text-based path (CLI provider) — LLM uses <action:type> tags
+      try {
+        thought = await llm.think(context, systemPrompt)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        thought = `[LLM error: ${msg}]`
+      }
     }
 
-    // 4. Parse actions
-    const actions = actionRegistry.parse(thought)
+    // 4. Parse actions (structured from tool use, or parsed from text)
+    const actions = structuredActions ?? actionRegistry.parse(thought)
 
     // 5. Gate check (before execution)
     const observation = createEmptyObservation(tickStart)
@@ -146,6 +194,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       }
     } else {
       // 6. Execute actions (with feedback mini-loop)
+      writeLiveStatus({ phase: 'act', tickStart, tickNumber: tickCount, running, actionCount: actions.length, actionTypes: actions.map(a => a.type) })
       let actionsExecuted = 0
       let actionsFailed = 0
       const actionResults: string[] = []
@@ -166,44 +215,116 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
       // Feedback mini-loop: let agent see action results and respond within the same tick
       const maxFeedbackRounds = config.feedbackRounds ?? 1
-      let lastRoundResults = [...actionResults]
 
-      for (let round = 0; round < maxFeedbackRounds && lastRoundResults.length > 0; round++) {
-        const resultSummary = lastRoundResults.map((r, i) => {
-          const idx = allActions.length - lastRoundResults.length + i
-          return `[${allActions[idx]?.type ?? 'action'}] ${r}`
-        }).join('\n')
+      if (isToolUseProvider(llm) && structuredActions !== null) {
+        // Native tool_use multi-turn: send tool_results, get follow-up tool calls
+        const toolDefs = actionRegistry.toToolDefinitions()
+        const toolSystemPrompt = buildToolUseSystemPrompt(identity)
+        // messages already has [user context, assistant response] from above
+        const messages: ConversationMessage[] = [
+          { role: 'user', content: context },
+          { role: 'assistant', content: structuredActions.length > 0
+            ? buildAssistantContent(thought, structuredActions)
+            : [{ type: 'text' as const, text: thought }]
+          },
+        ]
 
-        const feedbackContext = `${context}\n\n<action-feedback round="${round + 1}">\nYou just executed actions and received these results:\n${resultSummary}\n</action-feedback>\n\nBased on these results, you may take additional actions or produce no actions if satisfied.`
-
-        let followUpThought: string
-        try {
-          followUpThought = await llm.think(feedbackContext, systemPrompt)
-        } catch {
-          break
-        }
-
-        thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${followUpThought}`
-        const followUpActions = actionRegistry.parse(followUpThought)
-
-        if (followUpActions.length === 0) break
-
-        const roundResults: string[] = []
-        for (const action of followUpActions) {
-          try {
-            const result = await actionRegistry.execute(action, { memory, workDir })
-            roundResults.push(result)
-            actionsExecuted++
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err)
-            roundResults.push(`[action ${action.type} failed: ${msg}]`)
-            actionsFailed++
+        for (let round = 0; round < maxFeedbackRounds; round++) {
+          // Build tool_result messages for all actions in this round
+          const toolResults: ContentBlock[] = []
+          const roundStartIdx = allActions.length - actionResults.slice(-actions.length).length
+          for (let i = 0; i < allActions.length; i++) {
+            const action = allActions[i]
+            if (!action.toolUseId) continue
+            // Only send results for actions from current round
+            if (i < allActions.length - actionResults.length + roundStartIdx) continue
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: action.toolUseId,
+              content: actionResults[i] ?? '',
+            })
           }
-        }
 
-        allActions.push(...followUpActions)
-        actionResults.push(...roundResults)
-        lastRoundResults = roundResults
+          if (toolResults.length === 0) break
+
+          messages.push({ role: 'user', content: toolResults })
+
+          let response: ToolUseResponse
+          try {
+            response = await (llm as ToolUseLLMProvider).thinkWithTools(messages, toolSystemPrompt, toolDefs)
+          } catch {
+            break
+          }
+
+          const parsed = parseToolUseResponse(response, actionRegistry)
+          if (parsed.actions.length === 0) {
+            thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${parsed.thought}`
+            break
+          }
+
+          thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${parsed.thought}`
+          messages.push({ role: 'assistant', content: response.content })
+
+          const roundResults: string[] = []
+          for (const action of parsed.actions) {
+            try {
+              const result = await actionRegistry.execute(action, { memory, workDir })
+              roundResults.push(result)
+              actionsExecuted++
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err)
+              roundResults.push(`[action ${action.type} failed: ${msg}]`)
+              actionsFailed++
+            }
+          }
+
+          allActions.push(...parsed.actions)
+          actionResults.push(...roundResults)
+
+          // If stop_reason is end_turn (not tool_use), model is done
+          if (response.stop_reason === 'end_turn') break
+        }
+      } else {
+        // Text-based feedback mini-loop (legacy)
+        let lastRoundResults = [...actionResults]
+
+        for (let round = 0; round < maxFeedbackRounds && lastRoundResults.length > 0; round++) {
+          const resultSummary = lastRoundResults.map((r, i) => {
+            const idx = allActions.length - lastRoundResults.length + i
+            return `[${allActions[idx]?.type ?? 'action'}] ${r}`
+          }).join('\n')
+
+          const feedbackContext = `${context}\n\n<action-feedback round="${round + 1}">\nYou just executed actions and received these results:\n${resultSummary}\n</action-feedback>\n\nBased on these results, you may take additional actions or produce no actions if satisfied.`
+
+          let followUpThought: string
+          try {
+            followUpThought = await llm.think(feedbackContext, systemPrompt)
+          } catch {
+            break
+          }
+
+          thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${followUpThought}`
+          const followUpActions = actionRegistry.parse(followUpThought)
+
+          if (followUpActions.length === 0) break
+
+          const roundResults: string[] = []
+          for (const action of followUpActions) {
+            try {
+              const result = await actionRegistry.execute(action, { memory, workDir })
+              roundResults.push(result)
+              actionsExecuted++
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err)
+              roundResults.push(`[action ${action.type} failed: ${msg}]`)
+              actionsFailed++
+            }
+          }
+
+          allActions.push(...followUpActions)
+          actionResults.push(...roundResults)
+          lastRoundResults = roundResults
+        }
       }
 
       // Update tickResult with accumulated data from all rounds
@@ -251,6 +372,19 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Clear gate results for next tick
     gateSystem.clearResults()
 
+    // Update live status
+    writeLiveStatus({
+      phase: 'idle', tickNumber: tickCount, running,
+      lastTick: {
+        start: tickStart,
+        duration: tickResult.observation.duration,
+        actions: tickResult.actions.map(a => a.type),
+        quality: tickResult.observation.outputQuality,
+        executed: tickResult.observation.actionsExecuted,
+        failed: tickResult.observation.actionsFailed,
+      },
+    })
+
     return tickResult
   }
 
@@ -287,6 +421,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       clearTimeout(timer)
       timer = null
     }
+    writeLiveStatus({ phase: 'stopped', tickNumber: tickCount, running: false })
   }
 
   return {
@@ -362,7 +497,9 @@ ${actionLines.join('\n')}
 
 You can include multiple actions in a single response. Actions are executed in order.
 
-CRITICAL: Your output MUST contain action tags to produce any effect. Text without action tags is recorded but has no side effects. If you want to respond to a message, you MUST use <action:respond>. If you want to remember something, you MUST use <action:remember>. Analysis without action tags = wasted tick.`
+CRITICAL: Your output MUST contain action tags to produce any effect. Text without action tags is recorded but has no side effects. If you want to respond to a message, you MUST use <action:respond>. If you want to remember something, you MUST use <action:remember>. Analysis without action tags = wasted tick.
+
+IMPORTANT: Action tags are executed by the Tanren framework on your behalf. You do NOT need file access, write permissions, or any external tools. Simply include the action tag in your response and the framework handles all I/O. For example, <action:respond>your message</action:respond> will be delivered to Kuro automatically — you don't write to any file yourself.`
 }
 
 function createEmptyObservation(tickStart: number): Observation {
@@ -460,4 +597,54 @@ function persistTick(journalDir: string, journalPath: string, tick: TickResult):
 
     writeFileSync(join(ticksDir, `tick-${tickNum}.md`), md, 'utf-8')
   } catch { /* best effort — don't break the loop */ }
+}
+
+// === Tool Use Integration ===
+
+function isToolUseProvider(provider: LLMProvider): provider is ToolUseLLMProvider {
+  return 'thinkWithTools' in provider && typeof (provider as ToolUseLLMProvider).thinkWithTools === 'function'
+}
+
+function parseToolUseResponse(response: ToolUseResponse, registry: ActionRegistry): { thought: string; actions: Action[] } {
+  const textParts: string[] = []
+  const actions: Action[] = []
+
+  for (const block of response.content) {
+    if (block.type === 'text') {
+      textParts.push(block.text)
+    } else if (block.type === 'tool_use') {
+      actions.push(registry.fromToolUse(block.name, block.id, block.input as Record<string, unknown>))
+    }
+  }
+
+  return { thought: textParts.join('\n'), actions }
+}
+
+/** Build assistant content blocks for multi-turn conversation */
+function buildAssistantContent(thought: string, actions: Action[]): ContentBlock[] {
+  const blocks: ContentBlock[] = []
+  if (thought) {
+    blocks.push({ type: 'text', text: thought })
+  }
+  for (const action of actions) {
+    if (action.toolUseId) {
+      blocks.push({
+        type: 'tool_use',
+        id: action.toolUseId,
+        name: action.type,
+        input: action.input ?? { content: action.content },
+      })
+    }
+  }
+  return blocks
+}
+
+function buildToolUseSystemPrompt(identity: string): string {
+  return `${identity}
+
+## Instructions
+
+You have tools available. Use them to take actions. Your text response is your thinking/reflection — it will be recorded but has no side effects. Only tool calls produce effects.
+
+CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.`
 }

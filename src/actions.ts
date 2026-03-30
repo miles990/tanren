@@ -5,7 +5,7 @@
  * Actions are tags in the LLM response: <action:type>content</action:type>
  */
 
-import type { Action, ActionHandler, ActionContext } from './types.js'
+import type { Action, ActionHandler, ActionContext, ToolDefinition } from './types.js'
 
 export interface ActionRegistry {
   register(handler: ActionHandler): void
@@ -14,6 +14,10 @@ export interface ActionRegistry {
   has(type: string): boolean
   types(): string[]
   getDescription(type: string): string | undefined
+  /** Convert registered actions to Anthropic tool definitions */
+  toToolDefinitions(): ToolDefinition[]
+  /** Convert a tool_use block back to an Action */
+  fromToolUse(name: string, id: string, input: Record<string, unknown>): Action
 }
 
 export function createActionRegistry(): ActionRegistry {
@@ -46,6 +50,37 @@ export function createActionRegistry(): ActionRegistry {
 
     getDescription(type: string): string | undefined {
       return handlers.get(type)?.description
+    },
+
+    toToolDefinitions(): ToolDefinition[] {
+      const defs: ToolDefinition[] = []
+      for (const [name, handler] of handlers) {
+        const schema = handler.toolSchema ?? {
+          properties: { content: { type: 'string', description: 'Action content' } },
+          required: ['content'],
+        }
+        defs.push({
+          name,
+          description: handler.description ?? `Execute ${name} action`,
+          input_schema: { type: 'object', ...schema },
+        })
+      }
+      return defs
+    },
+
+    fromToolUse(name: string, id: string, input: Record<string, unknown>): Action {
+      // Build content string from structured input for backward compatibility
+      const content = typeof input.content === 'string'
+        ? input.content
+        : Object.entries(input).map(([k, v]) => `${k}: ${String(v)}`).join('\n')
+
+      return {
+        type: name,
+        content,
+        raw: JSON.stringify({ tool_use: name, id, input }),
+        input,
+        toolUseId: id,
+      }
     },
   }
 }
@@ -84,7 +119,23 @@ function parseActions(response: string): Action[] {
 export const builtinActions: ActionHandler[] = [
   {
     type: 'remember',
+    description: 'Store a memory. Optionally specify a topic for categorization.',
+    toolSchema: {
+      properties: {
+        content: { type: 'string', description: 'What to remember' },
+        topic: { type: 'string', description: 'Optional topic category (e.g. "design", "debugging")' },
+      },
+      required: ['content'],
+    },
     async execute(action, context) {
+      // Structured input path (from tool_use)
+      if (action.input) {
+        const topic = action.input.topic as string | undefined
+        const content = action.input.content as string
+        await context.memory.remember(content, topic ? { topic } : undefined)
+        return topic ? `Remembered to topic: ${topic}` : 'Remembered.'
+      }
+      // Legacy text path (from regex parsing)
       const topicMatch = action.content.match(/^#([a-zA-Z][\w-]*)\s+/)
       if (topicMatch) {
         await context.memory.remember(
@@ -99,19 +150,31 @@ export const builtinActions: ActionHandler[] = [
   },
   {
     type: 'write',
+    description: 'Write content to a file in memory.',
+    toolSchema: {
+      properties: {
+        path: { type: 'string', description: 'File path relative to memory directory' },
+        content: { type: 'string', description: 'File content to write' },
+      },
+      required: ['path', 'content'],
+    },
     async execute(action, context) {
-      // Support attrs: <action:write path="file.md">content</action:write>
+      // Structured input path
+      if (action.input?.path) {
+        await context.memory.write(action.input.path as string, action.input.content as string)
+        return `Written: ${action.input.path}`
+      }
+      // Legacy: attrs path
       if (action.attrs?.path) {
         await context.memory.write(action.attrs.path, action.content)
         return `Written: ${action.attrs.path}`
       }
-      // Fallback: first line is path, rest is content
+      // Legacy: first line is path
       const newlineIdx = action.content.indexOf('\n')
       if (newlineIdx === -1) {
         return '[write action: missing content (expected path on first line, content after)]'
       }
       let path = action.content.slice(0, newlineIdx).trim()
-      // Strip "path: " prefix if LLM uses YAML-style format
       if (path.startsWith('path:')) path = path.slice(5).trim()
       const content = action.content.slice(newlineIdx + 1)
       await context.memory.write(path, content)
@@ -120,7 +183,21 @@ export const builtinActions: ActionHandler[] = [
   },
   {
     type: 'append',
+    description: 'Append a line to a file in memory.',
+    toolSchema: {
+      properties: {
+        path: { type: 'string', description: 'File path relative to memory directory' },
+        content: { type: 'string', description: 'Line to append' },
+      },
+      required: ['path', 'content'],
+    },
     async execute(action, context) {
+      // Structured input path
+      if (action.input?.path) {
+        await context.memory.append(action.input.path as string, action.input.content as string)
+        return `Appended to: ${action.input.path}`
+      }
+      // Legacy text path
       const newlineIdx = action.content.indexOf('\n')
       if (newlineIdx === -1) {
         return '[append action: missing content]'
@@ -133,8 +210,16 @@ export const builtinActions: ActionHandler[] = [
   },
   {
     type: 'search',
+    description: 'Search memory files for a query string.',
+    toolSchema: {
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+      },
+      required: ['query'],
+    },
     async execute(action, context) {
-      const results = await context.memory.search(action.content)
+      const query = (action.input?.query as string) ?? action.content
+      const results = await context.memory.search(query)
       if (results.length === 0) return 'No results found.'
       return results
         .slice(0, 10)
@@ -144,13 +229,21 @@ export const builtinActions: ActionHandler[] = [
   },
   {
     type: 'shell',
+    description: 'Execute a shell command and return its output.',
+    toolSchema: {
+      properties: {
+        command: { type: 'string', description: 'Bash command to execute' },
+      },
+      required: ['command'],
+    },
     async execute(action, context) {
+      const command = (action.input?.command as string) ?? action.content
       const { execFile } = await import('node:child_process')
       const { promisify } = await import('node:util')
       const execFileAsync = promisify(execFile)
 
       try {
-        const { stdout, stderr } = await execFileAsync('bash', ['-c', action.content], {
+        const { stdout, stderr } = await execFileAsync('bash', ['-c', command], {
           cwd: context.workDir,
           timeout: 30_000,
           maxBuffer: 512 * 1024,
@@ -160,6 +253,137 @@ export const builtinActions: ActionHandler[] = [
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return `[shell error: ${msg.slice(0, 500)}]`
+      }
+    },
+  },
+  {
+    type: 'web_fetch',
+    description: 'Fetch a URL and return its text content. Useful for reading web pages, APIs, or documentation.',
+    toolSchema: {
+      properties: {
+        url: { type: 'string', description: 'URL to fetch' },
+        max_length: { type: 'number', description: 'Maximum characters to return (default: 8000)' },
+      },
+      required: ['url'],
+    },
+    async execute(action) {
+      const url = (action.input?.url as string) ?? action.content.trim()
+      const maxLength = (action.input?.max_length as number) ?? 8000
+
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 15_000)
+
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Tanren/1.0' },
+        })
+        clearTimeout(timer)
+
+        if (!response.ok) {
+          return `[web_fetch error: HTTP ${response.status} ${response.statusText}]`
+        }
+
+        const contentType = response.headers.get('content-type') ?? ''
+        let text = await response.text()
+
+        // Strip HTML tags for readability if it's an HTML page
+        if (contentType.includes('html')) {
+          // Remove script/style blocks first
+          text = text.replace(/<script[\s\S]*?<\/script>/gi, '')
+          text = text.replace(/<style[\s\S]*?<\/style>/gi, '')
+          // Strip remaining tags
+          text = text.replace(/<[^>]+>/g, ' ')
+          // Collapse whitespace
+          text = text.replace(/\s+/g, ' ').trim()
+        }
+
+        return text.slice(0, maxLength)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[web_fetch error: ${msg.slice(0, 300)}]`
+      }
+    },
+  },
+  {
+    type: 'read',
+    description: 'Read a file and return its content with line numbers. Can read specific line ranges.',
+    toolSchema: {
+      properties: {
+        path: { type: 'string', description: 'File path (absolute, or relative to working directory)' },
+        start_line: { type: 'number', description: 'Start line number (1-based, default: 1)' },
+        end_line: { type: 'number', description: 'End line number (inclusive, default: end of file)' },
+      },
+      required: ['path'],
+    },
+    async execute(action, context) {
+      const { readFileSync, existsSync } = await import('node:fs')
+      const { resolve } = await import('node:path')
+
+      const rawPath = (action.input?.path as string) ?? action.content.trim()
+      const filePath = rawPath.startsWith('/') ? rawPath : resolve(context.workDir, rawPath)
+
+      if (!existsSync(filePath)) {
+        return `[read error: file not found: ${rawPath}]`
+      }
+
+      try {
+        const content = readFileSync(filePath, 'utf-8')
+        const allLines = content.split('\n')
+        const startLine = Math.max(1, (action.input?.start_line as number) ?? 1)
+        const endLine = Math.min(allLines.length, (action.input?.end_line as number) ?? allLines.length)
+        const lines = allLines.slice(startLine - 1, endLine)
+
+        const numbered = lines.map((line, i) => `${startLine + i}\t${line}`).join('\n')
+        const header = `${rawPath} (lines ${startLine}-${endLine} of ${allLines.length})`
+
+        const result = `${header}\n${numbered}`
+        return result.slice(0, 10000) // cap output
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[read error: ${msg.slice(0, 300)}]`
+      }
+    },
+  },
+  {
+    type: 'explore',
+    description: 'Search for files matching a glob pattern. Returns matching file paths.',
+    toolSchema: {
+      properties: {
+        pattern: { type: 'string', description: 'Glob pattern (e.g. "**/*.ts", "src/**/*.md")' },
+        directory: { type: 'string', description: 'Directory to search in (default: working directory)' },
+      },
+      required: ['pattern'],
+    },
+    async execute(action, context) {
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const { resolve } = await import('node:path')
+      const execFileAsync = promisify(execFile)
+
+      const pattern = (action.input?.pattern as string) ?? action.content.trim()
+      const rawDir = action.input?.directory as string | undefined
+      const dir = rawDir ? resolve(context.workDir, rawDir) : context.workDir
+
+      try {
+        // Use find + bash glob as portable approach
+        const { stdout } = await execFileAsync('bash', [
+          '-c',
+          `shopt -s globstar nullglob 2>/dev/null; cd "${dir}" && ls -d ${pattern} 2>/dev/null | head -100`,
+        ], {
+          cwd: dir,
+          timeout: 10_000,
+          maxBuffer: 256 * 1024,
+        })
+
+        const files = stdout.trim()
+        if (!files) return `No files matching '${pattern}' in ${dir}`
+
+        const count = files.split('\n').length
+        return `Found ${count} file(s) matching '${pattern}':\n${files}`
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[explore error: ${msg.slice(0, 300)}]`
       }
     },
   },

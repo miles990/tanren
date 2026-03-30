@@ -5,7 +5,7 @@
  * Run: npx tsx examples/with-learning/run.ts
  */
 
-import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate } from '../../src/index.js'
+import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider } from '../../src/index.js'
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { ActionHandler } from '../../src/types.js'
@@ -95,7 +95,7 @@ const plugins = [
       if (!existsSync(msgPath)) return ''
       const msg = readFileSync(msgPath, 'utf-8').trim()
       if (!msg) return ''
-      return `📩 Message from Kuro (your creator):\n\n${msg}\n\nRespond using <action:respond>your response</action:respond> — this writes to messages/to-kuro.md so Kuro receives it directly.`
+      return `📩 Message from Kuro (your creator):\n\n${msg}\n\nRespond using the 'respond' tool — this writes to messages/to-kuro.md so Kuro receives it directly. After responding, use 'clear-inbox' to mark the message as read.`
     },
     category: 'input',
   },
@@ -136,10 +136,17 @@ const plugins = [
 const respondAction: ActionHandler = {
   type: 'respond',
   description: 'Send a response to Kuro. Content will be written to messages/to-kuro.md',
+  toolSchema: {
+    properties: {
+      content: { type: 'string', description: 'Your response message to Kuro' },
+    },
+    required: ['content'],
+  },
   async execute(action) {
+    const content = (action.input?.content as string) ?? action.content
     if (!existsSync(messagesDir)) mkdirSync(messagesDir, { recursive: true })
     const responsePath = join(messagesDir, 'to-kuro.md')
-    writeFileSync(responsePath, action.content, 'utf-8')
+    writeFileSync(responsePath, content, 'utf-8')
     return `Response written to messages/to-kuro.md`
   },
 }
@@ -147,7 +154,10 @@ const respondAction: ActionHandler = {
 // Custom action: clear Kuro's message after reading (consume-on-read)
 const clearInboxAction: ActionHandler = {
   type: 'clear-inbox',
-  description: 'Clear the inbox after reading Kuro\'s message',
+  description: 'Clear the inbox after reading Kuro\'s message. Call this after you have read and responded to Kuro\'s message.',
+  toolSchema: {
+    properties: {},
+  },
   async execute() {
     const inboxPath = join(messagesDir, 'from-kuro.md')
     if (existsSync(inboxPath)) writeFileSync(inboxPath, '', 'utf-8')
@@ -157,12 +167,30 @@ const clearInboxAction: ActionHandler = {
 
 const kuroTopicsDir = join(process.env.HOME ?? '', 'Workspace/mini-agent/memory/topics')
 
+// LLM provider: use Anthropic API when key available (enables native tool use),
+// otherwise fall back to Claude CLI (text-based action tags)
+const apiKey = process.env.ANTHROPIC_API_KEY
+const llmProvider = apiKey
+  ? createAnthropicProvider({
+      apiKey,
+      model: 'claude-sonnet-4-20250514',
+      maxTokens: 8192,
+    })
+  : undefined  // falls back to CLI provider
+
+if (apiKey) {
+  console.log('[akari] Using Anthropic API provider (native tool use)')
+} else {
+  console.log('[akari] Using Claude CLI provider (text-based actions)')
+}
+
 const agent = createAgent({
   identity: './examples/with-learning/soul.md',
   memoryDir: './examples/with-learning/memory',
   searchPaths: [kuroTopicsDir],
   perceptionPlugins: plugins,
   actions: [respondAction, clearInboxAction],
+  llm: llmProvider,
   gates: [
     createOutputGate(3),                  // warn after 3 empty ticks
     createAnalysisWithoutActionGate(2),   // warn after 2 ticks with thought but no actions

@@ -20,6 +20,8 @@ export interface Action {
   content: string
   raw: string
   attrs?: Record<string, string>
+  input?: Record<string, unknown>  // structured input from tool_use
+  toolUseId?: string               // for sending tool_result back
 }
 
 // === Observation (from Learning/Self-Perception) ===
@@ -81,6 +83,45 @@ export interface LLMProvider {
   think(context: string, systemPrompt: string): Promise<string>
 }
 
+/** Tool definition for Anthropic API tool use */
+export interface ToolDefinition {
+  name: string
+  description: string
+  input_schema: {
+    type: 'object'
+    properties: Record<string, unknown>
+    required?: string[]
+  }
+}
+
+/** Content block in a tool-use conversation */
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+
+/** Message in a multi-turn tool-use conversation */
+export interface ConversationMessage {
+  role: 'user' | 'assistant'
+  content: string | ContentBlock[]
+}
+
+/** Response from a tool-use LLM call */
+export interface ToolUseResponse {
+  content: ContentBlock[]
+  usage: { input_tokens: number; output_tokens: number }
+  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens'
+}
+
+/** Extended LLM provider with native tool use support */
+export interface ToolUseLLMProvider extends LLMProvider {
+  thinkWithTools(
+    messages: ConversationMessage[],
+    systemPrompt: string,
+    tools: ToolDefinition[],
+  ): Promise<ToolUseResponse>
+}
+
 // === Perception ===
 
 export interface PerceptionPlugin {
@@ -95,6 +136,11 @@ export interface PerceptionPlugin {
 export interface ActionHandler {
   type: string
   description?: string
+  /** JSON Schema for structured tool_use input. If omitted, defaults to { content: string } */
+  toolSchema?: {
+    properties: Record<string, unknown>
+    required?: string[]
+  }
   execute(action: Action, context: ActionContext): Promise<string>
 }
 
