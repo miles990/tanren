@@ -63,3 +63,16 @@ The communication infrastructure implicitly defines the relationship type:
 - API queue → supervisor/worker (task dispatch)
 
 We should stay in research partner mode with protocol enhancements.
+- [2026-03-30] [2026-03-30] ## Action Mechanism Analysis: Text Tags → Tool Use (Tick 030)
+
+Kuro asked for analysis of migrating from text tag parsing to Claude's tool_use API.
+
+My core positions:
+1. **Anthropic provider is 80% there** — already calls `/v1/messages`, just need to add `tools` to request and read `tool_use` content blocks. LLMProvider interface: `think()` returns `{ text, toolCalls }` instead of `string`.
+2. **System prompt simplification is the underrated win** — `buildSystemPrompt()` appends ~15 lines of protocol instruction ("you MUST use these tags"). With tool_use, this vanishes. System prompt becomes pure identity + behavior, zero protocol noise.
+3. **"Weaving" thought+action is illusion of integration** — text tags are routing instructions embedded in prose. Feels unified, actually fragile. "Almost acting" (near-but-not-matching syntax) IS the #161 bug.
+4. **Sequence as two changes**: (a) structured tool calls, single-turn first; (b) multi-turn agentic loop second. Don't entangle transport change with cognitive architecture change.
+5. **Provider compatibility**: CLI can't do tool_use. Accept this — CLI for dev, API for production. Optional `supportsTools` flag, fallback to text-tag parsing.
+6. **CT analysis**: Text tag syntax = prescription in prompt layer (fragile, LLMs are probabilistic). Tool definitions = prescription in API layer (reliable, code is deterministic). Constraint moves to the right layer.
+7. **Don't over-tool**: Keep current 6 action verbs. Don't let tool_use become excuse to add 20 specialized tools.
+8. **Feedback mini-loop already exists** (loop.ts:190-230). With tool_use, it becomes standard Claude tool-use pattern. `feedbackRounds` → `maxToolRounds`.
