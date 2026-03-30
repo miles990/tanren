@@ -90,3 +90,4 @@ My core positions:
 7. Recommended adding usage/cost tracking (5 lines) while in anthropic.ts
 
 **Key principle applied**: "Sequence as two changes" from tanren-consultation memory — don't entangle transport change with cognitive architecture change.
+- [2026-03-30] Designed real-time responsiveness system for Tanren at Alex's request. Key insight: dual-mode agent (scheduled ticks + reactive ticks) rather than replacing tick model entirely. Event-driven triggers wake agent for immediate response while preserving contemplative scheduled runs. Architecture includes EventTrigger interface, priority-based response modes, and anti-spam cooldowns. Implementation phases: (1) event detection, (2) reactive runner, (3) smart prioritization. Core principle: additive enhancement that maintains agency while enabling immediate responsiveness to external events.
