@@ -51,7 +51,23 @@
         }
       ],
       "crystallized": false
+    },
+    {
+      "id": "jsw6qy",
+      "type": "action-streak",
+      "signature": "streak:git",
+      "description": "Tick dominated by \"git\" actions (2x)",
+      "occurrences": 1,
+      "firstSeen": 1774903502965,
+      "lastSeen": 1774903502965,
+      "examples": [
+        {
+          "timestamp": 1774903502965,
+          "summary": "2x git"
+        }
+      ],
+      "crystallized": false
     }
   ],
-  "lastObserved": 1774903400430
+  "lastObserved": 1774903502965
 }
