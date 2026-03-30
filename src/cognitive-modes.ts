@@ -10,6 +10,13 @@
 
 import type { CognitiveMode, CognitiveContext, TickMode, TriggerEvent } from './types.js'
 
+/** Default model mapping per cognitive mode */
+export const COGNITIVE_MODE_MODELS: Record<CognitiveMode, string> = {
+  contemplative: 'claude-sonnet-4-20250514',     // deep thinking needs strong model
+  conversational: 'claude-haiku-4-5-20251001',   // quick Q&A, fast + cheap
+  collaborative: 'claude-sonnet-4-20250514',     // pair work needs reasoning
+}
+
 export interface CognitiveModeDetector {
   detectMode(
     tickMode: TickMode,

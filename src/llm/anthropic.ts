@@ -38,7 +38,7 @@ interface AnthropicApiResponse {
 /** Callback for streaming text chunks during generation */
 export type OnStreamText = (text: string) => void
 
-export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUseLLMProvider & { cost: CostTracker; onStreamText?: OnStreamText } {
+export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUseLLMProvider & { cost: CostTracker; onStreamText?: OnStreamText; activeModel?: string } {
   const model = opts.model ?? 'claude-sonnet-4-20250514'
   const maxTokens = opts.maxTokens ?? 8192
   const baseUrl = (opts.baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '')
@@ -66,7 +66,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
     cost.totalCalls++
   }
 
-  async function callApi(body: Record<string, unknown>): Promise<AnthropicApiResponse> {
+  async function callApi(body: Record<string, unknown>, modelOverride?: string): Promise<AnthropicApiResponse> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
 
@@ -78,7 +78,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
           'x-api-key': opts.apiKey,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify({ model, max_tokens: maxTokens, ...body }),
+        body: JSON.stringify({ model: modelOverride ?? model, max_tokens: maxTokens, ...body }),
         signal: controller.signal,
       })
 
@@ -103,7 +103,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
       const data = await callApi({
         system: systemPrompt || undefined,
         messages: [{ role: 'user', content: context }],
-      })
+      }, this.activeModel)
 
       return data.content
         .filter(b => b.type === 'text')
@@ -114,6 +114,9 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
 
     // Settable stream callback — set by serve mode to push live thinking
     onStreamText: undefined as OnStreamText | undefined,
+
+    // Dynamic model override — set per tick based on cognitive mode
+    activeModel: undefined as string | undefined,
 
     // Native tool use interface (streaming — emits text chunks via onStreamText)
     async thinkWithTools(
@@ -142,7 +145,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
             'x-api-key': opts.apiKey,
             'anthropic-version': '2023-06-01',
           },
-          body: JSON.stringify({ model, max_tokens: maxTokens, ...body }),
+          body: JSON.stringify({ model: this.activeModel ?? model, max_tokens: maxTokens, ...body }),
           signal: controller.signal,
         })
 

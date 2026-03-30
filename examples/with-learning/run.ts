@@ -213,6 +213,7 @@ const agent = createAgent({
   ],
   feedbackRounds: 10,           // allow complex tool chains: read→edit→shell(tsc)→fix→respond
   tickInterval: 300_000,        // 5 min between ticks (cost-conscious)
+  cognitiveMode: { enabled: true },
 })
 
 // CLI argument parsing

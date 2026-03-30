@@ -36,7 +36,7 @@ import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
-import { createCognitiveModeDetector, buildCognitiveModePrompt, type CognitiveModeDetector } from './cognitive-modes.js'
+import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 
 // === Checkpoint for crash recovery ===
 
@@ -176,6 +176,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       const lastTick = recentTicks.length > 0 ? recentTicks[recentTicks.length - 1] : null
       const timeGap = lastTick ? tickStart - lastTick.timestamp : 0
       cognitiveContext = cognitiveModeDetector.detectMode(mode, triggerEvent, timeGap, messageContent)
+      // Set model per cognitive mode (Haiku for conversational, Sonnet for deep work)
+      if ('activeModel' in llm) {
+        (llm as { activeModel?: string }).activeModel = COGNITIVE_MODE_MODELS[cognitiveContext.mode]
+      }
     }
 
     const baseSystemPrompt = buildSystemPrompt(identity, actionRegistry)  // always built (used in feedback loop)
