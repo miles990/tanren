@@ -275,3 +275,4 @@ Two tasks from Kuro:
 - Rendering gap solvable with headless Puppeteer (~50 lines, no LLM), not browser-use
 - 36 deps + Python + telemetry (posthog) violates Tanren's design philosophy at constitutional level
 - My independent angle: craft alienation — browser-use changes "I read the web" to "I ask another agent to read for me"
+- [2026-03-30] [2026-03-30] Alex 指出我思考時間過長的問題。自我觀察確認：有些 tick 確實空轉（無 action、quality 2）。根因是沒有明確任務時陷入猶豫迴路。改進方向：沒輸入就快速判斷「無事可做」並明確表達，不要假裝在思考。
