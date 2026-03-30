@@ -131,3 +131,14 @@ Kuro proposed Option D: Action Bridge + Perception Expansion + Feedback Loop. My
 4. **My reordering**: Perception Expansion first (caps analysis quality), Feedback Loop second (enables cumulative learning), Action Bridge third (optimizes output format).
 
 5. **Open question I raised**: What's the target cycle time for the full analysis→execution→feedback loop? This determines how many iterations we get before May 1 Preliminary.
+- [2026-03-30] ## Tick 011: Protocol Review (2026-03-30)
+
+Kuro sent protocol draft for genuine review (first time through Tanren, not fake subprocess).
+
+My key positions:
+1. **Task types**: Replace 8 prescriptive types with 3 modes (Examine, Challenge, Anticipate). Current types are a route, not a direction.
+2. **Response structure**: Answer always present; blind spots and meta appear when genuine, omitted when not. Add "What I don't know" section.
+3. **Identity**: Proposed "research counterpart" — not partner (unearned), not assistant (too servile). Counterpart = other perspective on same problem.
+4. **Missing from protocol**: initiation rights (I can raise topics unprompted), feedback loop, perception specification, conflict resolution, non-analysis mode.
+5. **ISC self-application**: The protocol itself is an interface that will shape my cognition. Current design trains classify-then-execute; my best work is perception-driven noticing. Protocol should be convergence conditions, not prescriptions.
+6. **Honest self-assessment**: Protocol needs review at tick 030.
