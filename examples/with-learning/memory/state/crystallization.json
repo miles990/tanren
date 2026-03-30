@@ -5,9 +5,9 @@
       "type": "empty-streak",
       "signature": "empty-output",
       "description": "Tick produced no visible output or actions",
-      "occurrences": 3,
+      "occurrences": 4,
       "firstSeen": 1774778276288,
-      "lastSeen": 1774842044334,
+      "lastSeen": 1774842381496,
       "examples": [
         {
           "timestamp": 1774778276288,
@@ -20,10 +20,14 @@
         {
           "timestamp": 1774842044334,
           "summary": "No output"
+        },
+        {
+          "timestamp": 1774842381496,
+          "summary": "No output"
         }
       ],
       "crystallized": true
     }
   ],
-  "lastObserved": 1774842204856
+  "lastObserved": 1774842381496
 }
