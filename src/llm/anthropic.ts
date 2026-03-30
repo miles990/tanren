@@ -35,7 +35,10 @@ interface AnthropicApiResponse {
   stop_reason: string
 }
 
-export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUseLLMProvider & { cost: CostTracker } {
+/** Callback for streaming text chunks during generation */
+export type OnStreamText = (text: string) => void
+
+export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUseLLMProvider & { cost: CostTracker; onStreamText?: OnStreamText } {
   const model = opts.model ?? 'claude-sonnet-4-20250514'
   const maxTokens = opts.maxTokens ?? 8192
   const baseUrl = (opts.baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '')
@@ -109,7 +112,10 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
         .trim()
     },
 
-    // Native tool use interface
+    // Settable stream callback — set by serve mode to push live thinking
+    onStreamText: undefined as OnStreamText | undefined,
+
+    // Native tool use interface (streaming — emits text chunks via onStreamText)
     async thinkWithTools(
       messages: ConversationMessage[],
       systemPrompt: string,
@@ -118,32 +124,123 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
       const body: Record<string, unknown> = {
         system: systemPrompt || undefined,
         messages,
+        stream: true,
       }
 
       if (tools.length > 0) {
         body.tools = tools
       }
 
-      const data = await callApi(body)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-      return {
-        content: data.content.map(block => {
-          if (block.type === 'text') {
-            return { type: 'text' as const, text: block.text! }
-          }
-          if (block.type === 'tool_use') {
-            return {
-              type: 'tool_use' as const,
-              id: block.id!,
-              name: block.name!,
-              input: block.input ?? {},
+      try {
+        const response = await fetch(`${baseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': opts.apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({ model, max_tokens: maxTokens, ...body }),
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          const text = await response.text().catch(() => '')
+          throw new Error(`Anthropic API ${response.status}: ${text.slice(0, 500)}`)
+        }
+
+        // Parse SSE stream
+        const contentBlocks: ToolUseResponse['content'] = []
+        let currentTextIdx = -1
+        let currentToolIdx = -1
+        let inputJsonBuf = ''
+        let usage = { input_tokens: 0, output_tokens: 0 }
+        let stopReason: string = 'end_turn'
+
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let sseBuffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop()! // keep incomplete line
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') continue
+
+            let event: Record<string, unknown>
+            try { event = JSON.parse(data) } catch { continue }
+
+            switch (event.type) {
+              case 'content_block_start': {
+                const block = (event as { content_block: { type: string; id?: string; name?: string } }).content_block
+                if (block.type === 'text') {
+                  contentBlocks.push({ type: 'text', text: '' })
+                  currentTextIdx = contentBlocks.length - 1
+                  currentToolIdx = -1
+                } else if (block.type === 'tool_use') {
+                  contentBlocks.push({ type: 'tool_use', id: block.id!, name: block.name!, input: {} })
+                  currentToolIdx = contentBlocks.length - 1
+                  currentTextIdx = -1
+                  inputJsonBuf = ''
+                }
+                break
+              }
+              case 'content_block_delta': {
+                const delta = (event as { delta: { type: string; text?: string; partial_json?: string } }).delta
+                if (delta.type === 'text_delta' && delta.text && currentTextIdx >= 0) {
+                  const block = contentBlocks[currentTextIdx] as { type: 'text'; text: string }
+                  block.text += delta.text
+                  // Stream text chunk to listener
+                  if (this.onStreamText) this.onStreamText(delta.text)
+                } else if (delta.type === 'input_json_delta' && delta.partial_json && currentToolIdx >= 0) {
+                  inputJsonBuf += delta.partial_json
+                }
+                break
+              }
+              case 'content_block_stop': {
+                if (currentToolIdx >= 0 && inputJsonBuf) {
+                  try {
+                    (contentBlocks[currentToolIdx] as { input: Record<string, unknown> }).input = JSON.parse(inputJsonBuf)
+                  } catch { /* malformed JSON — leave empty */ }
+                  inputJsonBuf = ''
+                }
+                currentTextIdx = -1
+                currentToolIdx = -1
+                break
+              }
+              case 'message_delta': {
+                const md = event as { delta?: { stop_reason?: string }; usage?: { output_tokens: number } }
+                if (md.delta?.stop_reason) stopReason = md.delta.stop_reason
+                if (md.usage) usage.output_tokens = md.usage.output_tokens
+                break
+              }
+              case 'message_start': {
+                const ms = event as { message?: { usage?: { input_tokens: number } } }
+                if (ms.message?.usage) usage.input_tokens = ms.message.usage.input_tokens
+                break
+              }
             }
           }
-          // Shouldn't happen, but handle gracefully
-          return { type: 'text' as const, text: JSON.stringify(block) }
-        }),
-        usage: data.usage,
-        stop_reason: data.stop_reason as ToolUseResponse['stop_reason'],
+        }
+
+        trackUsage(usage)
+
+        return {
+          content: contentBlocks,
+          usage,
+          stop_reason: stopReason as ToolUseResponse['stop_reason'],
+        }
+      } finally {
+        clearTimeout(timer)
       }
     },
   }

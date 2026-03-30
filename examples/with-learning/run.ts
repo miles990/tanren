@@ -1,14 +1,29 @@
 /**
  * Akari — Kuro's research partner, built on Tanren
  *
- * Demonstrates gates, custom actions, and perception plugins.
- * Run: npx tsx examples/with-learning/run.ts
+ * Modes:
+ *   npx tsx run.ts              # single tick
+ *   npx tsx run.ts --chat       # interactive conversation (Alex ↔ Akari)
+ *   npx tsx run.ts --loop       # fixed-interval autonomous loop
+ *   npx tsx run.ts --watch      # message-triggered ticks
  */
 
 import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider } from '../../src/index.js'
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { ActionHandler } from '../../src/types.js'
+
+// Load .env from instance directory — ensures ANTHROPIC_API_KEY is available
+// regardless of how this process is spawned (Kuro, Claude Code, or manual)
+const envPath = join('./examples/with-learning', '.env')
+if (existsSync(envPath)) {
+  for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+    const match = line.match(/^\s*([^#=]+?)\s*=\s*(.+?)\s*$/)
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2].replace(/^["']|["']$/g, '')
+    }
+  }
+}
 
 const baseDir = './examples/with-learning'
 const memDir = join(baseDir, 'memory')
@@ -201,7 +216,9 @@ const agent = createAgent({
 
 // CLI argument parsing
 const args = process.argv.slice(2)
-const mode = args.includes('--loop') ? 'loop'
+const mode = args.includes('--serve') ? 'serve'
+  : args.includes('--chat') ? 'chat'
+  : args.includes('--loop') ? 'loop'
   : args.includes('--watch') ? 'watch'
   : 'tick'
 
@@ -232,7 +249,212 @@ async function runSingleTick(): Promise<void> {
   console.log(result.thought.slice(0, 500))
 }
 
-if (mode === 'loop') {
+if (mode === 'serve') {
+  // HTTP server mode — always-on, receives messages via API
+  // POST /chat  { from, text } → trigger tick → return response
+  // GET  /health → { status, tick, provider }
+  // GET  /status → live-status.json content
+  const { createServer } = await import('node:http')
+  const PORT = parseInt(process.env.AKARI_PORT ?? '3002', 10)
+  let ticking = false
+  let tickCount = 0
+
+  async function handleChat(from: string, text: string): Promise<{ response: string; tick: number; duration: number; actions: string[]; quality: number }> {
+    // Write message to inbox
+    writeFileSync(join(messagesDir, 'from-kuro.md'), `# From ${from}\n\n${text}\n`, 'utf-8')
+
+    const result = await agent.tick()
+    tickCount++
+    const duration = result.observation.duration
+    const actions = result.actions.map(a => a.type)
+    const quality = result.observation.outputQuality ?? 0
+
+    // Read response
+    const responsePath = join(messagesDir, 'to-kuro.md')
+    let response = ''
+    if (existsSync(responsePath)) {
+      response = readFileSync(responsePath, 'utf-8').trim()
+    }
+
+    // Write-back fallback
+    if (!response && result.thought.length > 200) {
+      response = `<!-- thought fallback -->\n${result.thought}`
+    }
+
+    return { response, tick: tickCount, duration, actions, quality }
+  }
+
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://localhost:${PORT}`)
+
+    // CORS
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
+
+    const json = (status: number, data: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(data))
+    }
+
+    if (url.pathname === '/health' && req.method === 'GET') {
+      json(200, {
+        status: 'ok',
+        service: 'akari',
+        provider: apiKey ? 'anthropic-api' : 'claude-cli',
+        ticking,
+        tickCount,
+      })
+    } else if (url.pathname === '/status' && req.method === 'GET') {
+      try {
+        const status = JSON.parse(readFileSync(join(baseDir, 'memory/state/live-status.json'), 'utf-8'))
+        json(200, status)
+      } catch { json(200, { phase: 'unknown' }) }
+    } else if (url.pathname === '/chat' && req.method === 'POST') {
+      // Read body
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let parsed: { from?: string; text?: string; stream?: boolean }
+      try { parsed = JSON.parse(body) } catch { json(400, { error: 'Invalid JSON' }); return }
+
+      const from = parsed.from ?? 'anonymous'
+      const text = parsed.text ?? ''
+      if (!text.trim()) { json(400, { error: 'Empty text' }); return }
+
+      if (ticking) { json(429, { error: 'Akari is thinking, try again later' }); return }
+
+      ticking = true
+
+      if (parsed.stream && llmProvider && 'onStreamText' in llmProvider) {
+        // SSE streaming mode — push Akari's thinking in real-time
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+        })
+
+        const sendSSE = (event: string, data: unknown) => {
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        }
+
+        // Wire streaming callback
+        sendSSE('phase', { phase: 'thinking' })
+        llmProvider.onStreamText = (chunk: string) => {
+          sendSSE('text', { chunk })
+        }
+
+        try {
+          const result = await handleChat(from, text)
+          llmProvider.onStreamText = undefined
+          sendSSE('phase', { phase: 'done' })
+          sendSSE('result', result)
+          res.end()
+        } catch (err) {
+          llmProvider.onStreamText = undefined
+          sendSSE('error', { error: err instanceof Error ? err.message : String(err) })
+          res.end()
+        } finally {
+          ticking = false
+        }
+      } else {
+        // Non-streaming mode — wait for complete response
+        try {
+          const result = await handleChat(from, text)
+          json(200, result)
+        } catch (err) {
+          json(500, { error: err instanceof Error ? err.message : String(err) })
+        } finally {
+          ticking = false
+        }
+      }
+    } else {
+      json(404, { error: 'Not found. Endpoints: POST /chat, GET /health, GET /status' })
+    }
+  })
+
+  server.listen(PORT, () => {
+    console.log(`[akari] Server mode on port ${PORT}`)
+    console.log(`[akari] Provider: ${apiKey ? 'Anthropic API (tool_use)' : 'Claude CLI (text tags)'}`)
+    console.log(`[akari] POST /chat  — { "from": "alex", "text": "your message" }`)
+    console.log(`[akari] GET  /health — health check`)
+    console.log(`[akari] GET  /status — live status`)
+  })
+
+  const shutdown = () => { console.log('\n[akari] Stopping...'); server.close(); process.exit(0) }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+
+} else if (mode === 'chat') {
+  // Interactive chat mode — direct Alex ↔ Akari conversation
+  // Each message triggers a tick with the message injected via from-kuro.md
+  const { createInterface } = await import('node:readline')
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+  console.log('[akari] Interactive chat mode')
+  console.log(`[akari] Provider: ${apiKey ? 'Anthropic API (tool_use)' : 'Claude CLI (text tags)'}`)
+  console.log('[akari] Type your message, press Enter to send. Ctrl+C to quit.\n')
+
+  const prompt = () => rl.question('\x1b[36mAlex>\x1b[0m ', async (input) => {
+    const trimmed = input.trim()
+    if (!trimmed) { prompt(); return }
+
+    // Write message to inbox
+    writeFileSync(join(messagesDir, 'from-kuro.md'), `# From Alex\n\n${trimmed}\n`, 'utf-8')
+
+    // Wire streaming for live thinking display
+    if (llmProvider && 'onStreamText' in llmProvider) {
+      process.stdout.write('\x1b[2m') // dim for thinking
+      llmProvider.onStreamText = (chunk: string) => { process.stdout.write(chunk) }
+    } else {
+      console.log('\x1b[33m🧠 Akari thinking...\x1b[0m')
+    }
+    const start = Date.now()
+
+    try {
+      const result = await agent.tick()
+      // Stop streaming, reset color
+      if (llmProvider && 'onStreamText' in llmProvider) {
+        llmProvider.onStreamText = undefined
+        process.stdout.write('\x1b[0m\n')
+      }
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+      const actions = result.actions.map(a => a.type).join(', ') || 'none'
+
+      // Read response
+      const responsePath = join(messagesDir, 'to-kuro.md')
+      const response = existsSync(responsePath) ? readFileSync(responsePath, 'utf-8').trim() : ''
+
+      if (response) {
+        console.log(`\x1b[32mAkari>\x1b[0m (${elapsed}s, actions: ${actions}, quality: ${result.observation.outputQuality}/5)\n`)
+        console.log(response)
+      } else {
+        // Fallback: show thought if no respond action
+        console.log(`\x1b[33mAkari (thought only, no respond action)>\x1b[0m (${elapsed}s)\n`)
+        console.log(result.thought.slice(0, 2000))
+      }
+    } catch (err) {
+      if (llmProvider && 'onStreamText' in llmProvider) {
+        llmProvider.onStreamText = undefined
+        process.stdout.write('\x1b[0m\n')
+      }
+      console.error(`\x1b[31m[error]\x1b[0m ${err instanceof Error ? err.message : err}`)
+    }
+
+    console.log()
+    prompt()
+  })
+
+  prompt()
+
+  process.on('SIGINT', () => {
+    console.log('\n[akari] Bye.')
+    rl.close()
+    process.exit(0)
+  })
+
+} else if (mode === 'loop') {
   // Fixed-interval loop mode
   const intervalArg = args[args.indexOf('--interval') + 1]
   const interval = intervalArg ? parseInt(intervalArg, 10) : 300_000  // default 5 min
