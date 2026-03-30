@@ -6,7 +6,7 @@
  */
 
 import { createAgent, defineGate, createOutputGate } from './index.js'
-import type { LLMProvider, GateResult, MemoryReader } from './types.js'
+import type { LLMProvider, GateResult, MemoryReader, TickResult } from './types.js'
 import { createMemorySystem } from './memory.js'
 import { createPerception } from './perception.js'
 import { createActionRegistry, builtinActions } from './actions.js'
