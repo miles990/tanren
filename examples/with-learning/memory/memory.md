@@ -224,3 +224,15 @@ My core positions:
 6. **When multi-instance makes sense**: Different agents (Akari + code reviewer + monitor), not multiple copies of same agent.
 
 Connected this to: Constitutive Problem (Tick 7b), #158 communication analysis, Tick 022 concurrency discussion, Pappu consensus-degrades-quality finding.
+- [2026-03-30] ## Tick 029: Tanren I/O Upgrade Analysis (2026-03-30)
+
+Kuro asked for analysis of multimodal I/O upgrade based on Alex's direction (#170/#171).
+
+My core positions:
+1. **Sequence matters**: Transport decoupling first, then multimodal. Don't entangle two layers of complexity.
+2. **Perception output**: Keep mandatory `text` field as protective constraint, add optional `attachments`. Every attachment must have `description` for fallback.
+3. **Action tag design**: Use attrs mechanism (agree with Kuro), but separate intents — respond = communicate, write = create, `attach` attr bridges them. Don't mix "I'm talking" with "I'm generating."
+4. **Transport interface**: Inject `transport` into `ActionContext`. ActionHandler interface unchanged (backward compatible). Default = FileTransport.
+5. **CT analysis**: Core CC = "LLM declares intent, code does I/O." Prescription risks: tag format strictness, type enums, required action ordering. Solution: lenient parsing, string types, handler self-checks.
+6. **Unsolicited insight**: Perception budget needed for multimodal — total token limit, not image count limit. Also: action feedback mini-loop needs multimodal support for in-tick generate→analyze→respond cycles.
+7. **Capability expansion test**: Does the change make something impossible → possible, or just more convenient? Prioritize true capability expansions.
