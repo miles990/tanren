@@ -37,9 +37,9 @@
       "type": "gate-ignored",
       "signature": "gate-ignored:<n> consecutive ticks without visible output. Are you producing value, or just thinking?",
       "description": "Gate warning fired but behavior unchanged: 3 consecutive ticks without visible output. Are you producing value, or just thinking?",
-      "occurrences": 7,
+      "occurrences": 8,
       "firstSeen": 1774884104349,
-      "lastSeen": 1774904308306,
+      "lastSeen": 1774904667885,
       "examples": [
         {
           "timestamp": 1774884104349,
@@ -85,5 +85,5 @@
       "crystallized": false
     }
   ],
-  "lastObserved": 1774904610050
+  "lastObserved": 1774904667885
 }
