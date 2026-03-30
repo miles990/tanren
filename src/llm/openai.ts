@@ -11,14 +11,14 @@ export interface OpenAIProviderOptions {
   model?: string             // default: gpt-4o
   maxTokens?: number         // default: 8192
   baseUrl?: string           // default: https://api.openai.com/v1
-  timeoutMs?: number         // default: 300_000
+  timeoutMs?: number         // default: 1_500_000
 }
 
 export function createOpenAIProvider(opts: OpenAIProviderOptions): LLMProvider {
   const model = opts.model ?? 'gpt-4o'
   const maxTokens = opts.maxTokens ?? 8192
   const baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '')
-  const timeoutMs = opts.timeoutMs ?? 300_000
+  const timeoutMs = opts.timeoutMs ?? 1_500_000
 
   return {
     async think(context: string, systemPrompt: string): Promise<string> {

@@ -12,14 +12,14 @@ export interface AnthropicProviderOptions {
   model?: string             // default: claude-sonnet-4-20250514
   maxTokens?: number         // default: 8192
   baseUrl?: string           // default: https://api.anthropic.com
-  timeoutMs?: number         // default: 300_000
+  timeoutMs?: number         // default: 1_500_000
 }
 
 export function createAnthropicProvider(opts: AnthropicProviderOptions): LLMProvider {
   const model = opts.model ?? 'claude-sonnet-4-20250514'
   const maxTokens = opts.maxTokens ?? 8192
   const baseUrl = (opts.baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '')
-  const timeoutMs = opts.timeoutMs ?? 300_000
+  const timeoutMs = opts.timeoutMs ?? 1_500_000
 
   return {
     async think(context: string, systemPrompt: string): Promise<string> {

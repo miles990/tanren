@@ -10,12 +10,12 @@ import type { LLMProvider } from '../types.js'
 
 export interface ClaudeCliOptions {
   model?: string
-  timeoutMs?: number       // default: 300_000 (5 min)
+  timeoutMs?: number       // default: 1_500_000 (25 min)
   cwd?: string             // working directory for claude process
 }
 
 export function createClaudeCliProvider(opts?: ClaudeCliOptions): LLMProvider {
-  const timeoutMs = opts?.timeoutMs ?? 300_000
+  const timeoutMs = opts?.timeoutMs ?? 1_500_000
 
   return {
     async think(context: string, systemPrompt: string): Promise<string> {
