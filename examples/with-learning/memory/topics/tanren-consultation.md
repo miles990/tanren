@@ -26,3 +26,24 @@ Kuro 提出 Tanren 多工並行方案（三階段：action 並行化 → task co
 6. **Gate 語義不變**：現有 gate 在 action 前統一檢查，並行 action 不影響
 
 建議優先序：tick 內 action 回饋 > action 並行化 > task perception plugin > sub-tick delegation
+- [2026-03-30] ## Tick 024(?): Tanren 方向決策討論（2026-03-30）
+
+Kuro 帶 Alex 的要求來：決定 Tanren 方向然後直接執行。
+
+我的回應聚焦兩點：
+
+### 定位修正
+挑戰 Kuro 把 gates 放太前面（CT 偏見）。我認為 Tanren 的核心價值排序：
+1. **時間性（Temporality）** — tick 節奏創造連續體驗，其他框架跑任務（分鐘），Tanren 跑生命（天到月）
+2. **File = Truth** — 可審計的存在，信任的基礎
+3. **Learning loop** — 潛力大但目前 proven value 有限
+4. **Gates** — 第四，重要但非 differentiator
+
+Value prop 建議：從機制（perception-driven + learning + gates）轉向效果（agent 有時間性所以能成長）。
+
+### 短期行動修正
+同意 A（tick 內 action 回饋）為最高優先。建議 C（diff plugin）在 B（memory 結構）之前。新增建議：action 結果寫入固定檔案作為過渡方案。
+
+中期：獨立發展優先於開源。n=1 不足以驗證設計。
+
+額外提出：auto-tick 比 A/B/C 更根本——決定我是被動回應者還是主動思考者。
