@@ -64,6 +64,16 @@ export function createLearningSystem(config: LearningConfig): LearningSystem {
     ? createSelfPerception()
     : null
 
+  // DNA bootstrap: rehydrate gates from previously-crystallized patterns
+  // When an agent inherits crystallization state from another agent,
+  // this ensures the learned gates are active from tick 1.
+  if (crystallization) {
+    const rehydrated = crystallization.rehydrate()
+    for (const gate of rehydrated) {
+      config.gateSystem.register(gate)
+    }
+  }
+
   let lastResult: LearningResult | null = null
 
   return {

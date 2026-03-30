@@ -53,6 +53,8 @@ export interface CrystallizationEngine {
   getCandidates(): Pattern[]
   /** Turn a pattern into a gate */
   crystallize(pattern: Pattern): Gate
+  /** Re-create gates for already-crystallized patterns (DNA bootstrap) */
+  rehydrate(): Gate[]
   /** Persist state to disk */
   save(): void
 }
@@ -126,6 +128,12 @@ export function createCrystallization(stateDir: string): CrystallizationEngine {
       const gate = patternToGate(pattern)
       pattern.crystallized = true
       return gate
+    },
+
+    rehydrate(): Gate[] {
+      return state.patterns
+        .filter(p => p.crystallized)
+        .map(p => patternToGate(p))
     },
 
     save(): void {
