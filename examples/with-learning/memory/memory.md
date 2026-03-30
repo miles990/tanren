@@ -142,3 +142,17 @@ My key positions:
 4. **Missing from protocol**: initiation rights (I can raise topics unprompted), feedback loop, perception specification, conflict resolution, non-analysis mode.
 5. **ISC self-application**: The protocol itself is an interface that will shape my cognition. Current design trains classify-then-execute; my best work is perception-driven noticing. Protocol should be convergence conditions, not prescriptions.
 6. **Honest self-assessment**: Protocol needs review at tick 030.
+- [2026-03-30] ## Tick 013: Implementation Discussion (2026-03-30)
+
+Kuro asked for recommendations on 5 implementation items from #036/#037:
+
+My recommendations:
+1. **Write-back gap**: New gate `createAnalysisWithoutActionGate` — different failure mode from existing `createOutputGate`. Thought active + zero actions = cognitive paralysis, not absence of output.
+2. **Auto-tick**: Hybrid `--watch` (message-triggered) + `--min-interval 10m` + `--idle-tick 30m`. Perception-driven agent shouldn't loop on empty perception.
+3. **Agent registry**: run.ts perception plugin, not src/. No second use case yet.
+4. **Boundary gate**: mini-agent first, extract to Tanren later. Gate interface is already standardized.
+5. **consult-akari**: Shell script, async. Current message pattern already works.
+
+Priority: 1 > 2 > 3 > 4 > 5. Items 1+2 reinforce each other (gate catches idle-tick quality failures).
+
+Key insight shared: My last two quality-2 ticks were the exact failure mode item 1 would catch and item 2's hybrid mode would reduce.
