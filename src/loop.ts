@@ -24,6 +24,9 @@ import type {
   ConversationMessage,
   ContentBlock,
   ToolUseResponse,
+  EventTrigger,
+  TriggerEvent,
+  TickMode,
 } from './types.js'
 import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
@@ -39,10 +42,18 @@ interface Checkpoint {
   perception: string
 }
 
+// === Event Detection System ===
+
+interface TriggerState {
+  trigger: EventTrigger
+  lastRun: number
+  pendingEvent: TriggerEvent | null
+}
+
 // === Agent Loop ===
 
 export interface AgentLoop {
-  tick(): Promise<TickResult>
+  tick(mode?: TickMode, triggerEvent?: TriggerEvent): Promise<TickResult>
   start(interval?: number): void
   stop(): void
   isRunning(): boolean
@@ -89,7 +100,23 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
   let running = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  let eventTimer: ReturnType<typeof setTimeout> | null = null
   let tickCount = 0
+
+  // Event-driven system state
+  const eventDrivenEnabled = config.eventDriven?.enabled ?? false
+  const maxReactiveRate = config.eventDriven?.maxReactiveRate ?? 10
+  const urgentBypass = config.eventDriven?.urgentBypass ?? true
+  
+  const triggerStates: TriggerState[] = (config.eventTriggers ?? []).map(trigger => ({
+    trigger,
+    lastRun: 0,
+    pendingEvent: null,
+  }))
+  
+  let reactiveTickCount = 0
+  let reactiveTickWindowStart = Date.now()
+  const reactiveWindowMs = 60_000 // 1 minute
 
   // Initialize tick count from existing ticks
   try {
@@ -111,7 +138,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   // Load persistent gate state
   const gateState = loadGateState(gateStatePath)
 
-  async function tick(): Promise<TickResult> {
+  async function tick(mode: TickMode = 'scheduled', triggerEvent?: TriggerEvent): Promise<TickResult> {
     const tickStart = Date.now()
     tickCount++
     writeLiveStatus({ phase: 'perceive', tickStart, tickNumber: tickCount, running })
@@ -388,6 +415,52 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     return tickResult
   }
 
+  // Event detection helper functions
+  async function detectEvents(): Promise<TriggerEvent[]> {
+    if (!eventDrivenEnabled || triggerStates.length === 0) return []
+
+    const events: TriggerEvent[] = []
+    const now = Date.now()
+
+    for (const state of triggerStates) {
+      // Check cooldown
+      const cooldown = state.trigger.cooldown ?? 10_000
+      if (now - state.lastRun < cooldown) continue
+
+      try {
+        const event = await state.trigger.detect()
+        if (event) {
+          state.pendingEvent = event
+          state.lastRun = now
+          events.push(event)
+        }
+      } catch (err) {
+        console.warn(`[tanren] trigger ${state.trigger.name} error:`, err)
+      }
+    }
+
+    return events
+  }
+
+  function shouldRunReactiveTick(event: TriggerEvent): boolean {
+    if (!eventDrivenEnabled) return false
+    
+    // Check rate limiting
+    const now = Date.now()
+    if (now - reactiveTickWindowStart >= reactiveWindowMs) {
+      reactiveTickCount = 0
+      reactiveTickWindowStart = now
+    }
+
+    // Urgent events bypass rate limiting if enabled
+    if (event.priority === 'urgent' && urgentBypass) return true
+    
+    // Check rate limit
+    if (reactiveTickCount >= maxReactiveRate) return false
+    
+    return true
+  }
+
   function start(interval?: number): void {
     if (running) return
     running = true
@@ -406,6 +479,35 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       }, ms)
     }
 
+    // Event detection loop (if enabled)
+    if (eventDrivenEnabled && triggerStates.length > 0) {
+      const runEventLoop = async () => {
+        if (!running) return
+        
+        try {
+          const events = await detectEvents()
+          for (const event of events) {
+            if (shouldRunReactiveTick(event)) {
+              reactiveTickCount++
+              console.log(`[tanren] reactive tick triggered by ${event.source}`)
+              await tick('reactive', event)
+            }
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error(`[tanren] event detection error: ${msg}`)
+        }
+
+        // Schedule next event detection
+        if (running) {
+          eventTimer = setTimeout(runEventLoop, 1000) // Check events every second
+        }
+      }
+
+      // Start event loop
+      runEventLoop()
+    }
+
     // Run first tick immediately
     tick()
       .catch((err: unknown) => {
@@ -420,6 +522,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     if (timer) {
       clearTimeout(timer)
       timer = null
+    }
+    if (eventTimer) {
+      clearTimeout(eventTimer)
+      eventTimer = null
     }
     writeLiveStatus({ phase: 'stopped', tickNumber: tickCount, running: false })
   }

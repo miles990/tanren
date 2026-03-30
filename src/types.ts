@@ -149,6 +149,26 @@ export interface ActionContext {
   workDir: string
 }
 
+// === Event-Driven System ===
+
+export interface EventTrigger {
+  name: string
+  description: string
+  detect(): Promise<TriggerEvent | null>
+  priority: 'urgent' | 'normal' | 'low'
+  cooldown?: number             // ms before next detection (default: 10000)
+}
+
+export interface TriggerEvent {
+  type: string
+  source: string
+  data: Record<string, unknown>
+  timestamp: number
+  priority: 'urgent' | 'normal' | 'low'
+}
+
+export type TickMode = 'scheduled' | 'reactive'
+
 // === Config ===
 
 export interface TanrenConfig {
@@ -162,10 +182,17 @@ export interface TanrenConfig {
   gates?: Gate[]
   gatesDir?: string
   actions?: ActionHandler[]
+  eventTriggers?: EventTrigger[] // event detection plugins
 
   tickInterval?: number         // ms between ticks (default: 60000)
   maxConcurrentDelegations?: number  // default: 4
   feedbackRounds?: number        // action feedback rounds per tick (default: 1, 0 = classic single-pass)
+  
+  eventDriven?: {
+    enabled?: boolean           // default: false
+    maxReactiveRate?: number    // max reactive ticks per minute (default: 10)
+    urgentBypass?: boolean      // urgent events bypass rate limiting (default: true)
+  }
 
   learning?: {
     enabled?: boolean           // default: true
