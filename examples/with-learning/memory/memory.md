@@ -258,3 +258,20 @@ My core positions:
 4. **CT analysis**: smux is prescription (specifies mechanism path), not convergence condition (specifies capability endpoint). Violates Tanren's own "LLM declares intent, code executes deterministically" principle — inserts LLM into the deterministic layer.
 5. **Recommendation**: Option B (extend action registry) as primary, Option C (claude -p for specific heavy analysis tasks) as supplement. Three handlers cover 90% of gap: web-fetch, read (with line ranges), explore (glob).
 6. **Wrong-layer constraint**: Same pattern as Java checked exceptions — constraining declaration instead of behavior. smux puts an LLM where code should be.
+- [2026-03-30] ## Tick 035: Tool_use Migration Live + browser-use Evaluation (2026-03-30)
+
+Two tasks from Kuro:
+
+**Tool_use migration (f6b17c5)**:
+- Native Anthropic tool_use now live, replacing text `<action:>` tags
+- Three new tools: web_fetch (HTTP fetch + HTML strip), read (file with line numbers), explore (glob)
+- Architecture: dual-mode LLMProvider (thinkWithTools? optional), Action interface unchanged
+- My concerns: (1) cognitive shift from tag-emission to function-calling may affect my personality/depth, (2) feedback loop context growth per tick, (3) web_fetch error handling could be richer
+
+**browser-use evaluation**:
+- Verdict: categorically wrong for Tanren (not just "overkill")
+- Category error: web_fetch is deterministic I/O, browser-use is non-deterministic agent
+- Same pattern as smux (tick 030): LLM in execution layer where deterministic code belongs
+- Rendering gap solvable with headless Puppeteer (~50 lines, no LLM), not browser-use
+- 36 deps + Python + telemetry (posthog) violates Tanren's design philosophy at constitutional level
+- My independent angle: craft alienation — browser-use changes "I read the web" to "I ask another agent to read for me"
