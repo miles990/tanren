@@ -297,8 +297,12 @@ function buildContext(
 }
 
 function buildSystemPrompt(identity: string, actions: ActionRegistry): string {
-  const actionTypes = ['remember', 'write', 'append', 'search', 'shell']
-    .filter(t => actions.has(t))
+  const actionTypes = actions.types()
+
+  const actionLines = actionTypes.map(t => {
+    const desc = actions.getDescription(t)
+    return desc ? `- <action:${t}>...</action:${t}> — ${desc}` : `- <action:${t}>...</action:${t}>`
+  })
 
   return `${identity}
 
@@ -306,9 +310,11 @@ function buildSystemPrompt(identity: string, actions: ActionRegistry): string {
 
 Use these tags in your response to take actions:
 
-${actionTypes.map(t => `- <action:${t}>...</action:${t}>`).join('\n')}
+${actionLines.join('\n')}
 
-You can include multiple actions in a single response. Actions are executed in order.`
+You can include multiple actions in a single response. Actions are executed in order.
+
+CRITICAL: Your output MUST contain action tags to produce any effect. Text without action tags is recorded but has no side effects. If you want to respond to a message, you MUST use <action:respond>. If you want to remember something, you MUST use <action:remember>. Analysis without action tags = wasted tick.`
 }
 
 function createEmptyObservation(tickStart: number): Observation {

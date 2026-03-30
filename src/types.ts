@@ -94,6 +94,7 @@ export interface PerceptionPlugin {
 
 export interface ActionHandler {
   type: string
+  description?: string
   execute(action: Action, context: ActionContext): Promise<string>
 }
 

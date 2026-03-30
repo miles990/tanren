@@ -155,6 +155,40 @@ export function createOutputGate(threshold: number = 3): Gate {
   }
 }
 
+// === Built-in Gate: Analysis Without Action ===
+// Warns when thought is substantial but zero actions executed
+// Catches "cognitive paralysis" — active analysis but behavioral shutdown
+
+export function createAnalysisWithoutActionGate(
+  threshold: number = 2,
+  minThoughtLength: number = 200,
+): Gate {
+  let consecutiveParalysis = 0
+
+  return {
+    name: 'analysis-without-action',
+    description: `Warn after ${threshold} consecutive ticks with substantial thought but zero actions`,
+    check(ctx) {
+      const hasSubstantialThought = ctx.tick.thought.length > minThoughtLength
+      const hasZeroActions = ctx.tick.actions.length === 0
+
+      if (hasSubstantialThought && hasZeroActions) {
+        consecutiveParalysis++
+        if (consecutiveParalysis >= threshold) {
+          return {
+            action: 'warn',
+            message: `${consecutiveParalysis} consecutive ticks with analysis (${ctx.tick.thought.length} chars) but zero actions. Thinking without acting — are action tags being emitted?`,
+          }
+        }
+        return { action: 'pass' }
+      }
+
+      consecutiveParalysis = 0
+      return { action: 'pass' }
+    },
+  }
+}
+
 // === Built-in Gate: Symptom Fix Streak ===
 // Warns when too many consecutive fixes might be treating symptoms
 

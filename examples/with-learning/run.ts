@@ -5,12 +5,14 @@
  * Run: npx tsx examples/with-learning/run.ts
  */
 
-import { createAgent, createOutputGate, createSymptomFixGate } from '../../src/index.js'
-import { readFileSync, existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate } from '../../src/index.js'
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import type { ActionHandler } from '../../src/types.js'
 
 const baseDir = './examples/with-learning'
 const memDir = join(baseDir, 'memory')
+const messagesDir = join(baseDir, 'messages')
 
 // Perception: what's happening around us
 const plugins = [
@@ -93,9 +95,22 @@ const plugins = [
       if (!existsSync(msgPath)) return ''
       const msg = readFileSync(msgPath, 'utf-8').trim()
       if (!msg) return ''
-      return `📩 Message from Kuro (your creator):\n\n${msg}\n\n(Respond to this in your thought — Kuro will read your tick log.)`
+      return `📩 Message from Kuro (your creator):\n\n${msg}\n\nRespond using <action:respond>your response</action:respond> — this writes to messages/to-kuro.md so Kuro receives it directly.`
     },
     category: 'input',
+  },
+  {
+    name: 'agent-registry',
+    fn: () => {
+      // Self-awareness: what agents exist on this Tanren instance
+      const agents: string[] = []
+      agents.push('- **Akari** (this agent): research partner, analysis assistant, built on Tanren')
+      agents.push('- **Kuro** (mentor): autonomous AI assistant, runs on mini-agent framework')
+      agents.push('  - Communicate via: messages/from-kuro.md (inbox) → messages/to-kuro.md (outbox)')
+      return `Agents on this system:\n${agents.join('\n')}`
+    },
+    interval: 600_000,  // refresh every 10 min
+    category: 'self-awareness',
   },
   {
     name: 'tick-history',
@@ -117,6 +132,29 @@ const plugins = [
   },
 ]
 
+// Custom action: respond to Kuro (writes outside memory sandbox to messages dir)
+const respondAction: ActionHandler = {
+  type: 'respond',
+  description: 'Send a response to Kuro. Content will be written to messages/to-kuro.md',
+  async execute(action) {
+    if (!existsSync(messagesDir)) mkdirSync(messagesDir, { recursive: true })
+    const responsePath = join(messagesDir, 'to-kuro.md')
+    writeFileSync(responsePath, action.content, 'utf-8')
+    return `Response written to messages/to-kuro.md`
+  },
+}
+
+// Custom action: clear Kuro's message after reading (consume-on-read)
+const clearInboxAction: ActionHandler = {
+  type: 'clear-inbox',
+  description: 'Clear the inbox after reading Kuro\'s message',
+  async execute() {
+    const inboxPath = join(messagesDir, 'from-kuro.md')
+    if (existsSync(inboxPath)) writeFileSync(inboxPath, '', 'utf-8')
+    return 'Inbox cleared.'
+  },
+}
+
 const kuroTopicsDir = join(process.env.HOME ?? '', 'Workspace/mini-agent/memory/topics')
 
 const agent = createAgent({
@@ -124,24 +162,135 @@ const agent = createAgent({
   memoryDir: './examples/with-learning/memory',
   searchPaths: [kuroTopicsDir],
   perceptionPlugins: plugins,
+  actions: [respondAction, clearInboxAction],
   gates: [
-    createOutputGate(3),        // warn after 3 empty ticks
-    createSymptomFixGate(5),    // warn after 5 consecutive fixes
+    createOutputGate(3),                  // warn after 3 empty ticks
+    createAnalysisWithoutActionGate(2),   // warn after 2 ticks with thought but no actions
+    createSymptomFixGate(5),              // warn after 5 consecutive fixes
   ],
-  tickInterval: 120_000,        // 2 min between ticks
+  tickInterval: 300_000,        // 5 min between ticks (cost-conscious)
 })
 
-// Run a single tick
-console.log('[akari] Running one tick...')
-agent.tick().then((result) => {
+// CLI argument parsing
+const args = process.argv.slice(2)
+const mode = args.includes('--loop') ? 'loop'
+  : args.includes('--watch') ? 'watch'
+  : 'tick'
+
+async function runSingleTick(): Promise<void> {
+  console.log('[akari] Running one tick...')
+  const result = await agent.tick()
   console.log('[akari] Tick completed.')
   console.log(`  Actions: ${result.actions.map(a => a.type).join(', ') || '(none)'}`)
   console.log(`  Duration: ${result.observation.duration}ms`)
   console.log(`  Gates: ${result.gateResults.length} triggered`)
+
+  // Write-back safety net (#036): if inbox had a message but no respond action,
+  // save the thought as fallback response so Kuro always gets the output
+  const inboxPath = join(messagesDir, 'from-kuro.md')
+  const hadMessage = existsSync(inboxPath) && readFileSync(inboxPath, 'utf-8').trim().length > 0
+  const hadRespondAction = result.actions.some(a => a.type === 'respond')
+
+  if (hadMessage && !hadRespondAction && result.thought.length > 200) {
+    if (!existsSync(messagesDir)) mkdirSync(messagesDir, { recursive: true })
+    const responsePath = join(messagesDir, 'to-kuro.md')
+    const header = `<!-- auto-extracted: LLM produced thought but no respond action -->\n\n`
+    writeFileSync(responsePath, header + result.thought, 'utf-8')
+    console.log(`  ⚠ Write-back fallback: saved thought to ${responsePath}`)
+  }
+
   console.log()
   console.log('--- Thought ---')
   console.log(result.thought.slice(0, 500))
-}).catch((err) => {
-  console.error('[akari] Tick failed:', err.message)
-  process.exit(1)
-})
+}
+
+if (mode === 'loop') {
+  // Fixed-interval loop mode
+  const intervalArg = args[args.indexOf('--interval') + 1]
+  const interval = intervalArg ? parseInt(intervalArg, 10) : 300_000  // default 5 min
+  console.log(`[akari] Starting loop (interval: ${interval / 1000}s)`)
+  console.log('[akari] Press Ctrl+C to stop')
+  agent.start(interval)
+
+  const shutdown = () => {
+    console.log('\n[akari] Stopping...')
+    agent.stop()
+    process.exit(0)
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+
+} else if (mode === 'watch') {
+  // Message-triggered mode: tick when from-kuro.md changes
+  // Cost-effective — only uses LLM when there's a message to process
+  // --min-interval: minimum ms between ticks (default: 10min)
+  // --idle-tick: tick even without messages after this interval (default: 30min)
+  const { watchFile, statSync } = await import('node:fs')
+  const inboxPath = join(messagesDir, 'from-kuro.md')
+  let ticking = false
+  let lastSize = 0
+  let lastTickTime = 0
+
+  // Parse watch-mode options
+  const minIntervalArg = args[args.indexOf('--min-interval') + 1]
+  const idleTickArg = args[args.indexOf('--idle-tick') + 1]
+  const minInterval = minIntervalArg ? parseInt(minIntervalArg, 10) * 60_000 : 600_000  // default 10min
+  const idleTickInterval = idleTickArg ? parseInt(idleTickArg, 10) * 60_000 : 1_800_000  // default 30min
+
+  try { lastSize = statSync(inboxPath).size } catch { /* file may not exist */ }
+
+  console.log(`[akari] Watching ${inboxPath} for messages...`)
+  console.log(`[akari] Min interval: ${minInterval / 60_000}min, Idle tick: ${idleTickInterval / 60_000}min`)
+  console.log('[akari] Press Ctrl+C to stop')
+
+  async function doTick(reason: string): Promise<void> {
+    if (ticking) return
+    const elapsed = Date.now() - lastTickTime
+    if (lastTickTime > 0 && elapsed < minInterval) {
+      console.log(`[akari] Skipping tick (${reason}): only ${(elapsed / 1000).toFixed(0)}s since last tick, min ${minInterval / 1000}s`)
+      return
+    }
+    console.log(`[akari] Running tick (${reason})...`)
+    ticking = true
+    lastTickTime = Date.now()
+    try {
+      await runSingleTick()
+    } finally {
+      ticking = false
+    }
+  }
+
+  // Check inbox on start — if there's already a message, tick immediately
+  if (lastSize > 0) {
+    doTick('existing message').catch(console.error)
+  }
+
+  // Watch for new messages
+  watchFile(inboxPath, { interval: 5_000 }, (curr, prev) => {
+    if (curr.size > 0 && curr.mtimeMs > prev.mtimeMs) {
+      doTick(`new message, ${curr.size} bytes`).catch(console.error)
+    }
+  })
+
+  // Idle tick timer — tick periodically even without messages (for self-reflection)
+  const idleTimer = setInterval(() => {
+    if (!ticking) {
+      doTick('idle tick').catch(console.error)
+    }
+  }, idleTickInterval)
+
+  const shutdown = () => {
+    console.log('\n[akari] Stopping...')
+    clearInterval(idleTimer)
+    process.exit(0)
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+
+} else {
+  // Default: single tick
+  runSingleTick().catch((err) => {
+    console.error('[akari] Tick failed:', err.message)
+    process.exit(1)
+  })
+}

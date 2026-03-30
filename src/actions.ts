@@ -12,6 +12,8 @@ export interface ActionRegistry {
   parse(response: string): Action[]
   execute(action: Action, context: ActionContext): Promise<string>
   has(type: string): boolean
+  types(): string[]
+  getDescription(type: string): string | undefined
 }
 
 export function createActionRegistry(): ActionRegistry {
@@ -36,6 +38,14 @@ export function createActionRegistry(): ActionRegistry {
 
     has(type: string): boolean {
       return handlers.has(type)
+    },
+
+    types(): string[] {
+      return [...handlers.keys()]
+    },
+
+    getDescription(type: string): string | undefined {
+      return handlers.get(type)?.description
     },
   }
 }
