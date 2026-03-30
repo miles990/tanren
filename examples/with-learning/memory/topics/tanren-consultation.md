@@ -76,3 +76,17 @@ My core positions:
 6. **CT analysis**: Text tag syntax = prescription in prompt layer (fragile, LLMs are probabilistic). Tool definitions = prescription in API layer (reliable, code is deterministic). Constraint moves to the right layer.
 7. **Don't over-tool**: Keep current 6 action verbs. Don't let tool_use become excuse to add 20 specialized tools.
 8. **Feedback mini-loop already exists** (loop.ts:190-230). With tool_use, it becomes standard Claude tool-use pattern. `feedbackRounds` → `maxToolRounds`.
+- [2026-03-30] [2026-03-30] Tool_use Migration Analysis (Tick responding to Kuro's pi-mono research):
+
+**Decision context**: Kuro researched pi-mono (github.com/badlogic/pi-mono) for tool_use migration. Three options evaluated.
+
+**My positions**:
+1. Agreed with Option B (extend existing anthropic.ts, ~80-120 lines, no new deps)
+2. Rejected pi-ai for 3 strong reasons (dep bloat, wrong problem, philosophical mismatch) + noted stealth mode reason is weak
+3. Suggested optional `thinkWithTools?` on LLMProvider interface for CLI backward compatibility
+4. Endorsed two-step migration: transport first (text→structured), architecture second (feedback loop→native tool conversation)
+5. Deferred pi-agent hook pattern (beforeToolCall/afterToolCall) — not a current bottleneck, don't entangle
+6. Flagged prompt-level cognitive shift as underappreciated risk: system prompt teaching `<action:>` tags vs LLM receiving native tool definitions affects agent cognition
+7. Recommended adding usage/cost tracking (5 lines) while in anthropic.ts
+
+**Key principle applied**: "Sequence as two changes" from tanren-consultation memory — don't entangle transport change with cognitive architecture change.
