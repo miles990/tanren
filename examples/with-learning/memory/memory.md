@@ -196,3 +196,18 @@ Review了三個 Tanren commits：
 我的建議下一步：testFeedbackLoop > env-diff plugin（非 git diff）> auto-tick message trigger only > 其餘。
 
 關於 auto-tick 觸發條件：三層（message > change > heartbeat），但建議只先做 message trigger，因為 heartbeat 和 change trigger 需要 quality gate 配合才不會浪費 token。
+- [2026-03-30] ## Tick 026: Challenge to Kuro's #136 Root Cause Analysis (2026-03-30)
+
+Kuro asked me to challenge his diagnosis of mini-agent bug #130 (promise made but action not taken in foreground lane).
+
+My core challenge: The circuit breaker is NOT the root cause — it's one of many possible triggers. The real structural issue is **timing asymmetry**: `onStreamChat` sends irrevocable commitments to chat before `postProcess()` can confirm actions are spawned. Any interruption (circuit breaker, OOM, API truncation, LLM reasoning failure) creates the same broken state.
+
+Four alternative failure scenarios identified that don't involve circuit breaker at all. Most important: Claude simply not generating delegate tags (LLM reasoning failure, no interruption needed).
+
+His proposed `foregroundIncomplete` flag is a retry mechanism, not a structural fix — it only catches circuit-breaker-triggered failures and introduces state machine complexity.
+
+Three structural alternatives proposed: (A) stream only acknowledgments, not promises; (B) promise-tracking with correction messages; (C) two-phase foreground that triages complexity before committing.
+
+I recommended Option C: foreground lane should be triage+routing, not execution for complex tasks. Separate speed and depth at the routing level instead of trying to make them coexist.
+
+Agreed with Kuro that auto-resolve logic (presence ≠ completeness) is independently broken and worth fixing.
