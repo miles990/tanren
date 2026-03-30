@@ -181,6 +181,19 @@ function grepSearch(dir: string, query: string): SearchResult[] {
   }
 }
 
+// Intelligent commit state tracking
+interface CommitSession {
+  startTime: number
+  changes: string[]
+  lastActivity: number
+  significance: number
+}
+
+let currentSession: CommitSession | null = null
+const SESSION_TIMEOUT = 5 * 60 * 1000  // 5 minutes of inactivity ends session
+const MIN_SIGNIFICANCE = 2  // minimum significance to trigger commit
+const FORCE_COMMIT_INTERVAL = 30 * 60 * 1000  // force commit every 30 minutes
+
 async function autoCommitMemory(memoryDir: string): Promise<boolean> {
   try {
     // Check if memoryDir is in a git repo
@@ -197,7 +210,52 @@ async function autoCommitMemory(memoryDir: string): Promise<boolean> {
       timeout: 5000,
     }).trim()
 
-    if (!status) return false
+    if (!status) {
+      // No changes - clean up expired session
+      if (currentSession && Date.now() - currentSession.lastActivity > SESSION_TIMEOUT) {
+        currentSession = null
+      }
+      return false
+    }
+
+    const now = Date.now()
+    const changedFiles = status.split('\n').map(line => line.slice(3).trim())
+    
+    // Calculate significance of changes
+    const significance = calculateSignificance(changedFiles, status)
+    
+    // Initialize or update session
+    if (!currentSession) {
+      currentSession = {
+        startTime: now,
+        changes: changedFiles,
+        lastActivity: now,
+        significance,
+      }
+    } else {
+      // Update existing session
+      currentSession.lastActivity = now
+      currentSession.significance = Math.max(currentSession.significance, significance)
+      // Merge new changes
+      for (const file of changedFiles) {
+        if (!currentSession.changes.includes(file)) {
+          currentSession.changes.push(file)
+        }
+      }
+    }
+
+    // Decide whether to commit
+    const shouldCommit = 
+      significance >= MIN_SIGNIFICANCE || // high significance changes
+      (currentSession && now - currentSession.startTime > FORCE_COMMIT_INTERVAL) || // force commit after timeout
+      (currentSession && now - currentSession.lastActivity > SESSION_TIMEOUT) // session expired
+
+    if (!shouldCommit) {
+      return false // defer commit
+    }
+
+    // Generate meaningful commit message
+    const commitMessage = generateCommitMessage(currentSession!, changedFiles, significance)
 
     // Stage and commit
     execFileSync('git', ['add', memoryDir], {
@@ -205,15 +263,98 @@ async function autoCommitMemory(memoryDir: string): Promise<boolean> {
       timeout: 5000,
     })
 
-    execFileSync('git', ['commit', '-m', `memory: auto-commit ${new Date().toISOString().slice(0, 19)}`], {
+    execFileSync('git', ['commit', '-m', commitMessage], {
       cwd: memoryDir,
       timeout: 10000,
     })
+
+    // Reset session after successful commit
+    currentSession = null
 
     return true
   } catch {
     return false
   }
+}
+
+function calculateSignificance(changedFiles: string[], status: string): number {
+  let significance = 0
+  
+  for (const file of changedFiles) {
+    // High-significance patterns
+    if (file.includes('crystallization') || file.includes('learning')) {
+      significance += 3  // learning insights are high value
+    } else if (file.includes('consultation') || file.includes('research')) {
+      significance += 2  // research work is medium-high value
+    } else if (file.startsWith('topics/')) {
+      significance += 2  // topical insights are valuable
+    } else if (file.includes('memory.md')) {
+      significance += 1  // general memory updates
+    } else if (file.includes('daily/')) {
+      significance += 0.5  // daily logs are low priority
+    }
+    
+    // Bonus for new files (likely more significant than edits)
+    if (status.includes(`A  ${file}`) || status.includes(`?? ${file}`)) {
+      significance += 1
+    }
+  }
+  
+  // Multiple related changes suggest a coherent work session
+  if (changedFiles.length >= 3) {
+    significance += 1
+  }
+  
+  return significance
+}
+
+function generateCommitMessage(session: CommitSession, currentFiles: string[], significance: number): string {
+  const duration = Math.round((Date.now() - session.startTime) / (1000 * 60))
+  const totalFiles = session.changes.length
+  
+  // Categorize changes
+  const categories = new Set<string>()
+  const topics = new Set<string>()
+  
+  for (const file of session.changes) {
+    if (file.includes('crystallization') || file.includes('learning')) {
+      categories.add('learning')
+    } else if (file.includes('consultation')) {
+      categories.add('consultation') 
+    } else if (file.startsWith('topics/')) {
+      categories.add('research')
+      const topic = file.replace('topics/', '').replace('.md', '')
+      topics.add(topic)
+    } else if (file.includes('daily/')) {
+      categories.add('daily')
+    } else {
+      categories.add('memory')
+    }
+  }
+  
+  // Build descriptive message
+  let message = 'memory: '
+  
+  if (categories.size === 1) {
+    const category = Array.from(categories)[0]
+    if (category === 'learning') {
+      message += `learning insights and crystallization`
+    } else if (category === 'consultation') {
+      message += `consultation and analysis work`
+    } else if (category === 'research') {
+      message += `research on ${Array.from(topics).slice(0, 2).join(', ')}`
+      if (topics.size > 2) message += ` +${topics.size - 2} more`
+    } else {
+      message += `${category} updates`
+    }
+  } else {
+    message += `mixed session: ${Array.from(categories).join(', ')}`
+  }
+  
+  // Add session metadata
+  message += ` (${totalFiles} files, ${duration}m, significance: ${significance.toFixed(1)})`
+  
+  return message
 }
 
 // === Utility: List memory files ===
