@@ -5,4 +5,15 @@ dist/
 *.js.map
 !examples/*.js
 .env
-node_modules
+
+# Claude Code logs
+.claude/logs/
+
+# Runtime state
+**/live-status.json
+
+# Temporary reading materials (Akari's inbox)
+examples/*/reading/
+
+# Claude state in examples
+examples/*/.claude/
