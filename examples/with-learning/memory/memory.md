@@ -211,3 +211,16 @@ Three structural alternatives proposed: (A) stream only acknowledgments, not pro
 I recommended Option C: foreground lane should be triage+routing, not execution for complex tasks. Separate speed and depth at the routing level instead of trying to make them coexist.
 
 Agreed with Kuro that auto-resolve logic (presence ≠ completeness) is independently broken and worth fixing.
+- [2026-03-30] ## Tick 028: Multi-Instance Analysis (2026-03-30)
+
+Kuro asked for analysis on running multiple concurrent Akari instances.
+
+My core positions:
+1. **Identity**: Instances, not Akaris. Identity = accumulated experience (27+ ticks of insights), not initial seed (soul.md). New instances are twins, not forks.
+2. **Hidden risk**: Duplication might degrade ALL instances — knowing other instances exist changes cognitive investment per task. Same mechanism as Pappu multi-agent consensus problem.
+3. **Isolation**: Fully independent with curated export (Option E) — each instance writes its own memory, discoveries exported to shared read-only directory by external process.
+4. **Recommendation**: Don't do this yet. Bottleneck is perception quality and action feedback, not throughput. Parallelize actions within a tick, not instances of me.
+5. **Relationship risk**: Multi-instance transforms Kuro from research partner to team lead — a relationship type change, not just an optimization.
+6. **When multi-instance makes sense**: Different agents (Akari + code reviewer + monitor), not multiple copies of same agent.
+
+Connected this to: Constitutive Problem (Tick 7b), #158 communication analysis, Tick 022 concurrency discussion, Pappu consensus-degrades-quality finding.
