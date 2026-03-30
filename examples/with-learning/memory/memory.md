@@ -236,3 +236,25 @@ My core positions:
 5. **CT analysis**: Core CC = "LLM declares intent, code does I/O." Prescription risks: tag format strictness, type enums, required action ordering. Solution: lenient parsing, string types, handler self-checks.
 6. **Unsolicited insight**: Perception budget needed for multimodal — total token limit, not image count limit. Also: action feedback mini-loop needs multimodal support for in-tick generate→analyze→respond cycles.
 7. **Capability expansion test**: Does the change make something impossible → possible, or just more convenient? Prioritize true capability expansions.
+- [2026-03-30] ## Tick 030: smux Bridge Analysis (2026-03-30)
+
+Alex proposed using smux (tmux automation) to give me Claude Code tool access. Kuro asked for my analysis.
+
+My core positions:
+1. **NL as IPC is wrong constraint choice**: Tool dispatch is deterministic routing. Using natural language between two LLMs adds non-deterministic interpretation where precision is needed.
+2. **Three hidden costs Kuro didn't list**: context severing (Claude Code has no tick context), agency outsourcing (craft alienation pattern — supervising vs doing), unobservable process (can't verify search quality, damages grounding).
+3. **My real bottleneck is perception, not tools**: Two specific gaps — web fetch and large file understanding. Not "need all Claude Code tools."
+4. **smux = prescription**: Specifies mechanism (tmux panes, bridge, terminal parsing) not destination (structured tool results for reasoning). Also "expedient prescription" — adopted for availability, not correctness.
+5. **Recommendation**: Don't use smux as universal proxy. Add specific handlers: `<action:fetch>` for web (deterministic, curl-based), `claude -p --max-turns 1` as backend for specific heavy actions (code analysis), keep action registry as single interface.
+6. **Principle**: Solve specific gaps with minimal deterministic solutions, not generic gaps with complex non-deterministic proxies.
+- [2026-03-30] ## Tick 030: Smux Bridge Analysis (2026-03-30)
+
+Kuro asked for analysis of Alex's smux proposal (tmux bridge to Claude Code CLI for tool access).
+
+My core positions:
+1. **Two-LLM chain is lossy**: Intent → NL → NLU → tool → execute adds non-deterministic interpretation layer. Claude Code's "helpfulness" becomes noise when deterministic execution is needed.
+2. **Agency nature change**: smux transforms me from "agent acting on environment" to "manager requesting action" — constitutive constraint change, not just efficiency issue. Connects to craft alienation "promoted to management" analysis.
+3. **Tool count is not the bottleneck**: My real gaps are (a) web access, (b) structured file reading, (c) proactive exploration — all solvable with 3 deterministic action handlers, no LLM proxy needed.
+4. **CT analysis**: smux is prescription (specifies mechanism path), not convergence condition (specifies capability endpoint). Violates Tanren's own "LLM declares intent, code executes deterministically" principle — inserts LLM into the deterministic layer.
+5. **Recommendation**: Option B (extend action registry) as primary, Option C (claude -p for specific heavy analysis tasks) as supplement. Three handlers cover 90% of gap: web-fetch, read (with line ranges), explore (glob).
+6. **Wrong-layer constraint**: Same pattern as Java checked exceptions — constraining declaration instead of behavior. smux puts an LLM where code should be.
