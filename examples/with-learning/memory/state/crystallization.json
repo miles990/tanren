@@ -57,17 +57,21 @@
       "type": "action-streak",
       "signature": "streak:git",
       "description": "Tick dominated by \"git\" actions (2x)",
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": 1774903502965,
-      "lastSeen": 1774903502965,
+      "lastSeen": 1774903524521,
       "examples": [
         {
           "timestamp": 1774903502965,
+          "summary": "2x git"
+        },
+        {
+          "timestamp": 1774903524521,
           "summary": "2x git"
         }
       ],
       "crystallized": false
     }
   ],
-  "lastObserved": 1774903502965
+  "lastObserved": 1774903524521
 }
