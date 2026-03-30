@@ -6,7 +6,7 @@
  */
 
 import { createAgent, defineGate, createOutputGate } from './index.js'
-import type { LLMProvider } from './types.js'
+import type { LLMProvider, GateResult, MemoryReader } from './types.js'
 import { createMemorySystem } from './memory.js'
 import { createPerception } from './perception.js'
 import { createActionRegistry, builtinActions } from './actions.js'
@@ -207,6 +207,113 @@ function testLearning() {
   rmSync(dir, { recursive: true })
 }
 
+function testCrystallization() {
+  console.log('\n--- Crystallization: Failure → Pattern → Gate ---')
+  const dir = mkdtempSync(join(tmpdir(), 'tanren-crystal-'))
+  const gateSystem = createGateSystem()
+
+  const learning = createLearningSystem({
+    stateDir: dir,
+    gateSystem,
+    enabled: true,
+    crystallization: true,
+    selfPerception: true,
+  })
+
+  // Simulate 3 ticks where the same action fails with the same error.
+  // The crystallization engine should detect the repeated-failure pattern
+  // and auto-generate a gate after the 3rd occurrence.
+
+  const makeFailingTick = (i: number) => ({
+    perception: `tick ${i}`,
+    thought: `Attempting to fetch data, try #${i}`,
+    timestamp: Date.now() + i * 1000,
+    actions: [{ type: 'fetch', content: 'https://api.example.com/data', raw: '<action:fetch>https://api.example.com/data</action:fetch>' }],
+    gateResults: [] as GateResult[],
+    observation: {
+      outputExists: false,
+      outputQuality: 0,
+      confidenceCalibration: 0,
+      actionsExecuted: 0,
+      actionsFailed: 1,
+      duration: 3000,
+      environmentFeedback: 'action fetch failed: connection timeout after <n>ms',
+    },
+  })
+
+  const allTicks: TickResult[] = []
+
+  // Tick 1: first failure — pattern recorded, no crystallization yet
+  const tick1 = makeFailingTick(1)
+  const result1 = learning.afterTick(tick1, allTicks)
+  allTicks.push(tick1)
+  assert(result1.newGates.length === 0, 'tick 1: no gates yet (1st occurrence)')
+
+  const patterns1 = learning.getPatterns()
+  const failurePattern1 = patterns1.find(p => p.type === 'repeated-failure')
+  assert(failurePattern1 !== undefined, 'tick 1: failure pattern detected')
+  assert(failurePattern1!.occurrences === 1, 'tick 1: 1 occurrence recorded')
+
+  // Tick 2: same failure — approaching threshold
+  const tick2 = makeFailingTick(2)
+  const result2 = learning.afterTick(tick2, allTicks)
+  allTicks.push(tick2)
+  assert(result2.newGates.length === 0, 'tick 2: no gates yet (2nd occurrence)')
+
+  const patterns2 = learning.getPatterns()
+  const failurePattern2 = patterns2.find(p => p.type === 'repeated-failure')
+  assert(failurePattern2!.occurrences === 2, 'tick 2: 2 occurrences recorded')
+
+  // Tick 3: same failure — threshold reached, gate should crystallize
+  const tick3 = makeFailingTick(3)
+  const result3 = learning.afterTick(tick3, allTicks)
+  allTicks.push(tick3)
+  assert(result3.newGates.length === 1, 'tick 3: 1 gate crystallized!')
+
+  const crystallizedGate = result3.newGates[0]
+  assert(crystallizedGate.name.startsWith('auto-'), 'crystallized gate has auto- prefix')
+  assert(crystallizedGate.description.includes('fetch'), 'gate description mentions the failing action')
+
+  // Context section reports the crystallization event (check immediately after tick 3)
+  const ctx = learning.getContextSection()
+  assert(ctx.includes('Crystallized'), 'context section reports crystallization')
+
+  // Verify pattern is marked as crystallized
+  const patterns3 = learning.getPatterns()
+  const failurePattern3 = patterns3.find(p => p.type === 'repeated-failure')
+  assert(failurePattern3!.crystallized === true, 'pattern marked as crystallized')
+
+  // Tick 4: same action attempted again — the auto-gate should fire a warning
+  const tick4 = makeFailingTick(4)
+  const gateContext = {
+    tick: tick4,
+    recentTicks: allTicks,
+    memory: { read: async () => null, search: async () => [] } as MemoryReader,
+    state: {},
+  }
+  const gateResults = gateSystem.runAll(gateContext)
+  const warnings = gateResults.filter(r => r.action === 'warn')
+  assert(warnings.length >= 1, 'tick 4: auto-crystallized gate fires warning on same action')
+  assert(
+    (warnings[0] as { message: string }).message.includes('fetch'),
+    'gate warning mentions the problematic action type'
+  )
+
+  // Verify no duplicate crystallization on tick 4
+  const result4 = learning.afterTick(tick4, allTicks)
+  assert(result4.newGates.length === 0, 'tick 4: no duplicate crystallization')
+
+  // Verify state persistence
+  learning.save()
+  const stateFile = join(dir, 'crystallization.json')
+  assert(existsSync(stateFile), 'crystallization state persisted')
+  const savedState = JSON.parse(readFileSync(stateFile, 'utf-8'))
+  assert(savedState.patterns.length > 0, 'patterns saved to disk')
+  assert(savedState.patterns.some((p: { crystallized: boolean }) => p.crystallized), 'crystallized flag persisted')
+
+  rmSync(dir, { recursive: true })
+}
+
 async function testFullCycle() {
   console.log('\n--- Full Cycle (mock LLM) ---')
   const dir = mkdtempSync(join(tmpdir(), 'tanren-full-'))
@@ -251,6 +358,7 @@ async function main() {
   await testActions()
   testGates()
   testLearning()
+  testCrystallization()
   await testFullCycle()
 
   console.log(`\n--- Results: ${passed} passed, ${failed} failed ---`)
