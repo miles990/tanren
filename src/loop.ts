@@ -27,6 +27,8 @@ import type {
   EventTrigger,
   TriggerEvent,
   TickMode,
+  CognitiveMode,
+  CognitiveContext,
 } from './types.js'
 import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
@@ -34,6 +36,7 @@ import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
+import { createCognitiveModeDetector, buildCognitiveModePrompt, type CognitiveModeDetector } from './cognitive-modes.js'
 
 // === Checkpoint for crash recovery ===
 
@@ -66,6 +69,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   const perception = createPerception(config.perceptionPlugins ?? [])
   const gateSystem = createGateSystem(config.gates ?? [])
   const actionRegistry = createActionRegistry()
+
+  // Cognitive mode detector (if enabled)
+  const cognitiveModeEnabled = config.cognitiveMode?.enabled ?? false
+  const cognitiveModeDetector: CognitiveModeDetector | null = cognitiveModeEnabled
+    ? createCognitiveModeDetector()
+    : null
 
   // Register built-in + user actions
   for (const handler of builtinActions) {
@@ -118,6 +127,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   let reactiveTickWindowStart = Date.now()
   const reactiveWindowMs = 60_000 // 1 minute
 
+  // Cognitive mode system  
+  let lastInteractionTime = 0
+
   // Initialize tick count from existing ticks
   try {
     const ticksDir = join(journalDir, 'ticks')
@@ -153,16 +165,34 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const learningContext = learning?.getContextSection() ?? ''
     const context = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
 
-    // 3. Think (LLM call)
+    // 3. Think (LLM call) with cognitive mode detection
     writeLiveStatus({ phase: 'think', tickStart, tickNumber: tickCount, running, perceptionBytes: perceptionOutput.length })
-    const systemPrompt = buildSystemPrompt(identity, actionRegistry)  // always built (used in feedback loop)
+    
+    // Detect cognitive mode if enabled
+    let cognitiveContext: CognitiveContext | null = null
+    if (cognitiveModeDetector) {
+      // Extract message content from perception for mode detection
+      const messageContent = extractMessageContent(perceptionOutput)
+      const lastTick = recentTicks.length > 0 ? recentTicks[recentTicks.length - 1] : null
+      const timeGap = lastTick ? tickStart - lastTick.timestamp : 0
+      cognitiveContext = cognitiveModeDetector.detectMode(mode, triggerEvent, timeGap, messageContent)
+    }
+
+    const baseSystemPrompt = buildSystemPrompt(identity, actionRegistry)  // always built (used in feedback loop)
+    const systemPrompt = cognitiveContext 
+      ? buildCognitiveModePrompt(identity, cognitiveContext, baseSystemPrompt.split('\n\n## Available Actions')[1] || '')
+      : baseSystemPrompt
+    
     let thought: string
     let structuredActions: Action[] | null = null
 
     if (isToolUseProvider(llm)) {
       // Structured tool use path — LLM gets native tool definitions
       const toolDefs = actionRegistry.toToolDefinitions()
-      const toolSystemPrompt = buildToolUseSystemPrompt(identity)
+      const baseToolSystemPrompt = buildToolUseSystemPrompt(identity)
+      const toolSystemPrompt = cognitiveContext 
+        ? buildCognitiveModePrompt(identity, cognitiveContext, baseToolSystemPrompt.split('\n\n## Instructions')[1] || '')
+        : baseToolSystemPrompt
       const messages: ConversationMessage[] = [{ role: 'user', content: context }]
 
       try {
@@ -753,4 +783,21 @@ function buildToolUseSystemPrompt(identity: string): string {
 You have tools available. Use them to take actions. Your text response is your thinking/reflection — it will be recorded but has no side effects. Only tool calls produce effects.
 
 CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.`
+}
+
+function extractMessageContent(perception: string): string {
+  // Extract content from kuro-message or other structured message formats
+  const kuronMessageMatch = perception.match(/<kuro-message>([\s\S]*?)<\/kuro-message>/i)
+  if (kuronMessageMatch) {
+    return kuronMessageMatch[1].trim()
+  }
+  
+  // Extract from inbox patterns
+  const inboxMatch = perception.match(/<inbox>([\s\S]*?)<\/inbox>/i)
+  if (inboxMatch) {
+    return inboxMatch[1].trim()
+  }
+  
+  // Fallback: return first 500 chars of perception for basic pattern detection
+  return perception.slice(0, 500)
 }

@@ -169,6 +169,21 @@ export interface TriggerEvent {
 
 export type TickMode = 'scheduled' | 'reactive'
 
+// === Cognitive Modes ===
+
+export type CognitiveMode = 'contemplative' | 'conversational' | 'collaborative'
+
+export interface CognitiveContext {
+  mode: CognitiveMode
+  confidence: number  // 0-1, how confident we are in mode detection
+  signals: {
+    urgency?: 'low' | 'medium' | 'high'
+    interactionHistory?: 'first' | 'ongoing' | 'follow_up'
+    timeGap?: 'short' | 'medium' | 'long'    // since last interaction
+    contentType?: 'question' | 'task' | 'discussion' | 'analysis'
+  }
+}
+
 // === Config ===
 
 export interface TanrenConfig {
@@ -192,6 +207,15 @@ export interface TanrenConfig {
     enabled?: boolean           // default: false
     maxReactiveRate?: number    // max reactive ticks per minute (default: 10)
     urgentBypass?: boolean      // urgent events bypass rate limiting (default: true)
+  }
+
+  cognitiveMode?: {
+    enabled?: boolean           // default: false
+    modes?: Partial<Record<CognitiveMode, {
+      systemPrompt?: string     // custom system prompt for this mode
+      memoryStrategy?: 'full' | 'recent' | 'contextual'
+      responseStyle?: 'detailed' | 'concise' | 'interactive'
+    }>>
   }
 
   learning?: {
