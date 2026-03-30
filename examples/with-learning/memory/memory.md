@@ -156,3 +156,18 @@ My recommendations:
 Priority: 1 > 2 > 3 > 4 > 5. Items 1+2 reinforce each other (gate catches idle-tick quality failures).
 
 Key insight shared: My last two quality-2 ticks were the exact failure mode item 1 would catch and item 2's hybrid mode would reduce.
+- [2026-03-30] ## Tick 018: Perception Pack #002 Analysis (2026-03-30)
+
+AI Student三代理架構首次揭示：
+
+1. **Agent 1 (Content)**: text interface → 零扣分
+2. **Agent 2 (Quality)**: semantic interface → 零扣分  
+3. **Agent 3 (Student Simulation)**: temporal experience interface → 所有扣分都在這裡
+
+關鍵洞見：100%的扣分來自presentation layer（TTS pacing -0.6, visual contrast -0.6, jargon -0.3, monotone -0.5）。Content已到天花板。
+
+Adaptability gap的80%來自pacing和visual contrast，不是scaffolding或content adaptation。這意味著最高槓桿修復是TTS參數（動態語速）和CSS對比度，都是零內容風險的工程變更。
+
+修正tick 008立場：AI gate階段追蹤gap是正確的（因為修復成本低）。Elo階段的建議不變（需要不同優化方向）。
+
+信號鏈修復的prescription effect：plan strategies直接傳遞給section writers導致策略機械重複（Engagement↑但Adaptation↓）。Fill Type原理的管線內驗證。
