@@ -211,6 +211,7 @@ const agent = createAgent({
     createAnalysisWithoutActionGate(2),   // warn after 2 ticks with thought but no actions
     createSymptomFixGate(5),              // warn after 5 consecutive fixes
   ],
+  feedbackRounds: 3,            // allow tool chains: e.g. git→read→edit→respond
   tickInterval: 300_000,        // 5 min between ticks (cost-conscious)
 })
 

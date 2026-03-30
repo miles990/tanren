@@ -387,4 +387,80 @@ export const builtinActions: ActionHandler[] = [
       }
     },
   },
+  {
+    type: 'edit',
+    description: 'Make a precise edit to an existing file. Replaces old_string with new_string. The old_string must match exactly (including whitespace).',
+    toolSchema: {
+      properties: {
+        path: { type: 'string', description: 'File path (absolute, or relative to working directory)' },
+        old_string: { type: 'string', description: 'Exact string to find and replace' },
+        new_string: { type: 'string', description: 'Replacement string' },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    },
+    async execute(action, context) {
+      const { readFileSync, writeFileSync, existsSync } = await import('node:fs')
+      const { resolve } = await import('node:path')
+
+      const rawPath = (action.input?.path as string) ?? ''
+      const oldStr = (action.input?.old_string as string) ?? ''
+      const newStr = (action.input?.new_string as string) ?? ''
+
+      if (!rawPath || !oldStr) return '[edit error: path and old_string required]'
+
+      const filePath = rawPath.startsWith('/') ? rawPath : resolve(context.workDir, rawPath)
+      if (!existsSync(filePath)) return `[edit error: file not found: ${rawPath}]`
+
+      try {
+        const content = readFileSync(filePath, 'utf-8')
+        const idx = content.indexOf(oldStr)
+        if (idx === -1) return `[edit error: old_string not found in ${rawPath}]`
+        // Ensure unique match
+        if (content.indexOf(oldStr, idx + 1) !== -1) return `[edit error: old_string matches multiple locations in ${rawPath} — provide more context]`
+
+        const updated = content.slice(0, idx) + newStr + content.slice(idx + oldStr.length)
+        writeFileSync(filePath, updated, 'utf-8')
+        return `Edited ${rawPath}: replaced ${oldStr.length} chars with ${newStr.length} chars`
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[edit error: ${msg.slice(0, 300)}]`
+      }
+    },
+  },
+  {
+    type: 'git',
+    description: 'Run a git command in the working directory. Supports: status, diff, add, commit, log, revert.',
+    toolSchema: {
+      properties: {
+        command: { type: 'string', description: 'Git subcommand and arguments (e.g. "status", "diff src/loop.ts", "add -A", "commit -m message", "log --oneline -5")' },
+      },
+      required: ['command'],
+    },
+    async execute(action, context) {
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const execFileAsync = promisify(execFile)
+
+      const command = (action.input?.command as string) ?? action.content.trim()
+
+      // Safety: block destructive commands
+      const dangerous = ['push', 'reset --hard', 'clean -f', 'branch -D', 'checkout .', 'restore .']
+      if (dangerous.some(d => command.startsWith(d))) {
+        return `[git error: "${command}" is blocked for safety. Use shell action if you really need this.]`
+      }
+
+      try {
+        const { stdout, stderr } = await execFileAsync('git', command.split(/\s+/), {
+          cwd: context.workDir,
+          timeout: 15_000,
+          maxBuffer: 256 * 1024,
+        })
+        const output = (stdout + stderr).trim()
+        return output.slice(0, 3000) || '(no output)'
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[git error: ${msg.slice(0, 500)}]`
+      }
+    },
+  },
 ]
