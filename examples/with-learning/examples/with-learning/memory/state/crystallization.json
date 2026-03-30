@@ -1,0 +1,21 @@
+{
+  "patterns": [
+    {
+      "id": "ojayyn",
+      "type": "empty-streak",
+      "signature": "empty-output",
+      "description": "Tick produced no visible output or actions",
+      "occurrences": 1,
+      "firstSeen": 1774861684304,
+      "lastSeen": 1774861684304,
+      "examples": [
+        {
+          "timestamp": 1774861684304,
+          "summary": "No output"
+        }
+      ],
+      "crystallized": false
+    }
+  ],
+  "lastObserved": 1774861684304
+}
