@@ -5,9 +5,9 @@
       "type": "empty-streak",
       "signature": "empty-output",
       "description": "Tick produced no visible output or actions",
-      "occurrences": 14,
+      "occurrences": 15,
       "firstSeen": 1774778276288,
-      "lastSeen": 1774953429308,
+      "lastSeen": 1774953564957,
       "examples": [
         {
           "timestamp": 1774778276288,
@@ -37,9 +37,9 @@
       "type": "gate-ignored",
       "signature": "gate-ignored:<n> consecutive ticks without visible output. Are you producing value, or just thinking?",
       "description": "Gate warning fired but behavior unchanged: 3 consecutive ticks without visible output. Are you producing value, or just thinking?",
-      "occurrences": 32,
+      "occurrences": 33,
       "firstSeen": 1774884104349,
-      "lastSeen": 1774953429308,
+      "lastSeen": 1774953564957,
       "examples": [
         {
           "timestamp": 1774884104349,
@@ -83,7 +83,23 @@
         }
       ],
       "crystallized": false
+    },
+    {
+      "id": "lfrs1f",
+      "type": "gate-ignored",
+      "signature": "gate-ignored:<n> consecutive ticks with analysis (<n> chars) but zero actions. Thinking without acting — are acti",
+      "description": "Gate warning fired but behavior unchanged: 2 consecutive ticks with analysis (748 chars) but zero actions. Thinking without acting — are action",
+      "occurrences": 1,
+      "firstSeen": 1774953564957,
+      "lastSeen": 1774953564957,
+      "examples": [
+        {
+          "timestamp": 1774953564957,
+          "summary": "2 consecutive ticks with analysis (748 chars) but zero actions. Thinking without"
+        }
+      ],
+      "crystallized": false
     }
   ],
-  "lastObserved": 1774953429308
+  "lastObserved": 1774953564957
 }
