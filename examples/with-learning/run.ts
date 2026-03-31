@@ -8,7 +8,7 @@
  *   npx tsx run.ts --watch      # message-triggered ticks
  */
 
-import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider } from '../../src/index.js'
+import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider, createOpenAIProvider } from '../../src/index.js'
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { ActionHandler } from '../../src/types.js'
@@ -182,22 +182,37 @@ const clearInboxAction: ActionHandler = {
 
 const kuroTopicsDir = join(process.env.HOME ?? '', 'Workspace/mini-agent/memory/topics')
 
-// LLM provider: use Anthropic API when key available (enables native tool use),
-// otherwise fall back to Claude CLI (text-based action tags)
+// LLM provider — controlled by .env:
+//   ANTHROPIC_API_KEY=sk-...          → Anthropic API (native tool use)
+//   LLM_PROVIDER=omlx                 → omlx local model (OpenAI-compatible)
+//   (neither)                         → Claude CLI fallback
 const apiKey = process.env.ANTHROPIC_API_KEY
-const llmProvider = apiKey
-  ? createAnthropicProvider({
-      apiKey,
-      model: 'claude-sonnet-4-20250514',
-      maxTokens: 8192,
-    })
-  : undefined  // falls back to CLI provider
+const llmProviderType = process.env.LLM_PROVIDER
+const omlxUrl = process.env.LOCAL_LLM_URL || 'http://localhost:8000'
+const omlxModel = process.env.LOCAL_LLM_MODEL || 'Qwen3.5-4B-MLX-4bit'
+
+let llmProvider: ReturnType<typeof createAnthropicProvider> | ReturnType<typeof createOpenAIProvider> | undefined
+let providerName = 'Claude CLI (text-based actions)'
 
 if (apiKey) {
-  console.log('[akari] Using Anthropic API provider (native tool use)')
-} else {
-  console.log('[akari] Using Claude CLI provider (text-based actions)')
+  llmProvider = createAnthropicProvider({
+    apiKey,
+    model: 'claude-sonnet-4-20250514',
+    maxTokens: 8192,
+  })
+  providerName = 'Anthropic API (native tool use)'
+} else if (llmProviderType === 'omlx') {
+  llmProvider = createOpenAIProvider({
+    apiKey: process.env.LOCAL_LLM_KEY || 'omlx-local',
+    baseUrl: `${omlxUrl}/v1`,
+    model: omlxModel,
+    maxTokens: 32768,
+    extraBody: { chat_template_kwargs: { enable_thinking: false } },
+  })
+  providerName = `omlx local (${omlxModel}, no-think)`
 }
+
+console.log(`[akari] Using ${providerName}`)
 
 const agent = createAgent({
   identity: './examples/with-learning/soul.md',
@@ -211,7 +226,7 @@ const agent = createAgent({
     createAnalysisWithoutActionGate(2),   // warn after 2 ticks with thought but no actions
     createSymptomFixGate(5),              // warn after 5 consecutive fixes
   ],
-  feedbackRounds: 10,           // allow complex tool chains: read→edit→shell(tsc)→fix→respond
+  feedbackRounds: 5,            // reduced from 10: 4B model loops with too many rounds
   tickInterval: 300_000,        // 5 min between ticks (cost-conscious)
   cognitiveMode: { enabled: true },
 })

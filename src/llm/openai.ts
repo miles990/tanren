@@ -12,6 +12,7 @@ export interface OpenAIProviderOptions {
   maxTokens?: number         // default: 8192
   baseUrl?: string           // default: https://api.openai.com/v1
   timeoutMs?: number         // default: 1_500_000
+  extraBody?: Record<string, unknown>  // extra params (e.g. chat_template_kwargs)
 }
 
 export function createOpenAIProvider(opts: OpenAIProviderOptions): LLMProvider {
@@ -43,6 +44,7 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): LLMProvider {
             model,
             max_tokens: maxTokens,
             messages,
+            ...opts.extraBody,
           }),
           signal: controller.signal,
         })
