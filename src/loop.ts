@@ -308,6 +308,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           },
         ]
 
+        // Track used tool+target combos to prevent repetitive actions
+        const usedToolTargets = new Set<string>()
+        for (const a of actions) {
+          const target = a.input?.path ?? a.input?.url ?? a.input?.query ?? a.input?.pattern ?? ''
+          usedToolTargets.add(`${a.type}:${target}`)
+        }
+
         for (let round = 0; round < maxFeedbackRounds; round++) {
           // Build tool_result messages for all actions in this round
           const toolResults: ContentBlock[] = []
@@ -336,7 +343,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           }
 
           const parsed = parseToolUseResponse(response, actionRegistry)
-          if (parsed.actions.length === 0) {
+
+          // Filter out repetitive actions — same tool + same target = wasted round
+          const novelActions = parsed.actions.filter(a => {
+            const target = a.input?.path ?? a.input?.url ?? a.input?.query ?? a.input?.pattern ?? ''
+            const key = `${a.type}:${target}`
+            if (usedToolTargets.has(key)) return false
+            usedToolTargets.add(key)
+            return true
+          })
+
+          if (novelActions.length === 0) {
             thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${parsed.thought}`
             break
           }
@@ -345,7 +362,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           messages.push({ role: 'assistant', content: response.content })
 
           const roundResults: string[] = []
-          for (const action of parsed.actions) {
+          for (const action of novelActions) {
             config.onActionProgress?.({ phase: 'start', action })
             try {
               const result = await actionRegistry.execute(action, { memory, workDir })
@@ -360,7 +377,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
             }
           }
 
-          allActions.push(...parsed.actions)
+          allActions.push(...novelActions)
           actionResults.push(...roundResults)
 
           // If stop_reason is end_turn (not tool_use), model is done
