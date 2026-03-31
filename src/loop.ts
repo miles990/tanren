@@ -150,6 +150,25 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   // Load persistent gate state
   const gateState = loadGateState(gateStatePath)
 
+  // ─── Pre-routing: classify message complexity BEFORE LLM call (0ms, pure code) ───
+  // Decides: how much context to send, which tools to include
+  type TickComplexity = 'minimal' | 'standard' | 'full'
+
+  function classifyComplexity(messageContent: string): TickComplexity {
+    const msg = messageContent.toLowerCase()
+    // Minimal: greetings, simple questions, short messages
+    if (msg.length < 30 && /^(hi|hello|hey|你好|早|嗨|thanks|謝|ok|好|yes|no|對|不)/.test(msg)) return 'minimal'
+    if (msg.length < 80 && !/\b(edit|fix|implement|create|build|research|分析|研究|修|改|做|寫|查)\b/i.test(msg)) return 'minimal'
+    // Full: explicit tool-requiring tasks
+    if (/\b(edit|fix|implement|create|build|deploy|git|shell|commit|push|refactor)\b/i.test(msg)) return 'full'
+    if (/\b(研究|分析|修改|實作|建|部署|重構)\b/.test(msg)) return 'full'
+    return 'standard'
+  }
+
+  // Tool sets by complexity
+  const MINIMAL_TOOLS = new Set(['respond', 'remember', 'clear-inbox'])
+  const STANDARD_TOOLS = new Set(['respond', 'remember', 'clear-inbox', 'search', 'web_fetch', 'read'])
+
   async function tick(mode: TickMode = 'scheduled', triggerEvent?: TriggerEvent): Promise<TickResult> {
     const tickStart = Date.now()
     tickCount++
@@ -159,43 +178,55 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const perceptionOutput = await perception.perceive()
     writeCheckpoint(checkpointPath, { tickStarted: tickStart, perception: perceptionOutput })
 
-    // 2. Build context
+    // Pre-route: classify message complexity (0ms)
+    const messageContent = extractMessageContent(perceptionOutput)
+    const complexity = classifyComplexity(messageContent)
+
+    // 2. Build context — scaled by complexity
     const identity = await loadIdentity(config.identity, memory)
     const gateWarnings = gateSystem.getWarnings()
     const learningContext = learning?.getContextSection() ?? ''
-    const context = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
+    let context: string
+    if (complexity === 'minimal') {
+      // Minimal: just identity + message, skip heavy perception
+      context = `${identity}\n\n<message>\n${messageContent}\n</message>`
+    } else {
+      context = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
+    }
 
     // 3. Think (LLM call) with cognitive mode detection
     writeLiveStatus({ phase: 'think', tickStart, tickNumber: tickCount, running, perceptionBytes: perceptionOutput.length })
-    
+
     // Detect cognitive mode if enabled
     let cognitiveContext: CognitiveContext | null = null
     if (cognitiveModeDetector) {
-      // Extract message content from perception for mode detection
-      const messageContent = extractMessageContent(perceptionOutput)
       const lastTick = recentTicks.length > 0 ? recentTicks[recentTicks.length - 1] : null
       const timeGap = lastTick ? tickStart - lastTick.timestamp : 0
       cognitiveContext = cognitiveModeDetector.detectMode(mode, triggerEvent, timeGap, messageContent)
-      // Set model per cognitive mode — use custom modelMap if provided (e.g. local model routing)
       const modelMap = config.cognitiveMode?.modelMap ?? COGNITIVE_MODE_MODELS
       if ('activeModel' in llm) {
         (llm as { activeModel?: string }).activeModel = modelMap[cognitiveContext.mode]
       }
     }
 
-    const baseSystemPrompt = buildSystemPrompt(identity, actionRegistry)  // always built (used in feedback loop)
-    const systemPrompt = cognitiveContext 
+    const baseSystemPrompt = buildSystemPrompt(identity, actionRegistry)
+    const systemPrompt = cognitiveContext
       ? buildCognitiveModePrompt(identity, cognitiveContext, baseSystemPrompt.split('\n\n## Available Actions')[1] || '')
       : baseSystemPrompt
-    
+
     let thought: string
     let structuredActions: Action[] | null = null
 
     if (isToolUseProvider(llm)) {
-      // Structured tool use path — LLM gets native tool definitions
-      const toolDefs = actionRegistry.toToolDefinitions()
+      // Filter tools by complexity — minimal tick only gets respond+remember
+      const allToolDefs = actionRegistry.toToolDefinitions()
+      const toolFilter = complexity === 'minimal' ? MINIMAL_TOOLS
+        : complexity === 'standard' ? STANDARD_TOOLS
+        : null // full = all tools
+      const toolDefs = toolFilter ? allToolDefs.filter(t => toolFilter.has(t.name)) : allToolDefs
+
       const baseToolSystemPrompt = buildToolUseSystemPrompt(identity)
-      const toolSystemPrompt = cognitiveContext 
+      const toolSystemPrompt = cognitiveContext
         ? buildCognitiveModePrompt(identity, cognitiveContext, baseToolSystemPrompt.split('\n\n## Instructions')[1] || '')
         : baseToolSystemPrompt
       const messages: ConversationMessage[] = [{ role: 'user', content: context }]
