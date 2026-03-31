@@ -102,7 +102,7 @@ export { createLoop, type AgentLoop } from './loop.js'
 // LLM Providers
 export { createClaudeCliProvider, type ClaudeCliOptions } from './llm/claude-cli.js'
 export { createAnthropicProvider, type AnthropicProviderOptions } from './llm/anthropic.js'
-export { createOpenAIProvider, type OpenAIProviderOptions } from './llm/openai.js'
+export { createOpenAIProvider, createFallbackProvider, type OpenAIProviderOptions, type ToolCallOptions, type CostTracker } from './llm/openai.js'
 
 // Learning System
 export {

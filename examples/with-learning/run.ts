@@ -8,7 +8,7 @@
  *   npx tsx run.ts --watch      # message-triggered ticks
  */
 
-import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider, createOpenAIProvider } from '../../src/index.js'
+import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider, createOpenAIProvider, createFallbackProvider, createClaudeCliProvider } from '../../src/index.js'
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { ActionHandler } from '../../src/types.js'
@@ -191,7 +191,7 @@ const llmProviderType = process.env.LLM_PROVIDER
 const omlxUrl = process.env.LOCAL_LLM_URL || 'http://localhost:8000'
 const omlxModel = process.env.LOCAL_LLM_MODEL || 'Qwen3.5-4B-MLX-4bit'
 
-let llmProvider: ReturnType<typeof createAnthropicProvider> | ReturnType<typeof createOpenAIProvider> | undefined
+let llmProvider: ReturnType<typeof createAnthropicProvider> | ReturnType<typeof createOpenAIProvider> | ReturnType<typeof createFallbackProvider> | undefined
 let providerName = 'Claude CLI (text-based actions)'
 
 if (apiKey) {
@@ -202,14 +202,17 @@ if (apiKey) {
   })
   providerName = 'Anthropic API (native tool use)'
 } else if (llmProviderType === 'omlx') {
-  llmProvider = createOpenAIProvider({
+  const omlxProvider = createOpenAIProvider({
     apiKey: process.env.LOCAL_LLM_KEY || 'omlx-local',
     baseUrl: `${omlxUrl}/v1`,
     model: omlxModel,
     maxTokens: 32768,
     extraBody: { chat_template_kwargs: { enable_thinking: false } },
   })
-  providerName = `omlx local (${omlxModel}, no-think)`
+  // Fallback: omlx → CLI if omlx is down
+  const cliProvider = createClaudeCliProvider()
+  llmProvider = createFallbackProvider(omlxProvider, cliProvider, 'omlx→cli')
+  providerName = `omlx local (${omlxModel}) + CLI fallback`
 }
 
 console.log(`[akari] Using ${providerName}`)
@@ -424,7 +427,11 @@ if (mode === 'serve') {
   console.log(`[akari] Provider: ${providerName}`)
   console.log('[akari] Type your message, press Enter to send. Ctrl+C to quit.\n')
 
-  const prompt = () => rl.question('\x1b[36mAlex>\x1b[0m ', async (input) => {
+  let closed = false
+  rl.on('close', () => { closed = true })
+  const prompt = () => {
+    if (closed) return
+    rl.question('\x1b[36mAlex>\x1b[0m ', async (input) => {
     const trimmed = input.trim()
     if (!trimmed) { prompt(); return }
 
@@ -473,6 +480,7 @@ if (mode === 'serve') {
     console.log()
     prompt()
   })
+  }
 
   prompt()
 
