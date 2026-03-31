@@ -83,23 +83,7 @@
         }
       ],
       "crystallized": false
-    },
-    {
-      "id": "65j7sk",
-      "type": "action-streak",
-      "signature": "streak:shell",
-      "description": "Tick dominated by \"shell\" actions (6x)",
-      "occurrences": 1,
-      "firstSeen": 1774947228836,
-      "lastSeen": 1774947228836,
-      "examples": [
-        {
-          "timestamp": 1774947228836,
-          "summary": "6x shell"
-        }
-      ],
-      "crystallized": false
     }
   ],
-  "lastObserved": 1774947441197
+  "lastObserved": 1774948272847
 }
