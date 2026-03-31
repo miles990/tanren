@@ -206,7 +206,7 @@ if (apiKey) {
     apiKey: process.env.LOCAL_LLM_KEY || 'omlx-local',
     baseUrl: `${omlxUrl}/v1`,
     model: omlxModel,
-    maxTokens: 32768,
+    maxTokens: 4096,
     extraBody: { chat_template_kwargs: { enable_thinking: false } },
   })
   // Fallback: omlx → CLI if omlx is down

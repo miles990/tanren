@@ -189,7 +189,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     let context: string
     if (complexity === 'minimal') {
       // Minimal: just identity + message, skip heavy perception
-      context = `${identity}\n\n<message>\n${messageContent}\n</message>`
+      context = `${identity}\n\n<message>\n${messageContent}\n</message>\n\nRespond briefly (1-3 sentences max).`
     } else {
       context = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
     }
