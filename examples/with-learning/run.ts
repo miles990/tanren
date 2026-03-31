@@ -330,7 +330,7 @@ if (mode === 'serve') {
       json(200, {
         status: 'ok',
         service: 'akari',
-        provider: apiKey ? 'anthropic-api' : 'claude-cli',
+        provider: apiKey ? 'anthropic-api' : llmProviderType === 'omlx' ? `omlx (${omlxModel})` : 'claude-cli',
         ticking,
         tickCount,
       })
@@ -404,7 +404,7 @@ if (mode === 'serve') {
 
   server.listen(PORT, () => {
     console.log(`[akari] Server mode on port ${PORT}`)
-    console.log(`[akari] Provider: ${apiKey ? 'Anthropic API (tool_use)' : 'Claude CLI (text tags)'}`)
+    console.log(`[akari] Provider: ${providerName}`)
     console.log(`[akari] POST /chat  — { "from": "alex", "text": "your message" }`)
     console.log(`[akari] GET  /health — health check`)
     console.log(`[akari] GET  /status — live status`)
@@ -421,7 +421,7 @@ if (mode === 'serve') {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
 
   console.log('[akari] Interactive chat mode')
-  console.log(`[akari] Provider: ${apiKey ? 'Anthropic API (tool_use)' : 'Claude CLI (text tags)'}`)
+  console.log(`[akari] Provider: ${providerName}`)
   console.log('[akari] Type your message, press Enter to send. Ctrl+C to quit.\n')
 
   const prompt = () => rl.question('\x1b[36mAlex>\x1b[0m ', async (input) => {
