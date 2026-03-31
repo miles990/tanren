@@ -172,6 +172,7 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): ToolUseLLMPro
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
       const tcOpts = provider.toolCallOptions
+      const streaming = !!provider.onStreamText
 
       try {
         const openAIMessages = toOpenAIMessages(messages)
@@ -179,16 +180,14 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): ToolUseLLMPro
 
         const body: Record<string, unknown> = {
           model, max_tokens: maxTokens, messages: openAIMessages,
+          stream: streaming,
           ...opts.extraBody,
         }
         if (tools.length > 0) {
           body.tools = toOpenAITools(tools)
-          // tool_choice
           if (tcOpts?.toolChoice) body.tool_choice = tcOpts.toolChoice
-          // parallel_tool_calls
           if (tcOpts?.parallelToolCalls !== undefined) body.parallel_tool_calls = tcOpts.parallelToolCalls
         }
-        // response_format
         if (tcOpts?.responseFormat === 'json_object') {
           body.response_format = { type: 'json_object' }
         }
@@ -205,37 +204,92 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): ToolUseLLMPro
           throw new Error(`OpenAI API ${response.status}: ${text.slice(0, 500)}`)
         }
 
-        const data = await response.json() as {
-          choices: Array<{
-            message: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }
-            finish_reason: string
-          }>
-          usage?: { prompt_tokens: number; completion_tokens: number }
+        if (!streaming) {
+          // Non-streaming: parse full response
+          const data = await response.json() as {
+            choices: Array<{
+              message: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }
+              finish_reason: string
+            }>
+            usage?: { prompt_tokens: number; completion_tokens: number }
+          }
+          trackUsage(data.usage)
+          return parseToolResponse(data.choices[0], data.usage)
         }
 
-        trackUsage(data.usage)
-        const choice = data.choices[0]
-        const content: ContentBlock[] = []
+        // Streaming: parse SSE with tool calls
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let sseBuffer = ''
+        let textContent = ''
+        // Track tool calls being built incrementally
+        const toolCallBuilders = new Map<number, { id: string; name: string; args: string }>()
+        let finishReason = 'end_turn'
+        let usage = { prompt_tokens: 0, completion_tokens: 0 }
 
-        if (choice.message.content) {
-          content.push({ type: 'text', text: choice.message.content })
-        }
-        if (choice.message.tool_calls) {
-          for (const tc of choice.message.tool_calls) {
-            let input: Record<string, unknown> = {}
-            try { input = JSON.parse(tc.function.arguments) } catch { /* malformed */ }
-            content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input })
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop()!
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') continue
+
+            try {
+              const parsed = JSON.parse(data)
+              const delta = parsed.choices?.[0]?.delta
+              const fr = parsed.choices?.[0]?.finish_reason
+
+              // Text chunk
+              if (delta?.content) {
+                textContent += delta.content
+                provider.onStreamText?.(delta.content)
+              }
+
+              // Tool call chunks (built incrementally)
+              if (delta?.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                  const idx = tc.index ?? 0
+                  if (!toolCallBuilders.has(idx)) {
+                    toolCallBuilders.set(idx, { id: tc.id || '', name: tc.function?.name || '', args: '' })
+                  }
+                  const builder = toolCallBuilders.get(idx)!
+                  if (tc.id) builder.id = tc.id
+                  if (tc.function?.name) builder.name = tc.function.name
+                  if (tc.function?.arguments) builder.args += tc.function.arguments
+                }
+              }
+
+              if (fr) finishReason = fr
+              if (parsed.usage) usage = parsed.usage
+            } catch { /* skip malformed */ }
           }
         }
 
-        const stopReason = choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call'
+        trackUsage(usage)
+
+        // Build content blocks
+        const content: ContentBlock[] = []
+        if (textContent) content.push({ type: 'text', text: textContent.trim() })
+        for (const [, tc] of toolCallBuilders) {
+          let input: Record<string, unknown> = {}
+          try { input = JSON.parse(tc.args) } catch { /* malformed */ }
+          content.push({ type: 'tool_use', id: tc.id, name: tc.name, input })
+        }
+
+        const stopReason = finishReason === 'tool_calls' || finishReason === 'function_call'
           ? 'tool_use' as const
-          : choice.finish_reason === 'length' ? 'max_tokens' as const
+          : finishReason === 'length' ? 'max_tokens' as const
           : 'end_turn' as const
 
         return {
           content,
-          usage: { input_tokens: data.usage?.prompt_tokens ?? 0, output_tokens: data.usage?.completion_tokens ?? 0 },
+          usage: { input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0 },
           stop_reason: stopReason,
         }
       } finally {
@@ -292,6 +346,30 @@ export function createFallbackProvider(
         }
       }
     },
+  }
+}
+
+function parseToolResponse(
+  choice: { message: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }; finish_reason: string },
+  usage?: { prompt_tokens: number; completion_tokens: number },
+): ToolUseResponse {
+  const content: ContentBlock[] = []
+  if (choice.message.content) content.push({ type: 'text', text: choice.message.content })
+  if (choice.message.tool_calls) {
+    for (const tc of choice.message.tool_calls) {
+      let input: Record<string, unknown> = {}
+      try { input = JSON.parse(tc.function.arguments) } catch { /* malformed */ }
+      content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input })
+    }
+  }
+  const stopReason = choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call'
+    ? 'tool_use' as const
+    : choice.finish_reason === 'length' ? 'max_tokens' as const
+    : 'end_turn' as const
+  return {
+    content,
+    usage: { input_tokens: usage?.prompt_tokens ?? 0, output_tokens: usage?.completion_tokens ?? 0 },
+    stop_reason: stopReason,
   }
 }
 
