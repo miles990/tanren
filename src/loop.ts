@@ -264,14 +264,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
       // Execute initial actions
       for (const action of actions) {
+        config.onActionProgress?.({ phase: 'start', action })
         try {
           const result = await actionRegistry.execute(action, { memory, workDir })
           actionResults.push(result)
           actionsExecuted++
+          config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err)
           actionResults.push(`[action ${action.type} failed: ${msg}]`)
           actionsFailed++
+          config.onActionProgress?.({ phase: 'error', action, error: msg })
         }
       }
 
@@ -329,14 +332,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
           const roundResults: string[] = []
           for (const action of parsed.actions) {
+            config.onActionProgress?.({ phase: 'start', action })
             try {
               const result = await actionRegistry.execute(action, { memory, workDir })
               roundResults.push(result)
               actionsExecuted++
+              config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err)
               roundResults.push(`[action ${action.type} failed: ${msg}]`)
               actionsFailed++
+              config.onActionProgress?.({ phase: 'error', action, error: msg })
             }
           }
 

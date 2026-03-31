@@ -199,6 +199,9 @@ export interface TanrenConfig {
   actions?: ActionHandler[]
   eventTriggers?: EventTrigger[] // event detection plugins
 
+  /** Callback when an action starts/completes — for live progress display */
+  onActionProgress?: (event: { phase: 'start' | 'done' | 'error'; action: Action; result?: string; error?: string }) => void
+
   tickInterval?: number         // ms between ticks (default: 60000)
   maxConcurrentDelegations?: number  // default: 4
   feedbackRounds?: number        // action feedback rounds per tick (default: 1, 0 = classic single-pass)

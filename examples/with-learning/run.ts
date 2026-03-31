@@ -231,6 +231,16 @@ const agent = createAgent({
   ],
   feedbackRounds: 5,            // reduced from 10: 4B model loops with too many rounds
   tickInterval: 300_000,        // 5 min between ticks (cost-conscious)
+  onActionProgress: (event) => {
+    // Live action progress in terminal (dim yellow for actions)
+    if (event.phase === 'start') {
+      process.stdout.write(`\x1b[33m⚡ ${event.action.type}\x1b[0m `)
+    } else if (event.phase === 'done') {
+      process.stdout.write(`\x1b[32m✓\x1b[0m `)
+    } else if (event.phase === 'error') {
+      process.stdout.write(`\x1b[31m✗ ${event.error?.slice(0, 50)}\x1b[0m `)
+    }
+  },
   cognitiveMode: {
     enabled: true,
     // All modes route to 4B — Alex: "Akari 可以全部透過4B"
