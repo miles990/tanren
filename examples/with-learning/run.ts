@@ -228,7 +228,20 @@ const agent = createAgent({
   ],
   feedbackRounds: 5,            // reduced from 10: 4B model loops with too many rounds
   tickInterval: 300_000,        // 5 min between ticks (cost-conscious)
-  cognitiveMode: { enabled: true },
+  cognitiveMode: {
+    enabled: true,
+    // Benchmark-driven routing (2026-03-31):
+    //   conversational → 0.8B (3-5x faster, quality OK for simple Q&A/summary)
+    //   contemplative/collaborative → 4B (reliable for translation/code/reasoning/creative/tool-calling)
+    //   Conservative params only — reasoning params (temp=1.0, pp=2.0) cause thinking loops on both models
+    ...(llmProviderType === 'omlx' ? {
+      modelMap: {
+        contemplative: 'Qwen3.5-4B-MLX-4bit',
+        conversational: 'Qwen3.5-0.8B-MLX-4bit',
+        collaborative: 'Qwen3.5-4B-MLX-4bit',
+      },
+    } : {}),
+  },
 })
 
 // CLI argument parsing

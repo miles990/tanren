@@ -211,6 +211,7 @@ export interface TanrenConfig {
 
   cognitiveMode?: {
     enabled?: boolean           // default: false
+    modelMap?: Record<CognitiveMode, string>  // custom model per mode (overrides COGNITIVE_MODE_MODELS)
     modes?: Partial<Record<CognitiveMode, {
       systemPrompt?: string     // custom system prompt for this mode
       memoryStrategy?: 'full' | 'recent' | 'contextual'

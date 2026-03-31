@@ -176,9 +176,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       const lastTick = recentTicks.length > 0 ? recentTicks[recentTicks.length - 1] : null
       const timeGap = lastTick ? tickStart - lastTick.timestamp : 0
       cognitiveContext = cognitiveModeDetector.detectMode(mode, triggerEvent, timeGap, messageContent)
-      // Set model per cognitive mode (Haiku for conversational, Sonnet for deep work)
+      // Set model per cognitive mode — use custom modelMap if provided (e.g. local 0.8B/4B routing)
+      const modelMap = config.cognitiveMode?.modelMap ?? COGNITIVE_MODE_MODELS
       if ('activeModel' in llm) {
-        (llm as { activeModel?: string }).activeModel = COGNITIVE_MODE_MODELS[cognitiveContext.mode]
+        (llm as { activeModel?: string }).activeModel = modelMap[cognitiveContext.mode]
       }
     }
 

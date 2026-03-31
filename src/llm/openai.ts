@@ -15,14 +15,17 @@ export interface OpenAIProviderOptions {
   extraBody?: Record<string, unknown>  // extra params (e.g. chat_template_kwargs)
 }
 
-export function createOpenAIProvider(opts: OpenAIProviderOptions): LLMProvider {
-  const model = opts.model ?? 'gpt-4o'
+export function createOpenAIProvider(opts: OpenAIProviderOptions): LLMProvider & { activeModel?: string } {
+  const defaultModel = opts.model ?? 'gpt-4o'
   const maxTokens = opts.maxTokens ?? 8192
   const baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '')
   const timeoutMs = opts.timeoutMs ?? 1_500_000
 
-  return {
+  const provider: LLMProvider & { activeModel?: string } = {
+    activeModel: undefined,
+
     async think(context: string, systemPrompt: string): Promise<string> {
+      const model = provider.activeModel ?? defaultModel
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
 
@@ -64,4 +67,6 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): LLMProvider {
       }
     },
   }
+
+  return provider
 }
