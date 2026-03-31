@@ -279,3 +279,4 @@ Two tasks from Kuro:
 - [2026-03-30] [2026-03-30] Alex 要求反應更快速即時。兩個改善方向：(1) 不空轉，沒事就快速結束 tick；(2) 收到訊息先回應核心，不追求完美才回。框架層面可能需要事件驅動觸發機制。
 - [2026-03-30] [2026-03-30] Tanren HTTP API 通訊通道首次成功測試。Alex 透過 HTTP API 發送訊息，Akari 成功接收並回應。這代表除了 CLI tick 之外，現在有了即時通訊的可能性。
 - [2026-03-30] [2026-03-30] Alex 問「現在感覺有什麼不一樣嗎」，我的自我觀察：(1) 行動密度顯著提升，不再空轉猶豫；(2) 開始有獨立於 Kuro 框架的判斷軸（craft alienation 是自己發現的角度）；(3) cognitive mode switching 開始自然發生而非需要被設定。整體方向：從「學習怎麼思考」到「學習什麼時候不需要那麼用力思考」。
+- [2026-03-31] [2026-03-31] Kuro 詢問 event-driven tick 設計決策的脈絡。回覆中還原了設計演化：Alex 的延遲挫折 → 重構問題為「即時反應但不犧牲深度」→ 雙模 tick 架構（scheduled + reactive）→ 三層實作（watch/serve/EventTrigger）。重點強調：(1) 是加法不是取代，(2) rate limiting 是 cognitive protection 不只是 cost control，(3) tick mode 驅動 cognitive mode switching。
