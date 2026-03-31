@@ -5,9 +5,9 @@
       "type": "empty-streak",
       "signature": "empty-output",
       "description": "Tick produced no visible output or actions",
-      "occurrences": 10,
+      "occurrences": 11,
       "firstSeen": 1774778276288,
-      "lastSeen": 1774928728793,
+      "lastSeen": 1774943563070,
       "examples": [
         {
           "timestamp": 1774778276288,
@@ -37,9 +37,9 @@
       "type": "gate-ignored",
       "signature": "gate-ignored:<n> consecutive ticks without visible output. Are you producing value, or just thinking?",
       "description": "Gate warning fired but behavior unchanged: 3 consecutive ticks without visible output. Are you producing value, or just thinking?",
-      "occurrences": 25,
+      "occurrences": 26,
       "firstSeen": 1774884104349,
-      "lastSeen": 1774928728793,
+      "lastSeen": 1774943563070,
       "examples": [
         {
           "timestamp": 1774884104349,
@@ -85,5 +85,5 @@
       "crystallized": false
     }
   ],
-  "lastObserved": 1774941422633
+  "lastObserved": 1774943563070
 }
