@@ -438,10 +438,15 @@ if (mode === 'serve') {
     // Write message to inbox
     writeFileSync(join(messagesDir, 'from-kuro.md'), `# From Alex\n\n${trimmed}\n`, 'utf-8')
 
+    // Snapshot to-kuro.md before tick to detect changes
+    const responsePath = join(messagesDir, 'to-kuro.md')
+    const responseBefore = existsSync(responsePath) ? readFileSync(responsePath, 'utf-8').trim() : ''
+
     // Wire streaming for live thinking display
+    let streamedText = ''
     if (llmProvider && 'onStreamText' in llmProvider) {
       process.stdout.write('\x1b[2m') // dim for thinking
-      llmProvider.onStreamText = (chunk: string) => { process.stdout.write(chunk) }
+      llmProvider.onStreamText = (chunk: string) => { process.stdout.write(chunk); streamedText += chunk }
     } else {
       console.log('\x1b[33m🧠 Akari thinking...\x1b[0m')
     }
@@ -457,16 +462,19 @@ if (mode === 'serve') {
       const elapsed = ((Date.now() - start) / 1000).toFixed(1)
       const actions = result.actions.map(a => a.type).join(', ') || 'none'
 
-      // Read response
-      const responsePath = join(messagesDir, 'to-kuro.md')
-      const response = existsSync(responsePath) ? readFileSync(responsePath, 'utf-8').trim() : ''
+      // Read response — only use if it changed during this tick
+      const responseAfter = existsSync(responsePath) ? readFileSync(responsePath, 'utf-8').trim() : ''
+      const hasNewResponse = responseAfter && responseAfter !== responseBefore
 
-      if (response) {
+      if (hasNewResponse) {
         console.log(`\x1b[32mAkari>\x1b[0m (${elapsed}s, actions: ${actions}, quality: ${result.observation.outputQuality}/5)\n`)
-        console.log(response)
+        console.log(responseAfter)
+      } else if (streamedText.trim()) {
+        // No respond tool call, but we streamed thinking — already visible
+        console.log(`\x1b[32mAkari>\x1b[0m (${elapsed}s, actions: ${actions}, quality: ${result.observation.outputQuality}/5)`)
       } else {
-        // Fallback: show thought if no respond action
-        console.log(`\x1b[33mAkari (thought only, no respond action)>\x1b[0m (${elapsed}s)\n`)
+        // No streaming, no respond — show thought
+        console.log(`\x1b[33mAkari (thought only)>\x1b[0m (${elapsed}s)\n`)
         console.log(result.thought.slice(0, 2000))
       }
     } catch (err) {
