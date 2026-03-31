@@ -217,13 +217,14 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     let thought: string
     let structuredActions: Action[] | null = null
 
-    if (isToolUseProvider(llm)) {
-      // Filter tools by complexity — minimal tick only gets respond+remember
+    // Minimal complexity → think() with NO tools (0.37s vs 3.5s with tools)
+    // Agent responds via text tags if needed. No tool_use overhead.
+    const useToolUse = isToolUseProvider(llm) && complexity === 'full'
+
+    if (useToolUse) {
+      // Full complexity: structured tool use path
       const allToolDefs = actionRegistry.toToolDefinitions()
-      const toolFilter = complexity === 'minimal' ? MINIMAL_TOOLS
-        : complexity === 'standard' ? STANDARD_TOOLS
-        : null // full = all tools
-      const toolDefs = toolFilter ? allToolDefs.filter(t => toolFilter.has(t.name)) : allToolDefs
+      const toolDefs = allToolDefs // full = all tools
 
       const baseToolSystemPrompt = buildToolUseSystemPrompt(identity)
       const toolSystemPrompt = cognitiveContext
@@ -326,9 +327,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           ? COGNITIVE_FEEDBACK_ROUNDS[cognitiveContext.mode] ?? (config.feedbackRounds ?? 1)
           : config.feedbackRounds ?? 1
 
-      if (isToolUseProvider(llm) && structuredActions !== null) {
+      if (useToolUse && structuredActions !== null) {
         // Native tool_use multi-turn: send tool_results, get follow-up tool calls
-        const toolDefs = actionRegistry.toToolDefinitions()
+        const allToolDefs = actionRegistry.toToolDefinitions()
+        // Tool degradation: round 2+ removes read-only tools → forces action over exploration
+        const READ_ONLY_TOOLS = new Set(['read', 'explore', 'search', 'shell', 'web_fetch'])
+        const actionOnlyToolDefs = allToolDefs.filter(t => !READ_ONLY_TOOLS.has(t.name))
         const toolSystemPrompt = buildToolUseSystemPrompt(identity)
         // messages already has [user context, assistant response] from above
         const messages: ConversationMessage[] = [
@@ -366,9 +370,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
           messages.push({ role: 'user', content: toolResults })
 
+          // Tool degradation: round 2+ only gets action tools (respond/edit/remember/git)
+          // Forces agent to act instead of endlessly reading
+          const roundToolDefs = round === 0 ? allToolDefs : actionOnlyToolDefs
+
           let response: ToolUseResponse
           try {
-            response = await (llm as ToolUseLLMProvider).thinkWithTools(messages, toolSystemPrompt, toolDefs)
+            response = await (llm as ToolUseLLMProvider).thinkWithTools(messages, toolSystemPrompt, roundToolDefs)
           } catch {
             break
           }
