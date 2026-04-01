@@ -402,7 +402,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
             // No tool results to send — either first round or idle round
             // If within IDLE_THRESHOLD, send continuation prompt instead of breaking
             if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
-              messages.push({ role: 'user', content: [{ type: 'text', text: 'Continue. You can call more tools to gather information, or use respond when done.' }] })
+              messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now. Do NOT return text-only responses in feedback rounds. If you need more info: call read/search/explore. If you have enough: call respond. If you are implementing something: call write or edit. Every round must include at least one tool call.' }] })
             } else {
               break
             }
@@ -911,6 +911,12 @@ You have tools available. Use them to take actions. Your text response is your t
 CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.
 
 You can call MULTIPLE tools in a single response — batch 3-5 read/explore/shell calls when you need to gather information from several sources. After seeing results, you can call more tools in the next round. Only use 'respond' when you have gathered enough information to give a complete answer.
+
+MULTI-STEP IMPLEMENTATION: When asked to create or modify files, follow this pattern across feedback rounds:
+Round 1: read existing files to understand context (batch 3-5 reads)
+Round 2: write new file or edit existing file (use write/edit tools)
+Round 3: verify by reading the result, then respond with summary
+Do NOT plan without acting. Every round must include tool calls. Think by doing, not by planning.
 
 ANTI-REPETITION: Your perception includes your own past memories and responses. Do NOT reproduce or rephrase previous outputs. Each message deserves a FRESH response to the CURRENT question. If the current message asks something you previously answered, provide NEW analysis or explicitly build on prior findings — never copy.`
 }
