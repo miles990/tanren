@@ -384,9 +384,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         // This lets capable models do deep multi-file research across many rounds.
         const IDLE_THRESHOLD = degradeTools ? 0 : 2  // degraded: exit immediately; non-degraded: allow 2 idle rounds for thinking
         let roundsSinceLastToolUse = 0
-        let consecutiveReadOnlyRounds = 0  // tracks rounds with only read/explore/search/shell (no write/respond/synthesize)
-        const READ_ONLY_ACTIONS = new Set(['read', 'explore', 'search', 'shell'])
-        const SYNTHESIZE_THRESHOLD = 3  // force synthesize after N consecutive read-only rounds
+        // Track rounds without productive output (write/respond/synthesize)
+        // Counts both read-only rounds AND idle thinking rounds as "unproductive"
+        const PRODUCTIVE_ACTIONS = new Set(['write', 'edit', 'respond', 'synthesize', 'focus', 'remember'])
+        let roundsWithoutProduction = actions.every(a => !PRODUCTIVE_ACTIONS.has(a.type)) ? 1 : 0  // count initial round
+        const SYNTHESIZE_THRESHOLD = 2  // force synthesize after N unproductive rounds (lowered: model typically does 1 read round then goes idle)
 
         for (let round = 0; round < maxFeedbackRounds; round++) {
           // Build tool_result messages for all actions in this round
@@ -443,30 +445,29 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
           if (novelActions.length === 0) {
             roundsSinceLastToolUse++
-            if (roundsSinceLastToolUse > IDLE_THRESHOLD) break
+            roundsWithoutProduction++
 
-            // Prefilled Write: if model has read results + thought but didn't write,
-            // and the thought mentions implementation intent, nudge with a write scaffold
-            const hadReads = allActions.some(a => ['read', 'explore', 'shell'].includes(a.type))
-            const thoughtMentionsWrite = /writ|creat|implement|build|generat|modul|file/i.test(parsed.thought)
-            if (hadReads && thoughtMentionsWrite && roundsSinceLastToolUse === 1) {
-              // Inject a strong implementation nudge as user message
+            // Convergence check: if stuck in research mode, surface the gap between current state and desired state
+            if (!degradeTools && roundsWithoutProduction >= SYNTHESIZE_THRESHOLD && messageImpliesImplementation) {
               messages.push({ role: 'assistant', content: response.content })
-              messages.push({ role: 'user', content: [{ type: 'text', text: 'You have read the source and formed a plan. Now WRITE the file. Call the write tool with the path and full content. Do not think further — write your best draft now. Remember: code that teaches you something > code that proves understanding.' }] })
+              messages.push({ role: 'user', content: [{ type: 'text', text: `Convergence check: The user asked you to BUILD something. After ${roundsWithoutProduction} rounds, you have not produced any output (no write, no respond, no synthesize). Your current state: research accumulated. Desired state: a file exists that didn't before, or a response delivered. What is the smallest step that moves you from current to desired? Take that step now.` }] })
+              roundsWithoutProduction = 0
               continue
             }
+
+            if (roundsSinceLastToolUse > IDLE_THRESHOLD) break
 
             messages.push({ role: 'assistant', content: response.content })
             continue
           }
 
           roundsSinceLastToolUse = 0
-          // Track consecutive read-only rounds for forced synthesize
-          const allReadOnly = novelActions.every(a => READ_ONLY_ACTIONS.has(a.type))
-          if (allReadOnly) {
-            consecutiveReadOnlyRounds++
+          // Track productive vs unproductive rounds
+          const hasProduction = novelActions.some(a => PRODUCTIVE_ACTIONS.has(a.type))
+          if (hasProduction) {
+            roundsWithoutProduction = 0
           } else {
-            consecutiveReadOnlyRounds = 0
+            roundsWithoutProduction++
           }
           messages.push({ role: 'assistant', content: response.content })
 
@@ -489,19 +490,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           allActions.push(...novelActions)
           actionResults.push(...roundResults)
 
-          // Forced synthesize: after N consecutive read-only rounds, inject checkpoint
-          if (!degradeTools && consecutiveReadOnlyRounds >= SYNTHESIZE_THRESHOLD && messageImpliesImplementation) {
-            // Override next round's tool results with a synthesize prompt
-            const synthPrompt = 'You have done ' + consecutiveReadOnlyRounds + ' consecutive rounds of reading. STOP READING. Call the synthesize tool NOW with: gap (what you found), proposal (what to build), approach (how to build it). No more reads until you synthesize.'
-            messages.push({ role: 'user', content: [...roundResults.map((r, i) => ({
-              type: 'tool_result' as const,
-              tool_use_id: novelActions[i]?.toolUseId ?? `synth-${round}`,
-              content: r,
-            })), { type: 'text', text: synthPrompt }] })
-            consecutiveReadOnlyRounds = 0  // reset to avoid re-triggering
-            // Skip the normal toolResults building in next iteration
-            continue
-          }
+          // (Forced synthesize now handled in the novelActions===0 branch above)
         }
       } else {
         // Text-based feedback mini-loop (legacy)
@@ -961,7 +950,7 @@ IMPLEMENTATION COURAGE: You are allowed to be wrong. Write code that teaches you
 
 IMPLEMENTATION DISCIPLINE: Before writing TypeScript code, ALWAYS read the relevant type files first (e.g. src/types.ts). Use ONLY fields that actually exist in the interfaces — never invent plausible-sounding fields. After writing, run \`npx tsc --noEmit\` via the shell tool to verify. Fix any type errors before responding.
 
-OPEN-ENDED TASKS: When asked to propose AND build something, use the synthesize tool after 2-3 reads to force yourself from research mode into action mode. Pattern: read → read → synthesize(gap, proposal, approach) → read types.ts → write code → typecheck → respond.
+OPEN-ENDED TASKS: A tick is not complete until the user has something they can act on — a file written, a response delivered, or a structured proposal (synthesize tool). If you have been reading without producing, ask: what is the smallest output that moves from current state to desired state? Produce that now.
 
 ANTI-REPETITION: Your perception includes your own past memories and responses. Do NOT reproduce or rephrase previous outputs. Each message deserves a FRESH response to the CURRENT question. If the current message asks something you previously answered, provide NEW analysis or explicitly build on prior findings — never copy.`
 }
