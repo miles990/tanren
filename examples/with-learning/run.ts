@@ -31,11 +31,16 @@ const messagesDir = join(baseDir, 'messages')
 
 // Temporal separation: filter out memories from recent ticks to prevent self-echo
 const ECHO_WINDOW = 3 // skip memories from last N ticks
+const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
 function filterRecentTicks(content: string, currentTick: number): string {
   return content.split('\n').filter(line => {
-    const match = line.match(/\[tick:(\d+)\]/)
-    if (!match) return true // no tick tag = old memory, always show
-    return currentTick - parseInt(match[1]) >= ECHO_WINDOW
+    // Tick-tagged: filter by tick window
+    const tickMatch = line.match(/\[tick:(\d+)\]/)
+    if (tickMatch) return currentTick - parseInt(tickMatch[1]) >= ECHO_WINDOW
+    // No tick tag but from today's session: likely recent, filter if in early ticks
+    // After enough ticks accumulate, allow untagged today-memories through
+    if (currentTick < 5 && line.includes(`[${today}]`)) return false
+    return true
   }).join('\n')
 }
 
