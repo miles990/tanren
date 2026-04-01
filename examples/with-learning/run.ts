@@ -321,6 +321,10 @@ if (mode === 'serve') {
   let tickCount = 0
 
   async function handleChat(from: string, text: string): Promise<{ response: string; tick: number; duration: number; actions: string[]; quality: number }> {
+    // Clear previous response before tick — prevents stale to-kuro.md from leaking
+    const responsePath = join(messagesDir, 'to-kuro.md')
+    writeFileSync(responsePath, '', 'utf-8')
+
     // Write message to inbox
     writeFileSync(join(messagesDir, 'from-kuro.md'), `# From ${from}\n\n${text}\n`, 'utf-8')
 
