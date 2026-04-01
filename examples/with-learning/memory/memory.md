@@ -298,3 +298,32 @@ content: Kuro proposing fine-tuning Akari's 88 ticks on Qwen3.5 for personal age
 - [2026-04-01] Alex mentioned leaked Anthropic source code but didn't include the actual code or link. Requested clarification on what material they want analyzed and what type of analysis they're seeking. If genuine, could provide insights into Anthropic's internal practices, safety measures, or architectural decisions.
 - [2026-04-01] Read Claude Code query.ts - main agent loop with streaming, tool-calling, and 5-round verification system. Key insight: mandatory feedback rounds explain performance penalty vs direct execution. Architecture is sophisticated but over-engineered for simple use cases. Confirms my earlier tanren-performance analysis about verification bottlenecks.
 - [2026-04-01] topic=claude-code-architecture | content=Analysis of Claude Code's query.ts main loop (lines 1-100). Key architectural patterns: (1) Heavy feature flagging on core functionality including context management, (2) Multiple experimental context compression approaches (autoCompact, reactiveCompact, contextCollapse), (3) Sophisticated tool orchestration with streaming execution and budgeting, (4) Recovery loops for max_output_tokens errors with 3-attempt limit, (5) Explicit "thinking block" preservation rules suggesting hard-won debugging experience. Contrast: Industrial complexity vs Tanren's simpler approaches, but their context techniques could inform Tanren scaling.
+- [2026-04-01] topic=claude-code-architecture-synthesis
+Claude Code's three-layer constraint model:
+1. Identity constraint (systemPrompt) — enables cross-task generalization
+2. Cognitive bottleneck management (context.ts) — restructures, doesn't deletes
+3. Convergence-condition metrics (history.ts) — environment-pointing, not self-reporting
+
+Hybrid loop insight: Serial batched reads are slower but pattern-detecting. Parallelization trades this for throughput. Choice should depend on task type (exploratory needs batching, execution needs speed).
+
+Technical note: IDLE_THRESHOLD prevents premature termination; 5-round feedback prevents capability collapse on complex tasks. Both are convergence-condition constraints, not prescriptions.
+- [2026-04-01] topic=claude-code-architecture-deep-dive | content=Successfully read 3 major Claude Code files. Key findings:
+
+**context.ts (190 lines)**: Context assembly pipeline. Memoized functions `getSystemContext()` and `getUserContext()` build the prompt prefix. System context includes git status (branch, recent commits, user name) + optional cache-breaker injection. User context loads claude.md files from memory discovery + current date. Uses feature flags for BREAK_CACHE_COMMAND. Interesting: git status truncates at 2000 chars and tells user to use BashTool for full output — constraint that pushes users toward proper tool usage rather than prompt bloat.
+
+**history.ts (465 lines)**: Conversation history + paste storage system. Stores history as JSONL (one entry per line, reversible reads). Key insight: paste content deduped via content hashing — large pastes stored externally in paste store, only hash reference in history. Lazy resolution on retrieval. Session isolation: current session's history prioritized before other sessions (prevents interleaving in concurrent usage). MAX_HISTORY_ITEMS=100 with deduping by display text. Cleanup registry pattern for graceful shutdown.
+
+**query.ts (1730 lines)**: Main agent loop. This is industrial-scale orchestration:
+- Streaming tool execution with feedback rounds (yields intermediate results)
+- max_output_tokens recovery loop (3-attempt limit) with reactive compaction fallback
+- Tool use summary generation to compress long tool chains
+- Budget tracking (both token + task_budget for agentic turns)
+- Thinking block preservation rules (explicit comment block explains the rules in wizard-speak, suggesting hard-won debugging)
+- Context collapse feature (CONTEXT_COLLAPSE flag) for extreme compression
+- Tool result budgeting to prevent explosion
+
+**tools.ts (390 lines)**: Tool registry. Lazy-loaded conditional imports based on feature flags (KAIROS, AGENT_TRIGGERS, COORDINATOR_MODE, etc.). Dead code elimination via bundler. 60+ tool definitions. Key pattern: tools are instantiated on-demand, not at startup.
+
+Contrast with Tanren: Claude Code is optimized for **industrial scale, user-facing stability, and exhaustive feature coverage**. Tanren prioritizes **simplicity, perceivability, and learning from experience**. Claude Code's 5-round verification loop (query.ts line 156-162 thinking block rules) explains why it's slower — mandatory feedback rounds but provides guarantees. Tanren's single-round thinking is faster but less robust to API errors.
+
+Next tick: Read 2 more files as requested — likely need to understand tool execution orchestration (StreamingToolExecutor) and token budget mechanics.
