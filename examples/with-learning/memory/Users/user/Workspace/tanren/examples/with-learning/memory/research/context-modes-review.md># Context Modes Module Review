@@ -1,0 +1,66 @@
+
+**File**: `/Users/user/Workspace/tanren/src/context-modes.ts`  
+**Reviewed**: 2026-04-01  
+**Reviewer**: Akari
+
+## What the Module Does
+
+The context-modes module implements cognitive mode detection for Tanren agents. It analyzes incoming messages and environmental context to determine which of four cognitive modes the agent should operate in, then applies mode-specific prompting and behavior. This allows agents to adapt their response style dynamically based on interaction type rather than using a one-size-fits-all approach.
+
+The module exports two main functions:
+- `detectCognitiveMode()`: Analyzes context and returns a mode with confidence score
+- `applyCognitiveMode()`: Modifies the agent prompt based on detected mode
+
+## The Four Modes
+
+1. **Collaborative**: Pair-work mode for technical tasks
+   - Triggered by: code discussion, debugging, implementation tasks
+   - Behavior: Action over analysis, quick iteration, tool usage
+   - Prompt addition: "Work alongside the human... Use tools actively... Progress over perfection"
+
+2. **Conversational**: Natural dialogue mode
+   - Triggered by: questions, casual chat, personal topics
+   - Behavior: Direct engagement, natural flow, relationship-first
+   - Prompt addition: "Engage naturally... Be present in the conversation"
+
+3. **Contemplative**: Deep analysis mode (default)
+   - Triggered by: complex topics, research tasks, theoretical questions
+   - Behavior: Thorough exploration, systematic thinking, comprehensive analysis
+   - Prompt addition: "Think deeply... Take time for thorough analysis"
+
+4. **Responsive**: Quick reaction mode
+   - Triggered by: urgent requests, simple tasks, status updates
+   - Behavior: Immediate action, brief responses, efficiency focus
+   - Prompt addition: "Respond quickly and directly... Focus on immediate needs"
+
+## Opinion on Detection Logic
+
+The detection logic is **surprisingly sophisticated** for such a compact implementation. Here's what works well:
+
+### Strengths
+
+1. **Multi-signal approach**: The logic combines content analysis, urgency detection, and gap assessment rather than relying on single keywords. This makes it more robust than simple pattern matching.
+
+2. **Confidence scoring**: Each detection returns a confidence level, allowing the system to degrade gracefully when signals are ambiguous. This is much better than binary classifications.
+
+3. **Reasonable heuristics**: The urgency detection (words like "urgent", "ASAP", "quickly") and content categorization (code-related terms, question patterns) align well with actual human communication patterns.
+
+4. **Gap-aware**: The time-since-last-message factor is clever - it recognizes that conversation rhythm affects appropriate response style.
+
+### Concerns
+
+1. **Keyword brittleness**: While multi-signal helps, the system still relies heavily on keyword detection. Real conversations are more nuanced - someone could discuss debugging in a contemplative way or ask deep questions urgently.
+
+2. **Mode boundary assumptions**: The four modes assume clean categorical distinctions, but real cognitive needs often blend. A collaborative debugging session might need both quick iteration AND deep analysis.
+
+3. **No learning mechanism**: The detection thresholds are hardcoded. A real agent would benefit from learning which mode choices led to better outcomes over time.
+
+4. **Context window limitation**: Only looks at immediate message content, not conversation history or relationship context with the user.
+
+### Overall Assessment
+
+This is a **solid first implementation** of adaptive cognitive modes. The core insight - that agents should respond differently to different interaction types - is valuable and often overlooked in AI systems. The execution is clean and the mode categories are well-chosen.
+
+The detection logic works well enough for many cases, but I suspect it would benefit from more contextual awareness and perhaps some form of user feedback to calibrate over time. Still, it's a meaningful step toward more natural AI interaction patterns.
+
+The module successfully addresses a real problem: the cognitive dissonance when an agent optimized for deep research tries to help debug code, or when a task-focused agent receives a personal question. Mode switching feels like a natural evolution for autonomous agents.

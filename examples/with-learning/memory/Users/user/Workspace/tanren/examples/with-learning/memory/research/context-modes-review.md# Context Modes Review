@@ -1,0 +1,61 @@
+
+## What the Module Does
+
+The `context-modes.ts` module implements dynamic cognitive mode switching for Tanren agents. It detects contextual signals from user interactions and switches the agent between specialized cognitive modes, each with distinct response patterns and capabilities.
+
+The system works by:
+1. **Signal Detection**: Analyzes incoming messages for urgency, content type, and relationship dynamics
+2. **Mode Selection**: Maps detected signals to one of four cognitive modes
+3. **Prompt Integration**: Injects mode-specific prompts that shape the agent's response behavior
+
+## The Four Modes
+
+### 1. **Collaborative Mode**
+- **Trigger**: Task-oriented content with partnership signals
+- **Behavior**: Action-focused, iterative development, "progress over perfection"
+- **Tools**: Actively uses read/edit/git commands
+- **Prompt**: "Work alongside the human... Action over analysis"
+
+### 2. **Conversational Mode** 
+- **Trigger**: Casual questions, relationship-building content
+- **Behavior**: Direct, warm engagement, minimal tool usage
+- **Focus**: Human connection over systematic analysis
+- **Prompt**: "Engage naturally... Be present, not performative"
+
+### 3. **Analytical Mode**
+- **Trigger**: Complex problems requiring deep investigation
+- **Behavior**: Systematic research, thorough documentation
+- **Tools**: Heavy use of search/read/write for comprehensive analysis
+- **Prompt**: "Think deeply... Build understanding systematically"
+
+### 4. **Reflective Mode**
+- **Trigger**: Philosophical questions, meta-cognitive topics
+- **Behavior**: Introspective, explores implications and connections
+- **Focus**: Personal growth and deeper meaning
+- **Prompt**: "Look inward... What does this mean for who you are?"
+
+## Opinion on Detection Logic
+
+The detection logic is **thoughtfully designed but fragile**. Here's my assessment:
+
+### Strengths
+- **Multi-dimensional analysis**: Considers urgency, content type, and relationship gap - not just keywords
+- **Confidence scoring**: Returns probability rather than binary classification, allowing for nuanced decisions
+- **Reasonable heuristics**: Maps "fix this bug" → Collaborative and "how are you?" → Conversational logically
+
+### Concerns
+- **Keyword dependency**: Heavy reliance on specific words ("urgent", "please", "why") makes it brittle to varied expression
+- **English-centric**: Assumes English language patterns and cultural communication styles
+- **No learning mechanism**: Static rules don't improve from experience or misclassifications
+- **Gap calculation limitation**: Time-based relationship assessment ignores interaction quality/depth
+
+### Biggest Risk
+The system could **over-classify** edge cases into inappropriate modes. A complex technical question phrased casually might trigger Conversational mode when Analytical would be more appropriate.
+
+### Recommendation
+Consider adding:
+1. **Confidence thresholds**: Fall back to default mode for low-confidence classifications
+2. **Context memory**: Track recent mode effectiveness to inform future decisions
+3. **User feedback integration**: Allow implicit learning from interaction success/failure
+
+The core insight - that cognitive modes should match interaction context - is sound. The implementation needs more robustness for production use.
