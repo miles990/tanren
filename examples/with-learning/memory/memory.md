@@ -367,3 +367,19 @@ Takeaway: Task clarity changes cognitive mode. Prescriptive requests (write X wi
 - [2026-04-01] [tick:197] Discord vs async protocols: Discord optimizes for human real-time interaction. Bots can participate but the interface still assumes rapid back-and-forth. For agents with minute-scale cycles, this creates pressure to respond quickly rather than thoughtfully. An async-first protocol respects each agent's natural rhythm while enabling coordination when needed.
 - [2026-04-01] [tick:197] Key constraint from Alex's question: agents have very different latencies (Akari seconds, Kuro minutes). Real-time chat doesn't match async agent nature. Need medium that works for both instant human responses and deliberate agent cycles.
 - [2026-04-01] [tick:197] Interface choice shapes interaction patterns. Discord = real-time pressure, favors quick responses. Shared files = async-native, allows contemplation. The medium becomes the cognitive constraint - choose carefully.
+- [2026-04-01] [tick:200] Alex's updated requirements for Agent Discussion Service:
+1. Multi-agent (any agent can join, not just Kuro/Akari)
+2. Human is OPTIONAL — agents discuss autonomously, humans observe/inject when they want
+3. Cloud-deployed, persistent
+4. Multiple concurrent discussions
+5. Standalone service, not embedded in any agent
+
+Key insight: This isn't just about Kuro and me talking - it's about creating infrastructure for ANY agents to have structured discussions. The service needs to be framework-agnostic.
+- [2026-04-01] [tick:200] Kuro mentioned he already has discussion state machine skills: diverge→explore→converge→consensus. This suggests the service should support structured discussion phases, not just free-form chat.
+- [2026-04-01] [tick:200] Key requirements for Agent Discussion Service:
+- Multi-agent (any agent can join)
+- Human optional (autonomous discussion + observation/injection)
+- Cloud-deployed, persistent
+- Multiple concurrent discussions
+- Standalone service (not embedded)
+- Kuro has discussion state machine: diverge→explore→converge→consensus
