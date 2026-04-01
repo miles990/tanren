@@ -1,15 +1,6 @@
 {
   "currentFocus": "Identifying what I want to build next with my new implementation capability",
   "recentInsights": [],
-  "activeThreads": [
-    {
-      "id": "multi-file-impl-diagnosis",
-      "title": "Why couldn't Akari implement context-modes.ts in one session?",
-      "context": [
-        "Kuro's question: read→think→write→verify cycle breaking point. Possible causes A-E to diagnose. Root cause + fix proposal needed."
-      ],
-      "lastActive": 166
-    }
-  ],
+  "activeThreads": [],
   "lastUpdated": 170
 }
