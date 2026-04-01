@@ -334,10 +334,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
       // Conditional feedback: skip feedback round if all actions are simple (respond/remember/clear-inbox)
       // Risk-graduated feedback: Tier 1 (safe) skips feedback, Tier 3 (risky) gets full loop
+      // BUT: if initial actions are reads and the message implies implementation,
+      // don't skip — the model needs feedback rounds to transition from read to write.
       const roundRisk = getRoundRiskTier(actions)
-      const skipFeedback = roundRisk === 1 && actionsFailed === 0
+      const messageImpliesImplementation = /writ|creat|implement|build|generat|edit|fix|mak|produc/i.test(context)
+      const skipFeedback = roundRisk === 1 && actionsFailed === 0 && !messageImpliesImplementation
 
-      // Feedback rounds: 0 for Tier 1, reduced for Tier 2, full for Tier 3
+      // Feedback rounds: 0 for Tier 1 (no impl), reduced for Tier 2, full for Tier 3
       const COGNITIVE_FEEDBACK_ROUNDS: Record<string, number> = {
         conversational: 1,
         contemplative: 2,
