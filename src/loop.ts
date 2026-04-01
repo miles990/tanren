@@ -298,7 +298,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       for (const action of actions) {
         config.onActionProgress?.({ phase: 'start', action })
         try {
-          const result = await actionRegistry.execute(action, { memory, workDir })
+          const result = await actionRegistry.execute(action, { memory, workDir, tickCount })
           actionResults.push(result)
           actionsExecuted++
           config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
@@ -427,7 +427,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           for (const action of novelActions) {
             config.onActionProgress?.({ phase: 'start', action })
             try {
-              const result = await actionRegistry.execute(action, { memory, workDir })
+              const result = await actionRegistry.execute(action, { memory, workDir, tickCount })
               roundResults.push(result)
               actionsExecuted++
               config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
@@ -469,7 +469,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           const roundResults: string[] = []
           for (const action of followUpActions) {
             try {
-              const result = await actionRegistry.execute(action, { memory, workDir })
+              const result = await actionRegistry.execute(action, { memory, workDir, tickCount })
               roundResults.push(result)
               actionsExecuted++
             } catch (err: unknown) {

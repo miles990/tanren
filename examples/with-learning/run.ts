@@ -29,6 +29,19 @@ const baseDir = './examples/with-learning'
 const memDir = join(baseDir, 'memory')
 const messagesDir = join(baseDir, 'messages')
 
+// Temporal separation: filter out memories from recent ticks to prevent self-echo
+const ECHO_WINDOW = 3 // skip memories from last N ticks
+function filterRecentTicks(content: string, currentTick: number): string {
+  return content.split('\n').filter(line => {
+    const match = line.match(/\[tick:(\d+)\]/)
+    if (!match) return true // no tick tag = old memory, always show
+    return currentTick - parseInt(match[1]) >= ECHO_WINDOW
+  }).join('\n')
+}
+
+// Shared tick counter accessible by perception plugins
+let currentTickCount = 0
+
 // Perception: what's happening around us
 const plugins = [
   {
@@ -41,7 +54,8 @@ const plugins = [
     fn: () => {
       const memPath = join(memDir, 'memory.md')
       if (!existsSync(memPath)) return '(no memories yet — this is your first session)'
-      return readFileSync(memPath, 'utf-8').slice(-2000) // last 2KB
+      const raw = readFileSync(memPath, 'utf-8').slice(-2000) // last 2KB
+      return filterRecentTicks(raw, currentTickCount)
     },
     category: 'memory',
   },
@@ -54,7 +68,7 @@ const plugins = [
       if (files.length === 0) return '(no topic memories yet)'
       return files.map(f => {
         const content = readFileSync(join(topicsDir, f), 'utf-8')
-        return `--- ${f} ---\n${content.slice(-1000)}`
+        return `--- ${f} ---\n${filterRecentTicks(content.slice(-1000), currentTickCount)}`
       }).join('\n\n')
     },
     category: 'memory',
@@ -307,6 +321,7 @@ if (mode === 'serve') {
 
     const result = await agent.tick()
     tickCount++
+    currentTickCount = tickCount  // update shared counter for perception plugins
     const duration = result.observation.duration
     const actions = result.actions.map(a => a.type)
     const quality = result.observation.outputQuality ?? 0

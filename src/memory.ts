@@ -63,9 +63,10 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
       return results.slice(0, 50)
     },
 
-    async remember(content: string, opts?: { topic?: string }): Promise<void> {
+    async remember(content: string, opts?: { topic?: string; tickCount?: number }): Promise<void> {
       const timestamp = new Date().toISOString()
-      const entry = `- [${timestamp.slice(0, 10)}] ${content}\n`
+      const tickTag = opts?.tickCount != null ? ` [tick:${opts.tickCount}]` : ''
+      const entry = `- [${timestamp.slice(0, 10)}]${tickTag} ${content}\n`
 
       if (opts?.topic) {
         const topicFile = `topics/${sanitizeFilename(opts.topic)}.md`

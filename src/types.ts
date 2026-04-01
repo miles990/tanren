@@ -72,7 +72,7 @@ export interface MemoryReader {
 export interface MemorySystem extends MemoryReader {
   write(path: string, content: string): Promise<void>
   append(path: string, line: string): Promise<void>
-  remember(content: string, opts?: { topic?: string }): Promise<void>
+  remember(content: string, opts?: { topic?: string; tickCount?: number }): Promise<void>
   recall(query: string): Promise<string[]>
   autoCommit(): Promise<boolean>
 }
@@ -153,6 +153,7 @@ export interface ActionHandler {
 export interface ActionContext {
   memory: MemorySystem
   workDir: string
+  tickCount?: number  // current tick number for temporal tagging
 }
 
 // === Event-Driven System ===

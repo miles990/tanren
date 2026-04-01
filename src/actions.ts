@@ -149,11 +149,12 @@ export const builtinActions: ActionHandler[] = [
       required: ['content'],
     },
     async execute(action, context) {
+      const tick = context.tickCount
       // Structured input path (from tool_use)
       if (action.input) {
         const topic = action.input.topic as string | undefined
         const content = action.input.content as string
-        await context.memory.remember(content, topic ? { topic } : undefined)
+        await context.memory.remember(content, { topic, tickCount: tick })
         return topic ? `Remembered to topic: ${topic}` : 'Remembered.'
       }
       // Legacy text path (from regex parsing)
@@ -161,11 +162,11 @@ export const builtinActions: ActionHandler[] = [
       if (topicMatch) {
         await context.memory.remember(
           action.content.slice(topicMatch[0].length),
-          { topic: topicMatch[1] },
+          { topic: topicMatch[1], tickCount: tick },
         )
         return `Remembered to topic: ${topicMatch[1]}`
       }
-      await context.memory.remember(action.content)
+      await context.memory.remember(action.content, { tickCount: tick })
       return 'Remembered.'
     },
   },
