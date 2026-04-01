@@ -336,7 +336,6 @@ if (mode === 'serve') {
     const quality = result.observation.outputQuality ?? 0
 
     // Read response
-    const responsePath = join(messagesDir, 'to-kuro.md')
     let response = ''
     if (existsSync(responsePath)) {
       response = readFileSync(responsePath, 'utf-8').trim()
