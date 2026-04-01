@@ -548,4 +548,34 @@ export const builtinActions: ActionHandler[] = [
       return `Working memory updated: ${parts.join(', ')}`
     },
   },
+  {
+    type: 'synthesize',
+    description: 'Forced cognitive checkpoint: synthesize accumulated research into a structured proposal. MUST output: (1) gap identified, (2) specific proposal, (3) implementation approach. Use this to transition from research mode to action mode.',
+    toolSchema: {
+      properties: {
+        gap: { type: 'string', description: 'What specific gap or need did you identify from your research?' },
+        proposal: { type: 'string', description: 'What exactly do you propose to build? Be specific: filename, purpose, key functions.' },
+        approach: { type: 'string', description: 'Implementation approach: what files to read first, what to write, how to verify.' },
+      },
+      required: ['gap', 'proposal', 'approach'],
+    },
+    async execute(action, context) {
+      const gap = action.input?.gap as string
+      const proposal = action.input?.proposal as string
+      const approach = action.input?.approach as string
+
+      // Save synthesis to working memory as an active thread
+      if (context.workingMemory) {
+        const tick = context.tickCount ?? 0
+        context.workingMemory.update(tick, {
+          focus: proposal,
+          insight: `Gap: ${gap}`,
+          thread: { id: 'synthesis', title: proposal, context: [gap, approach] },
+        })
+        context.workingMemory.save()
+      }
+
+      return `SYNTHESIS COMPLETE. You now have a plan:\n- Gap: ${gap}\n- Proposal: ${proposal}\n- Approach: ${approach}\n\nNow EXECUTE the approach. Read types if needed, then write the code.`
+    },
+  },
 ]
