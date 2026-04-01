@@ -1,0 +1,138 @@
+/**
+ * Tanren — Working Memory
+ *
+ * Hot cross-tick persistence: currentFocus, recentInsights, activeThreads.
+ * Stored as JSON, loaded before perception, saved after actions.
+ * Decay mechanism prevents stale context accumulation.
+ */
+
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+
+export interface WorkingMemoryState {
+  currentFocus: string | null
+  recentInsights: Array<{
+    content: string
+    tick: number
+    relevance: number  // 0-1, decays each tick
+  }>
+  activeThreads: Array<{
+    id: string
+    title: string
+    lastActive: number  // tick number
+    context: string[]   // key points
+  }>
+  lastUpdated: number  // tick number
+}
+
+const EMPTY_STATE: WorkingMemoryState = {
+  currentFocus: null,
+  recentInsights: [],
+  activeThreads: [],
+  lastUpdated: 0,
+}
+
+// Decay constants
+const INSIGHT_DECAY_RATE = 0.85      // multiply relevance each tick
+const INSIGHT_MIN_RELEVANCE = 0.2    // remove below this
+const MAX_INSIGHTS = 15              // cap total insights
+const THREAD_DORMANT_TICKS = 5       // archive after N ticks inactive
+const FOCUS_CLEAR_TICKS = 3          // clear focus if not referenced
+
+export function createWorkingMemory(filePath: string) {
+  let state: WorkingMemoryState = EMPTY_STATE
+
+  function load(): WorkingMemoryState {
+    try {
+      if (existsSync(filePath)) {
+        state = JSON.parse(readFileSync(filePath, 'utf-8'))
+      }
+    } catch {
+      state = { ...EMPTY_STATE }
+    }
+    return state
+  }
+
+  function save(): void {
+    try {
+      const dir = dirname(filePath)
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      writeFileSync(filePath, JSON.stringify(state, null, 2))
+    } catch { /* fire-and-forget */ }
+  }
+
+  function decay(currentTick: number): void {
+    // Decay insight relevance
+    state.recentInsights = state.recentInsights
+      .map(i => ({ ...i, relevance: i.relevance * INSIGHT_DECAY_RATE }))
+      .filter(i => i.relevance >= INSIGHT_MIN_RELEVANCE)
+      .slice(0, MAX_INSIGHTS)
+
+    // Archive dormant threads
+    state.activeThreads = state.activeThreads
+      .filter(t => currentTick - t.lastActive < THREAD_DORMANT_TICKS)
+
+    // Clear stale focus
+    if (state.currentFocus && currentTick - state.lastUpdated >= FOCUS_CLEAR_TICKS) {
+      state.currentFocus = null
+    }
+  }
+
+  function update(currentTick: number, updates: {
+    focus?: string | null
+    insight?: string
+    thread?: { id: string; title: string; context: string[] }
+  }): void {
+    if (updates.focus !== undefined) {
+      state.currentFocus = updates.focus
+    }
+    if (updates.insight) {
+      state.recentInsights.unshift({
+        content: updates.insight,
+        tick: currentTick,
+        relevance: 1.0,
+      })
+      if (state.recentInsights.length > MAX_INSIGHTS) {
+        state.recentInsights = state.recentInsights.slice(0, MAX_INSIGHTS)
+      }
+    }
+    if (updates.thread) {
+      const existing = state.activeThreads.find(t => t.id === updates.thread!.id)
+      if (existing) {
+        existing.lastActive = currentTick
+        existing.title = updates.thread.title
+        existing.context = updates.thread.context
+      } else {
+        state.activeThreads.push({ ...updates.thread, lastActive: currentTick })
+      }
+    }
+    state.lastUpdated = currentTick
+  }
+
+  function toContextString(): string {
+    const parts: string[] = []
+    if (state.currentFocus) {
+      parts.push(`Focus: ${state.currentFocus}`)
+    }
+    if (state.recentInsights.length > 0) {
+      const insights = state.recentInsights
+        .slice(0, 8)
+        .map(i => `- ${i.content} (tick ${i.tick}, relevance ${i.relevance.toFixed(2)})`)
+      parts.push(`Recent insights:\n${insights.join('\n')}`)
+    }
+    if (state.activeThreads.length > 0) {
+      const threads = state.activeThreads.map(t =>
+        `- [${t.id}] ${t.title} (last active tick ${t.lastActive}): ${t.context.slice(-2).join('; ')}`
+      )
+      parts.push(`Active threads:\n${threads.join('\n')}`)
+    }
+    return parts.length > 0 ? parts.join('\n\n') : ''
+  }
+
+  return { load, save, decay, update, toContextString, getState: () => state }
+}
+
+// Re-export join for use in tests / consumers without importing node:path directly
+export { join }
+
+export type WorkingMemorySystem = ReturnType<typeof createWorkingMemory>

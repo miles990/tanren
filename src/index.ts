@@ -105,6 +105,9 @@ export { createClaudeCliProvider, type ClaudeCliOptions } from './llm/claude-cli
 export { createAnthropicProvider, type AnthropicProviderOptions } from './llm/anthropic.js'
 export { createOpenAIProvider, createFallbackProvider, type OpenAIProviderOptions, type ToolCallOptions, type CostTracker } from './llm/openai.js'
 
+// Working Memory
+export { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
+
 // Learning System
 export {
   createLearningSystem,

@@ -485,4 +485,45 @@ export const builtinActions: ActionHandler[] = [
       }
     },
   },
+  {
+    type: 'focus',
+    description: 'Update working memory: set current focus, add insight, or update thread. This persists across ticks.',
+    toolSchema: {
+      properties: {
+        set_focus: { type: 'string', description: 'Set current research focus (or "clear" to remove)' },
+        add_insight: { type: 'string', description: 'Add a key insight to working memory' },
+        thread_id: { type: 'string', description: 'Thread ID to create/update' },
+        thread_title: { type: 'string', description: 'Thread title' },
+        thread_context: { type: 'string', description: 'Thread context points (comma-separated)' },
+      },
+    },
+    async execute(action, context) {
+      if (!context.workingMemory) return '[focus: working memory not available]'
+      const tick = context.tickCount ?? 0
+      const focus = (action.input?.set_focus as string) ?? undefined
+      const insight = (action.input?.add_insight as string) ?? undefined
+      const threadId = action.input?.thread_id as string | undefined
+      const threadTitle = action.input?.thread_title as string | undefined
+      const threadCtx = action.input?.thread_context as string | undefined
+
+      const updates: Parameters<typeof context.workingMemory.update>[1] = {}
+      if (focus) updates.focus = focus === 'clear' ? null : focus
+      if (insight) updates.insight = insight
+      if (threadId && threadTitle) {
+        updates.thread = {
+          id: threadId,
+          title: threadTitle,
+          context: threadCtx?.split(',').map(s => s.trim()) ?? [],
+        }
+      }
+      context.workingMemory.update(tick, updates)
+      context.workingMemory.save()
+
+      const parts: string[] = []
+      if (focus) parts.push(`focus: ${focus}`)
+      if (insight) parts.push(`insight saved`)
+      if (threadId) parts.push(`thread ${threadId} updated`)
+      return `Working memory updated: ${parts.join(', ')}`
+    },
+  },
 ]

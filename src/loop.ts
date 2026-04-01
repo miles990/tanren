@@ -37,6 +37,7 @@ import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
+import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
 
 // === Checkpoint for crash recovery ===
 
@@ -107,6 +108,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   const tickJournalPath = join(journalDir, 'ticks.jsonl')
   const liveStatusPath = join(config.memoryDir, 'state', 'live-status.json')
 
+  const workingMemoryPath = join(config.memoryDir, 'state', 'working-memory.json')
+  const workingMemory = createWorkingMemory(workingMemoryPath)
+
   let running = false
   let timer: ReturnType<typeof setTimeout> | null = null
   let eventTimer: ReturnType<typeof setTimeout> | null = null
@@ -174,6 +178,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     tickCount++
     writeLiveStatus({ phase: 'perceive', tickStart, tickNumber: tickCount, running })
 
+    // Load and decay working memory
+    workingMemory.load()
+    workingMemory.decay(tickCount)
+
     // 1. Perceive
     const perceptionOutput = await perception.perceive()
     writeCheckpoint(checkpointPath, { tickStarted: tickStart, perception: perceptionOutput })
@@ -186,12 +194,16 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const identity = await loadIdentity(config.identity, memory)
     const gateWarnings = gateSystem.getWarnings()
     const learningContext = learning?.getContextSection() ?? ''
+    const wmContext = workingMemory.toContextString()
     let context: string
     if (complexity === 'minimal') {
       // Minimal: just identity + message, skip heavy perception
       context = `${identity}\n\n<message>\n${messageContent}\n</message>\n\nRespond briefly (1-3 sentences max).`
     } else {
-      context = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
+      const baseContext = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
+      context = wmContext
+        ? `<working-memory>\n${wmContext}\n</working-memory>\n\n${baseContext}`
+        : baseContext
     }
 
     // 3. Think (LLM call) with cognitive mode detection
@@ -298,7 +310,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       for (const action of actions) {
         config.onActionProgress?.({ phase: 'start', action })
         try {
-          const result = await actionRegistry.execute(action, { memory, workDir, tickCount })
+          const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
           actionResults.push(result)
           actionsExecuted++
           config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
@@ -427,7 +439,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           for (const action of novelActions) {
             config.onActionProgress?.({ phase: 'start', action })
             try {
-              const result = await actionRegistry.execute(action, { memory, workDir, tickCount })
+              const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
               roundResults.push(result)
               actionsExecuted++
               config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
@@ -469,7 +481,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           const roundResults: string[] = []
           for (const action of followUpActions) {
             try {
-              const result = await actionRegistry.execute(action, { memory, workDir, tickCount })
+              const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
               roundResults.push(result)
               actionsExecuted++
             } catch (err: unknown) {
@@ -484,6 +496,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           lastRoundResults = roundResults
         }
       }
+
+      // Save working memory after all actions complete
+      workingMemory.save()
 
       // Update tickResult with accumulated data from all rounds
       tickResult.thought = thought

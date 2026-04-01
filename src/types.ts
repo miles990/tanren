@@ -154,6 +154,7 @@ export interface ActionContext {
   memory: MemorySystem
   workDir: string
   tickCount?: number  // current tick number for temporal tagging
+  workingMemory?: import('./working-memory.js').WorkingMemorySystem
 }
 
 // === Event-Driven System ===
