@@ -5,7 +5,29 @@
  * Actions are tags in the LLM response: <action:type>content</action:type>
  */
 
+import { writeFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs'
+import { dirname } from 'node:path'
 import type { Action, ActionHandler, ActionContext, ToolDefinition, RiskTier } from './types.js'
+
+/** Write to absolute path directly, or delegate to memory system for relative paths */
+async function writeToPath(rawPath: string, content: string, context: ActionContext, append = false): Promise<string> {
+  if (rawPath.startsWith('/')) {
+    const dir = dirname(rawPath)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    if (append) {
+      appendFileSync(rawPath, content.endsWith('\n') ? content : content + '\n')
+    } else {
+      writeFileSync(rawPath, content, 'utf-8')
+    }
+    return rawPath
+  }
+  if (append) {
+    await context.memory.append(rawPath, content)
+  } else {
+    await context.memory.write(rawPath, content)
+  }
+  return rawPath
+}
 
 // Risk tier classification for graduated feedback
 const ACTION_RISK_TIERS: Record<string, RiskTier> = {
@@ -172,10 +194,10 @@ export const builtinActions: ActionHandler[] = [
   },
   {
     type: 'write',
-    description: 'Write content to a file in memory.',
+    description: 'Write content to a file. Absolute paths write directly; relative paths write to memory directory.',
     toolSchema: {
       properties: {
-        path: { type: 'string', description: 'File path relative to memory directory' },
+        path: { type: 'string', description: 'File path (absolute, or relative to memory directory)' },
         content: { type: 'string', description: 'File content to write' },
       },
       required: ['path', 'content'],
@@ -183,8 +205,8 @@ export const builtinActions: ActionHandler[] = [
     async execute(action, context) {
       // Structured input path
       if (action.input?.path) {
-        await context.memory.write(action.input.path as string, action.input.content as string)
-        return `Written: ${action.input.path}`
+        const path = await writeToPath(action.input.path as string, action.input.content as string, context)
+        return `Written: ${path}`
       }
       // Legacy: attrs path
       if (action.attrs?.path) {
@@ -205,10 +227,10 @@ export const builtinActions: ActionHandler[] = [
   },
   {
     type: 'append',
-    description: 'Append a line to a file in memory.',
+    description: 'Append a line to a file. Absolute paths write directly; relative paths write to memory directory.',
     toolSchema: {
       properties: {
-        path: { type: 'string', description: 'File path relative to memory directory' },
+        path: { type: 'string', description: 'File path (absolute, or relative to memory directory)' },
         content: { type: 'string', description: 'Line to append' },
       },
       required: ['path', 'content'],
@@ -216,8 +238,8 @@ export const builtinActions: ActionHandler[] = [
     async execute(action, context) {
       // Structured input path
       if (action.input?.path) {
-        await context.memory.append(action.input.path as string, action.input.content as string)
-        return `Appended to: ${action.input.path}`
+        const path = await writeToPath(action.input.path as string, action.input.content as string, context, true)
+        return `Appended to: ${path}`
       }
       // Legacy text path
       const newlineIdx = action.content.indexOf('\n')
