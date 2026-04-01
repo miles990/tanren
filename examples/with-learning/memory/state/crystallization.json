@@ -105,17 +105,21 @@
       "type": "action-streak",
       "signature": "streak:read",
       "description": "Tick dominated by \"read\" actions (2x)",
-      "occurrences": 1,
+      "occurrences": 2,
       "firstSeen": 1775017420481,
-      "lastSeen": 1775017420481,
+      "lastSeen": 1775022595083,
       "examples": [
         {
           "timestamp": 1775017420481,
           "summary": "2x read"
+        },
+        {
+          "timestamp": 1775022595083,
+          "summary": "3x read"
         }
       ],
       "crystallized": false
     }
   ],
-  "lastObserved": 1775022399253
+  "lastObserved": 1775022595083
 }
