@@ -38,6 +38,12 @@ import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegi
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
+import { detectContextMode, type ContextModeConfig } from './context-modes.js'
+
+// === Context Mode (module-level, readable by perception plugins) ===
+
+let currentContextMode: ContextModeConfig | null = null
+export function getCurrentContextMode(): ContextModeConfig | null { return currentContextMode }
 
 // === Checkpoint for crash recovery ===
 
@@ -189,6 +195,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Pre-route: classify message complexity (0ms)
     const messageContent = extractMessageContent(perceptionOutput)
     const complexity = classifyComplexity(messageContent)
+
+    // Detect context mode (0ms — orthogonal to complexity)
+    currentContextMode = detectContextMode(messageContent, workingMemory.getState().currentFocus)
+    console.error(`[tanren] MODE: ${currentContextMode.mode} — ${currentContextMode.description}`)
 
     // 2. Build context — scaled by complexity
     const identity = await loadIdentity(config.identity, memory)
