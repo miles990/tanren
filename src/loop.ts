@@ -384,6 +384,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         // This lets capable models do deep multi-file research across many rounds.
         const IDLE_THRESHOLD = degradeTools ? 0 : 2  // degraded: exit immediately; non-degraded: allow 2 idle rounds for thinking
         let roundsSinceLastToolUse = 0
+        let consecutiveReadOnlyRounds = 0  // tracks rounds with only read/explore/search/shell (no write/respond/synthesize)
+        const READ_ONLY_ACTIONS = new Set(['read', 'explore', 'search', 'shell'])
+        const SYNTHESIZE_THRESHOLD = 3  // force synthesize after N consecutive read-only rounds
 
         for (let round = 0; round < maxFeedbackRounds; round++) {
           // Build tool_result messages for all actions in this round
@@ -458,6 +461,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           }
 
           roundsSinceLastToolUse = 0
+          // Track consecutive read-only rounds for forced synthesize
+          const allReadOnly = novelActions.every(a => READ_ONLY_ACTIONS.has(a.type))
+          if (allReadOnly) {
+            consecutiveReadOnlyRounds++
+          } else {
+            consecutiveReadOnlyRounds = 0
+          }
           messages.push({ role: 'assistant', content: response.content })
 
           const roundResults: string[] = []
@@ -478,6 +488,20 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
           allActions.push(...novelActions)
           actionResults.push(...roundResults)
+
+          // Forced synthesize: after N consecutive read-only rounds, inject checkpoint
+          if (!degradeTools && consecutiveReadOnlyRounds >= SYNTHESIZE_THRESHOLD && messageImpliesImplementation) {
+            // Override next round's tool results with a synthesize prompt
+            const synthPrompt = 'You have done ' + consecutiveReadOnlyRounds + ' consecutive rounds of reading. STOP READING. Call the synthesize tool NOW with: gap (what you found), proposal (what to build), approach (how to build it). No more reads until you synthesize.'
+            messages.push({ role: 'user', content: [...roundResults.map((r, i) => ({
+              type: 'tool_result' as const,
+              tool_use_id: novelActions[i]?.toolUseId ?? `synth-${round}`,
+              content: r,
+            })), { type: 'text', text: synthPrompt }] })
+            consecutiveReadOnlyRounds = 0  // reset to avoid re-triggering
+            // Skip the normal toolResults building in next iteration
+            continue
+          }
         }
       } else {
         // Text-based feedback mini-loop (legacy)
