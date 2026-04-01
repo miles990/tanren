@@ -438,7 +438,18 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           if (novelActions.length === 0) {
             roundsSinceLastToolUse++
             if (roundsSinceLastToolUse > IDLE_THRESHOLD) break
-            // Model may be thinking — give it one more chance with results
+
+            // Prefilled Write: if model has read results + thought but didn't write,
+            // and the thought mentions implementation intent, nudge with a write scaffold
+            const hadReads = allActions.some(a => ['read', 'explore', 'shell'].includes(a.type))
+            const thoughtMentionsWrite = /writ|creat|implement|build|generat|modul|file/i.test(parsed.thought)
+            if (hadReads && thoughtMentionsWrite && roundsSinceLastToolUse === 1) {
+              // Inject a strong implementation nudge as user message
+              messages.push({ role: 'assistant', content: response.content })
+              messages.push({ role: 'user', content: [{ type: 'text', text: 'You have read the source and formed a plan. Now WRITE the file. Call the write tool with the path and full content. Do not think further — write your best draft now. Remember: code that teaches you something > code that proves understanding.' }] })
+              continue
+            }
+
             messages.push({ role: 'assistant', content: response.content })
             continue
           }
