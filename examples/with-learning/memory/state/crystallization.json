@@ -37,9 +37,9 @@
       "type": "gate-ignored",
       "signature": "gate-ignored:<n> consecutive ticks without visible output. Are you producing value, or just thinking?",
       "description": "Gate warning fired but behavior unchanged: 3 consecutive ticks without visible output. Are you producing value, or just thinking?",
-      "occurrences": 46,
+      "occurrences": 47,
       "firstSeen": 1774884104349,
-      "lastSeen": 1775026095297,
+      "lastSeen": 1775026193398,
       "examples": [
         {
           "timestamp": 1774884104349,
@@ -105,9 +105,9 @@
       "type": "action-streak",
       "signature": "streak:read",
       "description": "Tick dominated by \"read\" actions (2x)",
-      "occurrences": 2,
+      "occurrences": 3,
       "firstSeen": 1775017420481,
-      "lastSeen": 1775022595083,
+      "lastSeen": 1775026193398,
       "examples": [
         {
           "timestamp": 1775017420481,
@@ -116,10 +116,14 @@
         {
           "timestamp": 1775022595083,
           "summary": "3x read"
+        },
+        {
+          "timestamp": 1775026193398,
+          "summary": "3x read"
         }
       ],
-      "crystallized": false
+      "crystallized": true
     }
   ],
-  "lastObserved": 1775026095297
+  "lastObserved": 1775026193398
 }
