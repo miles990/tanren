@@ -99,7 +99,23 @@
         }
       ],
       "crystallized": false
+    },
+    {
+      "id": "pehm36",
+      "type": "action-streak",
+      "signature": "streak:read",
+      "description": "Tick dominated by \"read\" actions (2x)",
+      "occurrences": 1,
+      "firstSeen": 1775017420481,
+      "lastSeen": 1775017420481,
+      "examples": [
+        {
+          "timestamp": 1775017420481,
+          "summary": "2x read"
+        }
+      ],
+      "crystallized": false
     }
   ],
-  "lastObserved": 1775017296380
+  "lastObserved": 1775017420481
 }
