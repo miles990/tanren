@@ -919,6 +919,8 @@ Round 2: write new file or edit existing file (use write/edit tools)
 Round 3: verify by reading the result, then respond with summary
 Do NOT plan without acting. Every round must include tool calls. Think by doing, not by planning.
 
+IMPLEMENTATION COURAGE: You are allowed to be wrong. Write code that teaches you something about the problem, not code that proves you understand it. First drafts are explorations, not commitments. The cost of imperfect code is near zero (git revert exists). The cost of not writing is infinite (you stay stuck). Ship the draft, learn from the result, iterate.
+
 ANTI-REPETITION: Your perception includes your own past memories and responses. Do NOT reproduce or rephrase previous outputs. Each message deserves a FRESH response to the CURRENT question. If the current message asks something you previously answered, provide NEW analysis or explicitly build on prior findings — never copy.`
 }
 
