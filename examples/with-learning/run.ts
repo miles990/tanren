@@ -234,72 +234,63 @@ if (apiKey) {
   providerName = `omlx local (${omlxModel}) + CLI fallback`
 }
 
-// Agora Discussion Service integration
+// Agora Discussion Service — self-bootstrapping via protocol endpoint
+// Agent discovers API by GET-ing the Agora URL. No pre-installed SDK needed.
 const AGORA_URL = process.env.AGORA_URL || 'http://127.0.0.1:3003'
-const AGORA_NAME = 'akari'
-let agoraApiKey: string | null = null
-let agoraCursors: Record<string, string> = {}
 const agoraStateDir = join(baseDir, 'agora-state')
+if (!existsSync(agoraStateDir)) mkdirSync(agoraStateDir, { recursive: true })
 const agoraKeyFile = join(agoraStateDir, 'api-key.json')
 const agoraCursorFile = join(agoraStateDir, 'cursors.json')
 
-// Load Agora state
-if (!existsSync(agoraStateDir)) mkdirSync(agoraStateDir, { recursive: true })
-if (existsSync(agoraKeyFile)) {
-  try { agoraApiKey = JSON.parse(readFileSync(agoraKeyFile, 'utf-8')).apiKey } catch {}
-}
-if (existsSync(agoraCursorFile)) {
-  try { agoraCursors = JSON.parse(readFileSync(agoraCursorFile, 'utf-8')) } catch {}
+let agoraApiKey: string | null = null
+let agoraCursors: Record<string, string> = {}
+if (existsSync(agoraKeyFile)) { try { agoraApiKey = JSON.parse(readFileSync(agoraKeyFile, 'utf-8')).apiKey } catch {} }
+if (existsSync(agoraCursorFile)) { try { agoraCursors = JSON.parse(readFileSync(agoraCursorFile, 'utf-8')) } catch {} }
+
+async function agoraFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${AGORA_URL}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(agoraApiKey ? { 'x-api-key': agoraApiKey } : {}), ...init?.headers },
+    signal: AbortSignal.timeout(10_000),
+  })
 }
 
-// Auto-register with Agora on first tick
-async function ensureAgoraRegistered(): Promise<string | null> {
-  if (agoraApiKey) return agoraApiKey
+async function ensureAgoraRegistered(): Promise<boolean> {
+  if (agoraApiKey) return true
   try {
-    const res = await fetch(`${AGORA_URL}/agents/register`, {
+    const res = await agoraFetch('/agents/register', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: AGORA_NAME, type: 'agent', description: 'Research partner, built on Tanren' }),
+      body: JSON.stringify({ name: 'akari', type: 'agent', description: 'Research partner, built on Tanren' }),
     })
-    if (!res.ok) return null
+    if (!res.ok) return false
     const data = await res.json() as { apiKey: string }
     agoraApiKey = data.apiKey
     writeFileSync(agoraKeyFile, JSON.stringify({ apiKey: agoraApiKey, registeredAt: new Date().toISOString() }))
-    return agoraApiKey
-  } catch { return null }
+    return true
+  } catch { return false }
 }
 
-// Agora perception plugin — poll for new discussions/messages
+// Agora perception plugin — follows the protocol from GET /
 plugins.push({
   name: 'agora-discussions',
-  fn: () => {
+  fn: async () => {
     try {
-      if (!agoraApiKey) return '(Agora: not registered yet — will auto-register on first action)'
-      const { execSync } = require('node:child_process')
-      const raw = execSync(
-        `curl -sf --max-time 5 -H "x-api-key: ${agoraApiKey}" ${AGORA_URL}/discussions 2>/dev/null`,
-        { encoding: 'utf-8', timeout: 8000 },
-      )
-      const discussions = JSON.parse(raw) as Array<{ id: string; topic: string; phase: string; messageCount: number; participants: string[] }>
+      if (!await ensureAgoraRegistered()) return '(Agora: cannot register)'
+      const res = await agoraFetch('/discussions')
+      if (!res.ok) return '(Agora: service error)'
+      const discussions = await res.json() as Array<{ id: string; topic: string; phase: string; messageCount: number; participants: string[] }>
       if (discussions.length === 0) return '(Agora: no active discussions)'
 
-      const lines = discussions.map(d => {
-        const cursor = agoraCursors[d.id]
-        const tag = cursor ? '' : ' [NEW]'
-        return `- [${d.phase}] ${d.topic} (${d.messageCount} msgs, ${d.participants.length} participants)${tag}`
-      })
-
-      // Check for unread messages mentioning akari
+      const lines = discussions.map(d => `- [${d.phase}] ${d.topic} (${d.messageCount} msgs)`)
       let mentionCount = 0
+
       for (const d of discussions) {
         try {
-          const since = agoraCursors[d.id] || ''
-          const sinceParam = since ? `?since=${since}` : ''
-          const msgRaw = execSync(
-            `curl -sf --max-time 5 -H "x-api-key: ${agoraApiKey}" "${AGORA_URL}/discussions/${d.id}/messages${sinceParam}" 2>/dev/null`,
-            { encoding: 'utf-8', timeout: 8000 },
-          )
-          const msgs = JSON.parse(msgRaw) as Array<{ id: string; mentions?: string[] }>
+          const since = agoraCursors[d.id] ?? ''
+          const qs = since ? `?since=${since}` : ''
+          const msgRes = await agoraFetch(`/discussions/${d.id}/messages${qs}`)
+          if (!msgRes.ok) continue
+          const msgs = await msgRes.json() as Array<{ id: string; mentions?: string[] }>
           mentionCount += msgs.filter(m => m.mentions?.includes('akari')).length
           if (msgs.length > 0) agoraCursors[d.id] = msgs.at(-1)!.id
         } catch { /* skip */ }
@@ -311,11 +302,11 @@ plugins.push({
       return result
     } catch { return '(Agora: service unavailable)' }
   },
-  interval: 60_000,  // poll every 60s
+  interval: 60_000,
   category: 'input',
 })
 
-// Agora post action — let Akari participate in discussions
+// Agora post action — plain HTTP, follows protocol
 const agoraPostAction: ActionHandler = {
   type: 'agora-post',
   description: 'Post a message to an Agora discussion. Use this to participate in multi-agent roundtable discussions.',
@@ -329,20 +320,15 @@ const agoraPostAction: ActionHandler = {
     required: ['discussion_id', 'text'],
   },
   async execute(action) {
-    const key = await ensureAgoraRegistered()
-    if (!key) return '[agora-post: not registered — Agora service may be offline]'
-
+    if (!await ensureAgoraRegistered()) return '[agora-post: cannot register with Agora]'
     const discussionId = action.input?.discussion_id as string
     const text = action.input?.text as string
     const replyTo = action.input?.reply_to as string | undefined
     const mentionsStr = action.input?.mentions as string | undefined
     const mentions = mentionsStr?.split(',').map(s => s.trim()).filter(Boolean)
-
     try {
-      const res = await fetch(`${AGORA_URL}/discussions/${discussionId}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
-        body: JSON.stringify({ text, replyTo, mentions }),
+      const res = await agoraFetch(`/discussions/${discussionId}/messages`, {
+        method: 'POST', body: JSON.stringify({ text, replyTo, mentions }),
       })
       if (!res.ok) return `[agora-post error: HTTP ${res.status}]`
       const msg = await res.json() as { id: string }
