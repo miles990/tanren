@@ -375,9 +375,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
             })
           }
 
-          if (toolResults.length === 0) break
-
-          messages.push({ role: 'user', content: toolResults })
+          if (toolResults.length === 0) {
+            // No tool results to send — either first round or idle round
+            // If within IDLE_THRESHOLD, send continuation prompt instead of breaking
+            if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
+              messages.push({ role: 'user', content: [{ type: 'text', text: 'Continue. You can call more tools to gather information, or use respond when done.' }] })
+            } else {
+              break
+            }
+          } else {
+            messages.push({ role: 'user', content: toolResults })
+          }
 
           // Tool degradation: round 2+ only gets action tools (respond/edit/remember/git)
           // Skipped when toolDegradation is disabled (capable models self-regulate)
