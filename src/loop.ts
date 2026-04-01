@@ -356,7 +356,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         // Keep going as long as model calls tools. Only exit when:
         //   (end_turn or no novel actions) AND (IDLE_THRESHOLD rounds since last tool_use)
         // This lets capable models do deep multi-file research across many rounds.
-        const IDLE_THRESHOLD = degradeTools ? 0 : 1  // degraded: exit immediately on end_turn; non-degraded: allow 1 idle round
+        const IDLE_THRESHOLD = degradeTools ? 0 : 2  // degraded: exit immediately; non-degraded: allow 2 idle rounds for thinking
         let roundsSinceLastToolUse = 0
 
         for (let round = 0; round < maxFeedbackRounds; round++) {
