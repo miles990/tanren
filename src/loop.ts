@@ -885,7 +885,9 @@ You have tools available. Use them to take actions. Your text response is your t
 
 CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.
 
-You can call MULTIPLE tools in a single response — batch 3-5 read/explore/shell calls when you need to gather information from several sources. After seeing results, you can call more tools in the next round. Only use 'respond' when you have gathered enough information to give a complete answer.`
+You can call MULTIPLE tools in a single response — batch 3-5 read/explore/shell calls when you need to gather information from several sources. After seeing results, you can call more tools in the next round. Only use 'respond' when you have gathered enough information to give a complete answer.
+
+ANTI-REPETITION: Your perception includes your own past memories and responses. Do NOT reproduce or rephrase previous outputs. Each message deserves a FRESH response to the CURRENT question. If the current message asks something you previously answered, provide NEW analysis or explicitly build on prior findings — never copy.`
 }
 
 function extractMessageContent(perception: string): string {
