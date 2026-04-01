@@ -400,14 +400,15 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
           if (toolResults.length === 0) {
             // No tool results to send — either first round or idle round
-            // If within IDLE_THRESHOLD, send continuation prompt instead of breaking
             if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
-              messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now. Do NOT return text-only responses in feedback rounds. If you need more info: call read/search/explore. If you have enough: call respond. If you are implementing something: call write or edit. Every round must include at least one tool call.' }] })
+              messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed in feedback rounds.' }] })
             } else {
               break
             }
           } else {
-            messages.push({ role: 'user', content: toolResults })
+            // Append action guidance alongside tool results to prevent model from going text-only
+            const actionHint: ContentBlock = { type: 'text', text: 'Tool results above. Now: call write/edit to create files, or call respond when done. Do NOT return text without a tool call.' }
+            messages.push({ role: 'user', content: [...toolResults, actionHint] })
           }
 
           // Tool degradation: round 2+ only gets action tools (respond/edit/remember/git)
