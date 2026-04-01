@@ -331,6 +331,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         // Native tool_use multi-turn: send tool_results, get follow-up tool calls
         const allToolDefs = actionRegistry.toToolDefinitions()
         // Tool degradation: round 2+ removes read-only tools → forces action over exploration
+        // Disabled when config.toolDegradation === false (for capable models like Sonnet 4.6+)
+        const degradeTools = config.toolDegradation !== false
         const READ_ONLY_TOOLS = new Set(['read', 'explore', 'search', 'shell', 'web_fetch'])
         const actionOnlyToolDefs = allToolDefs.filter(t => !READ_ONLY_TOOLS.has(t.name))
         const toolSystemPrompt = buildToolUseSystemPrompt(identity)
@@ -349,6 +351,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           const target = a.input?.path ?? a.input?.url ?? a.input?.query ?? a.input?.pattern ?? ''
           usedToolTargets.add(`${a.type}:${target}`)
         }
+
+        // Hybrid model-driven loop (Akari's design):
+        // Keep going as long as model calls tools. Only exit when:
+        //   (end_turn or no novel actions) AND (IDLE_THRESHOLD rounds since last tool_use)
+        // This lets capable models do deep multi-file research across many rounds.
+        const IDLE_THRESHOLD = degradeTools ? 0 : 1  // degraded: exit immediately on end_turn; non-degraded: allow 1 idle round
+        let roundsSinceLastToolUse = 0
 
         for (let round = 0; round < maxFeedbackRounds; round++) {
           // Build tool_result messages for all actions in this round
@@ -371,8 +380,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           messages.push({ role: 'user', content: toolResults })
 
           // Tool degradation: round 2+ only gets action tools (respond/edit/remember/git)
-          // Forces agent to act instead of endlessly reading
-          const roundToolDefs = round === 0 ? allToolDefs : actionOnlyToolDefs
+          // Skipped when toolDegradation is disabled (capable models self-regulate)
+          const roundToolDefs = (round === 0 || !degradeTools) ? allToolDefs : actionOnlyToolDefs
 
           let response: ToolUseResponse
           try {
@@ -392,12 +401,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
             return true
           })
 
+          thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${parsed.thought}`
+
           if (novelActions.length === 0) {
-            thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${parsed.thought}`
-            break
+            roundsSinceLastToolUse++
+            if (roundsSinceLastToolUse > IDLE_THRESHOLD) break
+            // Model may be thinking — give it one more chance with results
+            messages.push({ role: 'assistant', content: response.content })
+            continue
           }
 
-          thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${parsed.thought}`
+          roundsSinceLastToolUse = 0
           messages.push({ role: 'assistant', content: response.content })
 
           const roundResults: string[] = []
@@ -418,9 +432,6 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
           allActions.push(...novelActions)
           actionResults.push(...roundResults)
-
-          // If stop_reason is end_turn (not tool_use), model is done
-          if (response.stop_reason === 'end_turn') break
         }
       } else {
         // Text-based feedback mini-loop (legacy)
@@ -863,7 +874,9 @@ function buildToolUseSystemPrompt(identity: string): string {
 
 You have tools available. Use them to take actions. Your text response is your thinking/reflection — it will be recorded but has no side effects. Only tool calls produce effects.
 
-CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.`
+CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.
+
+You can call MULTIPLE tools in a single response — batch 3-5 read/explore/shell calls when you need to gather information from several sources. After seeing results, you can call more tools in the next round. Only use 'respond' when you have gathered enough information to give a complete answer.`
 }
 
 function extractMessageContent(perception: string): string {

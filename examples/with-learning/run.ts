@@ -8,7 +8,7 @@
  *   npx tsx run.ts --watch      # message-triggered ticks
  */
 
-import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider, createOpenAIProvider, createFallbackProvider, createClaudeCliProvider } from '../../src/index.js'
+import { createAgent, createOutputGate, createSymptomFixGate, createAnalysisWithoutActionGate, createAnthropicProvider, createOpenAIProvider, createFallbackProvider, createClaudeCliProvider, builtinActions } from '../../src/index.js'
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { ActionHandler } from '../../src/types.js'
@@ -197,7 +197,7 @@ let providerName = 'Claude CLI (text-based actions)'
 if (apiKey) {
   llmProvider = createAnthropicProvider({
     apiKey,
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     maxTokens: 8192,
   })
   providerName = 'Anthropic API (native tool use)'
@@ -222,14 +222,15 @@ const agent = createAgent({
   memoryDir: './examples/with-learning/memory',
   searchPaths: [kuroTopicsDir],
   perceptionPlugins: plugins,
-  actions: [respondAction, clearInboxAction],
+  actions: [...builtinActions, respondAction, clearInboxAction],
   llm: llmProvider,
   gates: [
     createOutputGate(3),                  // warn after 3 empty ticks
     createAnalysisWithoutActionGate(2),   // warn after 2 ticks with thought but no actions
     createSymptomFixGate(5),              // warn after 5 consecutive fixes
   ],
-  feedbackRounds: 5,            // reduced from 10: 4B model loops with too many rounds
+  feedbackRounds: 15,           // increased for Sonnet 4.6 API — allows deep multi-file research
+  toolDegradation: false,        // Sonnet 4.6 can self-regulate read depth — no need to strip read tools
   tickInterval: 300_000,        // 5 min between ticks (cost-conscious)
   onActionProgress: (event) => {
     // Live action progress in terminal (dim yellow for actions)
