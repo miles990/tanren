@@ -5,7 +5,28 @@
  * Actions are tags in the LLM response: <action:type>content</action:type>
  */
 
-import type { Action, ActionHandler, ActionContext, ToolDefinition } from './types.js'
+import type { Action, ActionHandler, ActionContext, ToolDefinition, RiskTier } from './types.js'
+
+// Risk tier classification for graduated feedback
+const ACTION_RISK_TIERS: Record<string, RiskTier> = {
+  // Tier 1: Safe/read-only — skip feedback entirely
+  respond: 1, remember: 1, search: 1, read: 1, explore: 1, 'clear-inbox': 1,
+  // Tier 2: Moderate/additive — execute + log, no verification
+  write: 2, append: 2, web_fetch: 2,
+  // Tier 3: High-risk/destructive — full feedback loop
+  shell: 3, edit: 3, git: 3,
+}
+
+/** Get risk tier for an action type. Unknown actions default to Tier 3 (safe default). */
+export function getRiskTier(actionType: string): RiskTier {
+  return ACTION_RISK_TIERS[actionType] ?? 3
+}
+
+/** Get the highest risk tier in a set of actions. Mixed rounds use highest tier. */
+export function getRoundRiskTier(actions: Action[]): RiskTier {
+  if (actions.length === 0) return 1
+  return Math.max(...actions.map(a => getRiskTier(a.type))) as RiskTier
+}
 
 export interface ActionRegistry {
   register(handler: ActionHandler): void

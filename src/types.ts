@@ -15,6 +15,12 @@ export interface TickResult {
   gateResults: GateResult[]
 }
 
+/** Risk tier for graduated action handling.
+ *  Tier 1: Safe/read-only — skip feedback entirely
+ *  Tier 2: Moderate/additive — execute + log, no verification round
+ *  Tier 3: High-risk/destructive — full feedback loop */
+export type RiskTier = 1 | 2 | 3
+
 export interface Action {
   type: string
   content: string

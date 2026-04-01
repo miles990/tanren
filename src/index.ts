@@ -90,13 +90,14 @@ export type {
   PerceptionPlugin,
   ActionHandler,
   ActionContext,
+  RiskTier,
 } from './types.js'
 
 // Modules
 export { createMemorySystem, listMemoryFiles } from './memory.js'
 export { createPerception, type PerceptionSystem } from './perception.js'
 export { createGateSystem, defineGate, createOutputGate, createAnalysisWithoutActionGate, createSymptomFixGate, type GateSystem, type GateSpec } from './gates.js'
-export { createActionRegistry, builtinActions, type ActionRegistry } from './actions.js'
+export { createActionRegistry, builtinActions, getRiskTier, getRoundRiskTier, type ActionRegistry } from './actions.js'
 export { createLoop, type AgentLoop } from './loop.js'
 
 // LLM Providers

@@ -34,7 +34,7 @@ import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
-import { createActionRegistry, builtinActions, type ActionRegistry } from './actions.js'
+import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 
@@ -311,21 +311,22 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       }
 
       // Conditional feedback: skip feedback round if all actions are simple (respond/remember/clear-inbox)
-      // These don't need verification — saves an entire LLM call (~30s on 4B)
-      const SIMPLE_ACTIONS = new Set(['respond', 'remember', 'clear-inbox', 'write', 'append'])
-      const allSimple = actions.length > 0 && actions.every(a => SIMPLE_ACTIONS.has(a.type))
-      const skipFeedback = allSimple && actionsFailed === 0
+      // Risk-graduated feedback: Tier 1 (safe) skips feedback, Tier 3 (risky) gets full loop
+      const roundRisk = getRoundRiskTier(actions)
+      const skipFeedback = roundRisk === 1 && actionsFailed === 0
 
-      // Feedback rounds: 0 if all simple, else vary by cognitive mode
+      // Feedback rounds: 0 for Tier 1, reduced for Tier 2, full for Tier 3
       const COGNITIVE_FEEDBACK_ROUNDS: Record<string, number> = {
         conversational: 1,
         contemplative: 2,
         collaborative: config.feedbackRounds ?? 5,
       }
+      const baseFeedbackRounds = cognitiveContext
+        ? COGNITIVE_FEEDBACK_ROUNDS[cognitiveContext.mode] ?? (config.feedbackRounds ?? 1)
+        : config.feedbackRounds ?? 1
       const maxFeedbackRounds = skipFeedback ? 0
-        : cognitiveContext
-          ? COGNITIVE_FEEDBACK_ROUNDS[cognitiveContext.mode] ?? (config.feedbackRounds ?? 1)
-          : config.feedbackRounds ?? 1
+        : roundRisk <= 2 ? Math.min(baseFeedbackRounds, 3)  // Tier 2: capped at 3 rounds
+        : baseFeedbackRounds                                  // Tier 3: full rounds
 
       if (useToolUse && structuredActions !== null) {
         // Native tool_use multi-turn: send tool_results, get follow-up tool calls
