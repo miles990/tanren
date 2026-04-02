@@ -9,6 +9,28 @@ import { writeFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Action, ActionHandler, ActionContext, ToolDefinition, RiskTier } from './types.js'
 
+/**
+ * Extract path from structured input — handles model merging path+content into one field.
+ * Constraint Texture: field separation is deterministic → code recovers, not model.
+ */
+function extractPathAndContent(input: Record<string, unknown>): { path: string; content: string } | null {
+  // Ideal: model filled both fields
+  if (input.path && input.content) {
+    return { path: String(input.path), content: String(input.content) }
+  }
+  // Fallback: model put everything in content (path on first line)
+  const raw = String(input.content ?? input.path ?? '')
+  const newlineIdx = raw.indexOf('\n')
+  if (newlineIdx === -1) return null
+  let path = raw.slice(0, newlineIdx).trim()
+  if (path.startsWith('path:')) path = path.slice(5).trim()
+  // Validate: first line looks like a path (has / or . or ends with extension)
+  if (path.includes('/') || path.includes('.')) {
+    return { path, content: raw.slice(newlineIdx + 1) }
+  }
+  return null
+}
+
 /** Write to absolute path directly, or delegate to memory system for relative paths */
 async function writeToPath(rawPath: string, content: string, context: ActionContext, append = false): Promise<string> {
   if (rawPath.startsWith('/')) {
@@ -215,10 +237,13 @@ export const builtinActions: ActionHandler[] = [
       required: ['path', 'content'],
     },
     async execute(action, context) {
-      // Structured input path
-      if (action.input?.path) {
-        const path = await writeToPath(action.input.path as string, action.input.content as string, context)
-        return `Written: ${path}`
+      // Structured input — with fallback for merged path+content
+      if (action.input) {
+        const extracted = extractPathAndContent(action.input)
+        if (extracted) {
+          const path = await writeToPath(extracted.path, extracted.content, context)
+          return `Written: ${path}`
+        }
       }
       // Legacy: attrs path
       if (action.attrs?.path) {
@@ -248,10 +273,13 @@ export const builtinActions: ActionHandler[] = [
       required: ['path', 'content'],
     },
     async execute(action, context) {
-      // Structured input path
-      if (action.input?.path) {
-        const path = await writeToPath(action.input.path as string, action.input.content as string, context, true)
-        return `Appended to: ${path}`
+      // Structured input — with fallback for merged path+content
+      if (action.input) {
+        const extracted = extractPathAndContent(action.input)
+        if (extracted) {
+          const path = await writeToPath(extracted.path, extracted.content, context, true)
+          return `Appended to: ${path}`
+        }
       }
       // Legacy text path
       const newlineIdx = action.content.indexOf('\n')
