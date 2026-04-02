@@ -64,6 +64,8 @@ interface TriggerState {
 
 export interface AgentLoop {
   tick(mode?: TickMode, triggerEvent?: TriggerEvent): Promise<TickResult>
+  /** Inject a message for the next tick — perception will include it */
+  injectMessage(from: string, text: string): void
   start(interval?: number): void
   stop(): void
   isRunning(): boolean
@@ -77,6 +79,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   const gateSystem = createGateSystem(config.gates ?? [])
   const actionRegistry = createActionRegistry()
 
+  // In-process message queue for chat() — consumed once per tick
+  let pendingMessage: { from: string; text: string } | null = null
+  // Last response from action:respond — extracted per tick
+  let lastResponse = ''
+
   // Cognitive mode detector (if enabled)
   const cognitiveModeEnabled = config.cognitiveMode?.enabled ?? false
   const cognitiveModeDetector: CognitiveModeDetector | null = cognitiveModeEnabled
@@ -87,11 +94,39 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   for (const handler of builtinActions) {
     actionRegistry.register(handler)
   }
+  // Built-in respond action — stores response in-process for chat()
+  if (!config.actions?.some(a => a.type === 'respond')) {
+    actionRegistry.register({
+      type: 'respond',
+      description: 'Send a response message back to the caller.',
+      toolSchema: {
+        properties: { content: { type: 'string', description: 'Response text' } },
+        required: ['content'],
+      },
+      async execute(action) {
+        const text = (action.input?.content as string) ?? action.content
+        lastResponse = text
+        return 'Response sent.'
+      },
+    })
+  }
   if (config.actions) {
     for (const handler of config.actions) {
       actionRegistry.register(handler)
     }
   }
+
+  // Injected message perception — consumed once per tick
+  perception.register({
+    name: 'injected-message',
+    category: 'input',
+    fn: () => {
+      if (!pendingMessage) return ''
+      const { from, text } = pendingMessage
+      pendingMessage = null  // consume
+      return `<message from="${from}">\n${text}\n</message>`
+    },
+  })
 
   // Learning system
   const learningEnabled = config.learning?.enabled ?? true
@@ -182,6 +217,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   async function tick(mode: TickMode = 'scheduled', triggerEvent?: TriggerEvent): Promise<TickResult> {
     const tickStart = Date.now()
     tickCount++
+    lastResponse = ''  // reset per tick
     writeLiveStatus({ phase: 'perceive', tickStart, tickNumber: tickCount, running })
 
     // Load and decay working memory
@@ -716,6 +752,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
   return {
     tick,
+    injectMessage(from: string, text: string) {
+      pendingMessage = { from, text }
+    },
     start,
     stop,
     isRunning: () => running,

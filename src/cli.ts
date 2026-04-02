@@ -33,6 +33,7 @@ tanren — Minimal AI agent framework
 
 Commands:
   tick    Run a single perceive→think→act cycle
+  chat    Interactive conversation with the agent
   start   Start the autonomous loop
 
 Options:
@@ -118,6 +119,41 @@ async function main(): Promise<void> {
       console.error(`[tanren] Tick failed: ${msg}`)
       process.exit(1)
     }
+  } else if (command === 'chat') {
+    const { createInterface } = await import('node:readline')
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    console.log('[tanren] Chat mode — type your message, Enter to send, Ctrl+C to quit\n')
+
+    const prompt = (): void => {
+      rl.question('\x1b[36mYou>\x1b[0m ', async (input) => {
+        const trimmed = input.trim()
+        if (!trimmed) { prompt(); return }
+
+        const start = Date.now()
+        try {
+          const result = await agent.chat(trimmed)
+          const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+          const actionsStr = result.actions.join(', ') || 'none'
+
+          if (result.response) {
+            console.log(`\x1b[32mAgent>\x1b[0m (${elapsed}s, actions: ${actionsStr})\n`)
+            console.log(result.response)
+          } else {
+            console.log(`\x1b[33mAgent (thought only)>\x1b[0m (${elapsed}s)\n`)
+            console.log(result.thought.slice(0, 2000))
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error(`\x1b[31m[error]\x1b[0m ${msg}`)
+        }
+        console.log()
+        prompt()
+      })
+    }
+    prompt()
+
+    const shutdown = () => { rl.close(); console.log('\n[tanren] Bye'); process.exit(0) }
+    process.on('SIGINT', shutdown)
   } else if (command === 'start') {
     const ms = interval ? parseInt(interval, 10) : (config.tickInterval ?? 60_000)
     console.log(`[tanren] Starting loop (interval: ${ms}ms)`)
@@ -135,7 +171,7 @@ async function main(): Promise<void> {
     process.on('SIGTERM', shutdown)
   } else {
     console.error(`Unknown command: ${command}`)
-    console.error('Use "tanren tick" or "tanren start"')
+    console.error('Use "tanren tick", "tanren chat", or "tanren start"')
     process.exit(1)
   }
 }

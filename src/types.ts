@@ -15,6 +15,14 @@ export interface TickResult {
   gateResults: GateResult[]
 }
 
+export interface ChatResult {
+  response: string            // from action:respond, or empty if no response
+  thought: string             // full LLM output
+  actions: string[]           // action types executed
+  duration: number            // ms
+  quality: number             // observation quality 1-5
+}
+
 /** Risk tier for graduated action handling.
  *  Tier 1: Safe/read-only — skip feedback entirely
  *  Tier 2: Moderate/additive — execute + log, no verification round

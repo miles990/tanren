@@ -13,11 +13,13 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createLoop, type AgentLoop } from './loop.js'
-import type { TanrenConfig, TickResult } from './types.js'
+import type { TanrenConfig, TickResult, ChatResult } from './types.js'
 
 export interface TanrenAgent {
   /** Run one perceive→think→act cycle */
   tick(): Promise<TickResult>
+  /** Send a message and get a response — injects message, runs tick, extracts response */
+  chat(message: string, options?: { from?: string }): Promise<ChatResult>
   /** Start the autonomous loop */
   start(interval?: number): void
   /** Stop the loop gracefully */
@@ -54,6 +56,21 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
 
   return {
     tick: () => loop.tick(),
+    async chat(message: string, options?: { from?: string }): Promise<ChatResult> {
+      const from = options?.from ?? 'user'
+      loop.injectMessage(from, message)
+      const result = await loop.tick()
+      // Extract response: prefer action:respond content, fallback to thought
+      const respondAction = result.actions.find(a => a.type === 'respond')
+      const response = respondAction?.content ?? ''
+      return {
+        response,
+        thought: result.thought,
+        actions: result.actions.map(a => a.type),
+        duration: result.observation.duration,
+        quality: result.observation.outputQuality,
+      }
+    },
     start: (interval) => loop.start(interval ?? config.tickInterval),
     stop: () => loop.stop(),
     isRunning: () => loop.isRunning(),
@@ -73,6 +90,7 @@ function ensureDir(dir: string): void {
 export type {
   TanrenConfig,
   TickResult,
+  ChatResult,
   Action,
   Observation,
   Gate,
