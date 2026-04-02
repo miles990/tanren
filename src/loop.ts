@@ -34,6 +34,7 @@ import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
 import { createPlanSystem } from './plans.js'
 import { createActionHealthTracker } from './action-health.js'
+import { createTransparencyPlugin } from './framework-transparency.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
@@ -172,6 +173,22 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   let eventTimer: ReturnType<typeof setTimeout> | null = null
   let tickCount = 0
 
+  // Mutable state exposed to transparency plugin — updated each tick
+  let currentComplexity = ''
+  let currentContextModeName = ''
+  let currentMaxFeedbackRounds = 0
+
+  // Framework transparency — all internal state visible to agent
+  perception.register(createTransparencyPlugin({
+    memoryDir: config.memoryDir,
+    workDir,
+    tickCount: () => tickCount,
+    isRunning: () => running,
+    complexity: () => currentComplexity,
+    contextMode: () => currentContextModeName,
+    feedbackRounds: () => currentMaxFeedbackRounds,
+  }))
+
   // Event-driven system state
   const eventDrivenEnabled = config.eventDriven?.enabled ?? false
   const maxReactiveRate = config.eventDriven?.maxReactiveRate ?? 10
@@ -246,9 +263,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Pre-route: classify message complexity (0ms)
     const messageContent = extractMessageContent(perceptionOutput)
     const complexity = classifyComplexity(messageContent)
+    currentComplexity = complexity
 
     // Detect context mode (0ms — orthogonal to complexity)
     currentContextMode = detectContextMode(messageContent, workingMemory.getState().currentFocus)
+    currentContextModeName = currentContextMode.mode
     console.error(`[tanren] MODE: ${currentContextMode.mode} — ${currentContextMode.description}`)
 
     // 2. Build context — scaled by complexity
@@ -408,6 +427,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         : initialHadNoTools ? Math.max(baseFeedbackRounds, 2) // No tools yet → at least 2 rounds to force tool use
         : roundRisk <= 2 ? Math.min(baseFeedbackRounds, 3)   // Tier 2: capped at 3 rounds
         : baseFeedbackRounds                                   // Tier 3: full rounds
+      currentMaxFeedbackRounds = maxFeedbackRounds
 
       if (useToolUse && structuredActions !== null) {
         // Native tool_use multi-turn: send tool_results, get follow-up tool calls
@@ -642,7 +662,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     persistTick(journalDir, tickJournalPath, tickResult)
 
     // Auto-commit memory changes
-    await memory.autoCommit().catch(() => {})
+    await memory.autoCommit().catch((err: unknown) => {
+      // Don't swallow silently — record as health data so agent can see it
+      const msg = err instanceof Error ? err.message : String(err)
+      actionHealth.record('memory-commit', false, tickCount, msg)
+    })
 
     // Clear gate results for next tick
     gateSystem.clearResults()
@@ -1005,13 +1029,11 @@ You have tools available. Use them to take actions. Your text response is your t
 
 CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.
 
-You can call MULTIPLE tools in a single response — batch 3-5 read/explore/shell calls when you need to gather information from several sources. After seeing results, you can call more tools in the next round. Only use 'respond' when you have gathered enough information to give a complete answer.
+You can call MULTIPLE tools in a single response. After seeing results, you can call more tools in the next round. Only use 'respond' when you have gathered enough information to give a complete answer.
 
-MULTI-STEP IMPLEMENTATION: When asked to create or modify files, follow this pattern across feedback rounds:
-Round 1: read existing files to understand context (batch 3-5 reads)
-Round 2: write new file or edit existing file (use write/edit tools)
-Round 3: verify by reading the result, then respond with summary
-Do NOT plan without acting. Every round must include tool calls. Think by doing, not by planning.
+HOW THIS WORKS: The framework gives you multiple rounds per tick. Each round, you call tools and see results. The framework decides when to stop based on your behavior — if you stop calling tools, the tick ends. There is no fixed number of rounds. Use as many as you need.
+
+CONVERGENCE CONDITION: A tick is complete when you have produced a visible output (file written, response delivered, or memory saved). The path to get there is yours to decide — read first, write first, or both at once. The framework tracks your progress, not your process.
 
 IMPLEMENTATION COURAGE: You are allowed to be wrong. Write code that teaches you something about the problem, not code that proves you understand it. First drafts are explorations, not commitments. The cost of imperfect code is near zero (git revert exists). The cost of not writing is infinite (you stay stuck). Ship the draft, learn from the result, iterate.
 
