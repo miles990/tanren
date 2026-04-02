@@ -456,8 +456,20 @@ export const builtinActions: ActionHandler[] = [
       const { resolve } = await import('node:path')
       const execFileAsync = promisify(execFile)
 
-      const pattern = (action.input?.pattern as string) ?? action.content.trim()
-      const rawDir = action.input?.directory as string | undefined
+      let pattern = (action.input?.pattern as string) ?? action.content.trim()
+      let rawDir = action.input?.directory as string | undefined
+
+      // Recover: model may write "directory pattern" as one string in content
+      if (!rawDir && pattern.includes(' ')) {
+        const spaceIdx = pattern.indexOf(' ')
+        const possibleDir = pattern.slice(0, spaceIdx)
+        // If the first part looks like a directory (has / or is a known dir)
+        if (possibleDir.includes('/') || possibleDir === '.') {
+          rawDir = possibleDir
+          pattern = pattern.slice(spaceIdx + 1).trim()
+        }
+      }
+
       const dir = rawDir ? resolve(context.workDir, rawDir) : context.workDir
 
       try {
@@ -497,9 +509,23 @@ export const builtinActions: ActionHandler[] = [
       const { readFileSync, writeFileSync, existsSync } = await import('node:fs')
       const { resolve } = await import('node:path')
 
-      const rawPath = (action.input?.path as string) ?? ''
-      const oldStr = (action.input?.old_string as string) ?? ''
-      const newStr = (action.input?.new_string as string) ?? ''
+      let rawPath = (action.input?.path as string) ?? ''
+      let oldStr = (action.input?.old_string as string) ?? ''
+      let newStr = (action.input?.new_string as string) ?? ''
+
+      // Recover from text mode: content may have "path\n---OLD---\nold\n---NEW---\nnew"
+      if (!rawPath && action.content) {
+        const parts = action.content.split(/\n---\s*(?:OLD|old|OLD_STRING|old_string)\s*---\n/)
+        if (parts.length >= 2) {
+          rawPath = parts[0].trim()
+          const rest = parts.slice(1).join('\n---OLD---\n')
+          const newParts = rest.split(/\n---\s*(?:NEW|new|NEW_STRING|new_string)\s*---\n/)
+          if (newParts.length >= 2) {
+            oldStr = newParts[0]
+            newStr = newParts.slice(1).join('\n---NEW---\n')
+          }
+        }
+      }
 
       if (!rawPath || !oldStr) return '[edit error: path and old_string required]'
 
