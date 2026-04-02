@@ -322,7 +322,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     }
 
     // 4. Parse actions (structured from tool use, or parsed from text)
-    const actions = structuredActions ?? actionRegistry.parse(thought)
+    // Constraint Texture: if model returned 0 tool_use blocks but thought has text tags,
+    // fall back to text parsing. Empty array ≠ null — [] means "tried tools, used none".
+    const actions = (structuredActions && structuredActions.length > 0)
+      ? structuredActions
+      : actionRegistry.parse(thought)
 
     // 5. Gate check (before execution)
     const observation = createEmptyObservation(tickStart)
