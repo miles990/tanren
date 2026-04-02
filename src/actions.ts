@@ -404,7 +404,18 @@ export const builtinActions: ActionHandler[] = [
       const { readFileSync, existsSync } = await import('node:fs')
       const { resolve } = await import('node:path')
 
-      const rawPath = (action.input?.path as string) ?? action.content.trim()
+      let rawPath = (action.input?.path as string) ?? action.content.trim()
+      let startLineOverride: number | undefined
+      let endLineOverride: number | undefined
+
+      // Recover line range from path — model often writes "file.ts:1-20" instead of separate fields
+      const lineRangeMatch = rawPath.match(/^(.+?):(\d+)(?:-(\d+))?$/)
+      if (lineRangeMatch && !existsSync(rawPath)) {
+        rawPath = lineRangeMatch[1]
+        startLineOverride = parseInt(lineRangeMatch[2], 10)
+        if (lineRangeMatch[3]) endLineOverride = parseInt(lineRangeMatch[3], 10)
+      }
+
       const filePath = rawPath.startsWith('/') ? rawPath : resolve(context.workDir, rawPath)
 
       if (!existsSync(filePath)) {
@@ -414,8 +425,8 @@ export const builtinActions: ActionHandler[] = [
       try {
         const content = readFileSync(filePath, 'utf-8')
         const allLines = content.split('\n')
-        const startLine = Math.max(1, (action.input?.start_line as number) ?? 1)
-        const endLine = Math.min(allLines.length, (action.input?.end_line as number) ?? allLines.length)
+        const startLine = Math.max(1, startLineOverride ?? (action.input?.start_line as number) ?? 1)
+        const endLine = Math.min(allLines.length, endLineOverride ?? (action.input?.end_line as number) ?? allLines.length)
         const lines = allLines.slice(startLine - 1, endLine)
 
         const numbered = lines.map((line, i) => `${startLine + i}\t${line}`).join('\n')
