@@ -7,10 +7,22 @@
  *   tanren start  [--config path] [--interval ms]  Start the loop
  */
 
-import { resolve } from 'node:path'
+import { resolve, dirname } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { createAgent } from './index.js'
 import type { TanrenConfig } from './types.js'
+
+/** Load .env from cwd — framework responsibility, not each config's */
+function loadEnv(): void {
+  const envPath = resolve('.env')
+  if (!existsSync(envPath)) return
+  for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+    const match = line.match(/^\s*([^#=]+?)\s*=\s*(.+?)\s*$/)
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2].replace(/^["']|["']$/g, '')
+    }
+  }
+}
 
 const args = process.argv.slice(2)
 const command = args[0]
@@ -82,6 +94,7 @@ async function loadConfig(): Promise<TanrenConfig> {
 }
 
 async function main(): Promise<void> {
+  loadEnv()
   const config = await loadConfig()
   const interval = getFlag('interval')
 
