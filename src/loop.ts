@@ -33,6 +33,7 @@ import type {
 import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
 import { createPlanSystem } from './plans.js'
+import { createActionHealthTracker } from './action-health.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
@@ -161,6 +162,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   for (const handler of planSystem.actions) {
     actionRegistry.register(handler)
   }
+
+  // Action health tracker — deterministic success/failure data for agent perception
+  const actionHealth = createActionHealthTracker(join(config.memoryDir, 'state'))
+  perception.register(actionHealth.getPerceptionPlugin())
 
   let running = false
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -373,11 +378,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
           actionResults.push(result)
           actionsExecuted++
+          actionHealth.record(action.type, true, tickCount)
           config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err)
           actionResults.push(`[action ${action.type} failed: ${msg}]`)
           actionsFailed++
+          actionHealth.record(action.type, false, tickCount, msg)
           config.onActionProgress?.({ phase: 'error', action, error: msg })
         }
       }
@@ -531,11 +538,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
               const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
               roundResults.push(result)
               actionsExecuted++
+              actionHealth.record(action.type, true, tickCount)
               config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err)
               roundResults.push(`[action ${action.type} failed: ${msg}]`)
               actionsFailed++
+              actionHealth.record(action.type, false, tickCount, msg)
               config.onActionProgress?.({ phase: 'error', action, error: msg })
             }
           }
@@ -575,10 +584,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
               const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
               roundResults.push(result)
               actionsExecuted++
+              actionHealth.record(action.type, true, tickCount)
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err)
               roundResults.push(`[action ${action.type} failed: ${msg}]`)
               actionsFailed++
+              actionHealth.record(action.type, false, tickCount, msg)
             }
           }
 

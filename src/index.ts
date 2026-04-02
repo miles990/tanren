@@ -129,6 +129,9 @@ export { createWorkingMemory, type WorkingMemorySystem } from './working-memory.
 // Plan System
 export { createPlanSystem, loadPlans, parsePlan, type Plan, type PlanStep } from './plans.js'
 
+// Action Health
+export { createActionHealthTracker } from './action-health.js'
+
 // Context Modes
 export { detectContextMode, getModeConfig, type ContextMode, type ContextModeConfig } from './context-modes.js'
 
