@@ -383,7 +383,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // BUT: if initial actions are reads and the message implies implementation,
       // don't skip — the model needs feedback rounds to transition from read to write.
       const roundRisk = getRoundRiskTier(actions)
-      const messageImpliesImplementation = /writ|creat|implement|build|generat|edit|fix|mak|produc/i.test(context)
+      const messageImpliesImplementation = /writ|creat|implement|build|generat|edit|fix|mak|produc|寫|建|做|改|修|加|產|刪|移|遷/i.test(context)
       const skipFeedback = roundRisk === 1 && actionsFailed === 0 && !messageImpliesImplementation
 
       // Feedback rounds: 0 for Tier 1 (no impl), reduced for Tier 2, full for Tier 3
