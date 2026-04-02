@@ -378,13 +378,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         }
       }
 
-      // Conditional feedback: skip feedback round if all actions are simple (respond/remember/clear-inbox)
-      // Risk-graduated feedback: Tier 1 (safe) skips feedback, Tier 3 (risky) gets full loop
-      // BUT: if initial actions are reads and the message implies implementation,
-      // don't skip — the model needs feedback rounds to transition from read to write.
+      // Convergence Condition: feedback needed if model hasn't produced useful output yet.
+      // Behavior-driven, not keyword-driven — look at what the model DID, not what the user SAID.
       const roundRisk = getRoundRiskTier(actions)
-      const messageImpliesImplementation = /writ|creat|implement|build|generat|edit|fix|mak|produc|寫|建|做|改|修|加|產|刪|移|遷/i.test(context)
-      const skipFeedback = roundRisk === 1 && actionsFailed === 0 && !messageImpliesImplementation
+      const initialHadNoTools = actions.length === 0
+      const skipFeedback = !initialHadNoTools && roundRisk === 1 && actionsFailed === 0
 
       // Feedback rounds: 0 for Tier 1 (no impl), reduced for Tier 2, full for Tier 3
       const COGNITIVE_FEEDBACK_ROUNDS: Record<string, number> = {
@@ -396,8 +394,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         ? COGNITIVE_FEEDBACK_ROUNDS[cognitiveContext.mode] ?? (config.feedbackRounds ?? 1)
         : config.feedbackRounds ?? 1
       const maxFeedbackRounds = skipFeedback ? 0
-        : roundRisk <= 2 ? Math.min(baseFeedbackRounds, 3)  // Tier 2: capped at 3 rounds
-        : baseFeedbackRounds                                  // Tier 3: full rounds
+        : initialHadNoTools ? Math.max(baseFeedbackRounds, 2) // No tools yet → at least 2 rounds to force tool use
+        : roundRisk <= 2 ? Math.min(baseFeedbackRounds, 3)   // Tier 2: capped at 3 rounds
+        : baseFeedbackRounds                                   // Tier 3: full rounds
 
       if (useToolUse && structuredActions !== null) {
         // Native tool_use multi-turn: send tool_results, get follow-up tool calls
@@ -453,8 +452,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           }
 
           if (toolResults.length === 0) {
-            // No tool results to send — either first round or idle round
-            if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
+            // No tool results to send — model returned text-only
+            const neverCalledTools = allActions.length === 0
+            if (neverCalledTools && round === 0) {
+              // Model hasn't called ANY tools yet — must force at least one attempt
+              messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed. Use the respond tool to deliver your answer.' }] })
+            } else if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
               messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed in feedback rounds.' }] })
             } else {
               break
@@ -494,7 +497,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
             roundsWithoutProduction++
 
             // Convergence check: if stuck in research mode, surface the gap between current state and desired state
-            if (!degradeTools && roundsWithoutProduction >= SYNTHESIZE_THRESHOLD && messageImpliesImplementation) {
+            if (!degradeTools && roundsWithoutProduction >= SYNTHESIZE_THRESHOLD) {
               messages.push({ role: 'assistant', content: response.content })
               messages.push({ role: 'user', content: [{ type: 'text', text: `Convergence check: The user asked you to BUILD something. After ${roundsWithoutProduction} rounds, you have not produced any output (no write, no respond, no synthesize). Your current state: research accumulated. Desired state: a file exists that didn't before, or a response delivered. What is the smallest step that moves you from current to desired? Take that step now.` }] })
               roundsWithoutProduction = 0
