@@ -10,7 +10,7 @@
 
 import { readFile, writeFile, appendFile, mkdir, readdir, stat } from 'node:fs/promises'
 import { existsSync, mkdirSync } from 'node:fs'
-import { join, relative, dirname } from 'node:path'
+import { join, relative, dirname, basename } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import type { MemorySystem, SearchResult } from './types.js'
 
@@ -97,6 +97,13 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
 // === Internal Helpers ===
 
 function resolvePath(memoryDir: string, path: string): string {
+  // Strip redundant memoryDir prefix — model doesn't know paths are relative to memoryDir
+  // e.g., memoryDir="./memory", path="memory/plans/x.md" → should resolve to "./memory/plans/x.md"
+  const memDirName = basename(memoryDir)
+  if (path.startsWith(memDirName + '/')) {
+    path = path.slice(memDirName.length + 1)
+  }
+
   // Prevent path traversal
   const resolved = join(memoryDir, path)
   const rel = relative(memoryDir, resolved)
