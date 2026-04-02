@@ -513,16 +513,21 @@ export const builtinActions: ActionHandler[] = [
       let oldStr = (action.input?.old_string as string) ?? ''
       let newStr = (action.input?.new_string as string) ?? ''
 
-      // Recover from text mode: content may have "path\n---OLD---\nold\n---NEW---\nnew"
+      // Recover from text mode: model may use various delimiter formats
+      // <<<old_string>>>, ---OLD---, ---old_string---, etc.
       if (!rawPath && action.content) {
-        const parts = action.content.split(/\n---\s*(?:OLD|old|OLD_STRING|old_string)\s*---\n/)
-        if (parts.length >= 2) {
-          rawPath = parts[0].trim()
-          const rest = parts.slice(1).join('\n---OLD---\n')
-          const newParts = rest.split(/\n---\s*(?:NEW|new|NEW_STRING|new_string)\s*---\n/)
-          if (newParts.length >= 2) {
-            oldStr = newParts[0]
-            newStr = newParts.slice(1).join('\n---NEW---\n')
+        // Generic pattern: path on first line, then any old/new delimiter pair
+        const oldDelimiters = /\n(?:<<<\s*old_string\s*>>>|---\s*(?:OLD|old|OLD_STRING|old_string)\s*---)\n/
+        const newDelimiters = /\n(?:<<<\s*new_string\s*>>>|---\s*(?:NEW|new|NEW_STRING|new_string)\s*---)\n/
+
+        const oldSplit = action.content.split(oldDelimiters)
+        if (oldSplit.length >= 2) {
+          rawPath = oldSplit[0].trim()
+          const rest = oldSplit.slice(1).join('')
+          const newSplit = rest.split(newDelimiters)
+          if (newSplit.length >= 2) {
+            oldStr = newSplit[0]
+            newStr = newSplit.slice(1).join('')
           }
         }
       }
