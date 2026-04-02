@@ -16,6 +16,7 @@ interface PluginState {
 export interface PerceptionSystem {
   register(plugin: PerceptionPlugin): void
   perceive(): Promise<string>
+  getPluginNames(): string[]
 }
 
 export function createPerception(
@@ -30,6 +31,10 @@ export function createPerception(
   return {
     register(plugin) {
       states.push({ plugin, lastRun: 0, cachedOutput: '' })
+    },
+
+    getPluginNames() {
+      return states.map(s => s.plugin.name)
     },
 
     async perceive() {

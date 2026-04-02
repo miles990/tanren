@@ -34,7 +34,7 @@ import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
 import { createPlanSystem } from './plans.js'
 import { createActionHealthTracker } from './action-health.js'
-import { createTransparencyPlugin } from './framework-transparency.js'
+import { createMPL } from './metacognitive.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
@@ -173,21 +173,33 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   let eventTimer: ReturnType<typeof setTimeout> | null = null
   let tickCount = 0
 
-  // Mutable state exposed to transparency plugin — updated each tick
+  // Mutable state — updated each tick, exposed via MPL
   let currentComplexity = ''
   let currentContextModeName = ''
   let currentMaxFeedbackRounds = 0
 
-  // Framework transparency — all internal state visible to agent
-  perception.register(createTransparencyPlugin({
-    memoryDir: config.memoryDir,
-    workDir,
-    tickCount: () => tickCount,
-    isRunning: () => running,
-    complexity: () => currentComplexity,
-    contextMode: () => currentContextModeName,
+  // Metacognitive Perception Layer — let agent see its own thinking (Akari's design)
+  const mpl = createMPL(config.memoryDir, {
+    actions: () => actionRegistry.types(),
+    plugins: () => perception.getPluginNames(),
+    gates: () => gateSystem.getGateNames(),
     feedbackRounds: () => currentMaxFeedbackRounds,
-  }))
+    tickMode: () => running ? 'autonomous' : 'manual',
+    learning: () => ({
+      selfPerception: config.learning?.selfPerception ?? true,
+      crystallization: config.learning?.crystallization ?? true,
+      antiGoodhart: config.learning?.antiGoodhart ?? true,
+    }),
+    llmModel: () => {
+      if ('activeModel' in llm) return (llm as { activeModel?: string }).activeModel ?? 'unknown'
+      return 'claude-cli'
+    },
+    maxTokens: () => 8192,
+  })
+  for (const plugin of mpl.getPerceptionPlugins()) {
+    perception.register(plugin)
+  }
+  actionRegistry.register(mpl.getReflectAction())
 
   // Event-driven system state
   const eventDrivenEnabled = config.eventDriven?.enabled ?? false
@@ -250,6 +262,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const tickStart = Date.now()
     tickCount++
     lastResponse = ''  // reset per tick
+    mpl.preTick()  // snapshot state for diff
     writeLiveStatus({ phase: 'perceive', tickStart, tickNumber: tickCount, running })
 
     // Load and decay working memory
@@ -657,6 +670,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Update observation quality from learning assessment
       tickResult.observation.outputQuality = learningResult.quality
     }
+
+    // MPL post-tick: serialize results for next tick's perception
+    mpl.postTick(tickResult, tickCount)
 
     // Persist tick to journal (append-only JSONL)
     persistTick(journalDir, tickJournalPath, tickResult)

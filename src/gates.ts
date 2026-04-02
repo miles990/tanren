@@ -30,6 +30,7 @@ export interface GateSystem {
   loadGatesFromDir(dir: string): void
   getWarnings(): string[]
   getBlocks(): string[]
+  getGateNames(): string[]
   clearResults(): void
 }
 
@@ -110,6 +111,10 @@ export function createGateSystem(initialGates: Gate[] = []): GateSystem {
           r.action === 'block',
         )
         .map((r) => r.message)
+    },
+
+    getGateNames() {
+      return gates.map(g => g.name)
     },
 
     clearResults() {

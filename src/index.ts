@@ -132,6 +132,9 @@ export { createPlanSystem, loadPlans, parsePlan, type Plan, type PlanStep } from
 // Action Health
 export { createActionHealthTracker } from './action-health.js'
 
+// Metacognitive Perception Layer
+export { createMPL } from './metacognitive.js'
+
 // Context Modes
 export { detectContextMode, getModeConfig, type ContextMode, type ContextModeConfig } from './context-modes.js'
 
