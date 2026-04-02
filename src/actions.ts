@@ -130,31 +130,43 @@ export function createActionRegistry(): ActionRegistry {
 
 /**
  * Parse <action:type>content</action:type> tags from LLM response.
- * Supports nested content (but not nested action tags).
+ *
+ * Constraint Texture: tag pairing is deterministic → handled by code, not LLM.
+ * 1. Try exact matching (well-formed open+close pairs)
+ * 2. Fallback: unclosed tags → content runs to next <action: or end of string
  */
 function parseActions(response: string): Action[] {
+  // Pass 1: exact matches (well-formed tags)
   const actions: Action[] = []
   const regex = /<action:(\w[\w-]*)((?:\s+\w+="[^"]*")*)>([\s\S]*?)<\/action:\1>/g
   let match: RegExpExecArray | null
 
   while ((match = regex.exec(response)) !== null) {
-    const attrs: Record<string, string> = {}
-    if (match[2]) {
-      const attrRegex = /(\w+)="([^"]*)"/g
-      let attrMatch: RegExpExecArray | null
-      while ((attrMatch = attrRegex.exec(match[2])) !== null) {
-        attrs[attrMatch[1]] = attrMatch[2]
-      }
-    }
-    actions.push({
-      type: match[1],
-      content: match[3].trim(),
-      raw: match[0],
-      attrs,
-    })
+    actions.push(buildAction(match[1], match[2], match[3], match[0]))
+  }
+
+  if (actions.length > 0) return actions
+
+  // Pass 2: unclosed tags — content extends to next <action: or end of string
+  const unclosedRegex = /<action:(\w[\w-]*)((?:\s+\w+="[^"]*")*)>([\s\S]*?)(?=<action:|\s*$)/g
+
+  while ((match = unclosedRegex.exec(response)) !== null) {
+    actions.push(buildAction(match[1], match[2], match[3], match[0]))
   }
 
   return actions
+}
+
+function buildAction(type: string, rawAttrs: string, content: string, raw: string): Action {
+  const attrs: Record<string, string> = {}
+  if (rawAttrs) {
+    const attrRegex = /(\w+)="([^"]*)"/g
+    let attrMatch: RegExpExecArray | null
+    while ((attrMatch = attrRegex.exec(rawAttrs)) !== null) {
+      attrs[attrMatch[1]] = attrMatch[2]
+    }
+  }
+  return { type, content: content.trim(), raw, attrs }
 }
 
 // === Built-in Action Handlers ===

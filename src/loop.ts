@@ -956,18 +956,23 @@ ANTI-REPETITION: Your perception includes your own past memories and responses. 
 }
 
 function extractMessageContent(perception: string): string {
-  // Extract content from kuro-message or other structured message formats
-  const kuronMessageMatch = perception.match(/<kuro-message>([\s\S]*?)<\/kuro-message>/i)
-  if (kuronMessageMatch) {
-    return kuronMessageMatch[1].trim()
+  // Try multiple extraction patterns — code handles determinism, not format prescription
+  const patterns = [
+    /<kuro-message>([\s\S]*?)<\/kuro-message>/i,
+    /<inbox>([\s\S]*?)<\/inbox>/i,
+    /<message>([\s\S]*?)<\/message>/i,
+    /<from-[\w-]+>([\s\S]*?)<\/from-[\w-]+>/i,
+  ]
+
+  for (const pattern of patterns) {
+    const match = perception.match(pattern)
+    if (match) return match[1].trim()
   }
-  
-  // Extract from inbox patterns
-  const inboxMatch = perception.match(/<inbox>([\s\S]*?)<\/inbox>/i)
-  if (inboxMatch) {
-    return inboxMatch[1].trim()
-  }
-  
-  // Fallback: return first 500 chars of perception for basic pattern detection
-  return perception.slice(0, 500)
+
+  // Unclosed tag fallback (same principle as action parser)
+  const unclosed = perception.match(/<(?:kuro-message|inbox|message|from-[\w-]+)>([\s\S]*?)(?=<\w|$)/i)
+  if (unclosed) return unclosed[1].trim()
+
+  // No structured message found — return empty to signal "no message detected"
+  return ''
 }

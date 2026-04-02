@@ -159,10 +159,17 @@ function detectSignatures(tick: TickResult): SignatureHit[] {
   // Same action type failing with similar error messages
   for (const action of tick.actions) {
     const feedback = tick.observation.environmentFeedback ?? ''
-    if (feedback.includes(`action ${action.type} failed`) || tick.observation.actionsFailed > 0) {
-      // Extract error essence (first 80 chars of feedback after "failed:")
-      const errorMatch = feedback.match(/failed:\s*(.{1,80})/)
-      const errorEssence = errorMatch ? errorMatch[1].trim() : 'unknown'
+    if (feedback.includes(`action ${action.type} failed`) || feedback.includes(`${action.type} failed`) || tick.observation.actionsFailed > 0) {
+      // Extract error essence: try multiple patterns, then fallback to first 80 chars
+      const errorPatterns = [/failed:\s*(.{1,80})/, /error:\s*(.{1,80})/i, /\bfailed\b[^.]*?:\s*(.{1,80})/i]
+      let errorEssence = 'unknown'
+      for (const pat of errorPatterns) {
+        const m = feedback.match(pat)
+        if (m) { errorEssence = m[1].trim(); break }
+      }
+      if (errorEssence === 'unknown' && feedback.length > 0) {
+        errorEssence = feedback.slice(0, 80).trim()
+      }
 
       hits.push({
         type: 'repeated-failure',
@@ -329,14 +336,16 @@ function makeEscalationGate(pattern: Pattern): Gate {
 // === Helpers ===
 
 function normalizeError(error: string): string {
-  // Strip variable parts (timestamps, IDs, paths) to find the error "shape"
+  // Strip variable parts to find the error "shape"
   return error
     .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\dZ]*/g, '<timestamp>')
     .replace(/\/[\w/.-]+/g, '<path>')
+    .replace(/https?:\/\/\S+/g, '<url>')
+    .replace(/[\w.-]+\.(com|org|net|io|dev)\S*/gi, '<host>')
     .replace(/\b[0-9a-f]{8,}\b/gi, '<hash>')
     .replace(/\d+/g, '<n>')
     .trim()
-    .slice(0, 100)
+    .slice(0, 100) || 'empty'
 }
 
 function extractGateMessage(signature: string): string {

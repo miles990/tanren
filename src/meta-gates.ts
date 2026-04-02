@@ -20,17 +20,21 @@ export function createConfirmationLoopGate(threshold: number = 4): Gate {
     description: `Block after ${threshold} variations of the same insight without progression`,
     check(ctx) {
       const thought = ctx.tick.thought.toLowerCase()
-      
-      // Extract key concepts (simplified heuristic)
+
+      // Extract key concepts (4+ letter words)
       const concepts = thought.match(/\b\w{4,}\b/g) || []
       const conceptSet = new Set(concepts)
-      
+
+      // Empty/tiny thought = no meaningful comparison — skip
+      if (conceptSet.size < 3) return { action: 'pass' }
+
       // Check similarity to recent insights
       for (const [pastConcepts, count] of recentInsights) {
         const pastSet = new Set(pastConcepts.split(','))
+        if (pastSet.size < 3) continue
         const overlap = [...conceptSet].filter(c => pastSet.has(c)).length
         const similarity = overlap / Math.max(conceptSet.size, pastSet.size)
-        
+
         if (similarity > 0.6) { // 60% concept overlap
           recentInsights.set(pastConcepts, count + 1)
           
@@ -130,7 +134,8 @@ export function createExpertiseTunnelGate(threshold: number = 5): Gate {
       let maxCount = 0
       
       for (const lens of knownLenses) {
-        const count = (thought.match(new RegExp(lens, 'g')) || []).length
+        const escaped = lens.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const count = (thought.match(new RegExp(escaped, 'g')) || []).length
         if (count > maxCount) {
           maxCount = count
           dominantLens = lens
