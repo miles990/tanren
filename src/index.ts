@@ -126,6 +126,9 @@ export { createOpenAIProvider, createFallbackProvider, type OpenAIProviderOption
 // Working Memory
 export { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
 
+// Plan System
+export { createPlanSystem, loadPlans, parsePlan, type Plan, type PlanStep } from './plans.js'
+
 // Context Modes
 export { detectContextMode, getModeConfig, type ContextMode, type ContextModeConfig } from './context-modes.js'
 

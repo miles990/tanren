@@ -32,6 +32,7 @@ import type {
 } from './types.js'
 import { createMemorySystem } from './memory.js'
 import { createClaudeCliProvider } from './llm/claude-cli.js'
+import { createPlanSystem } from './plans.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
@@ -151,6 +152,15 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
   const workingMemoryPath = join(config.memoryDir, 'state', 'working-memory.json')
   const workingMemory = createWorkingMemory(workingMemoryPath)
+
+  // Plan system — continuation management across ticks
+  const planSystem = createPlanSystem(config.memoryDir, workDir)
+  for (const plugin of planSystem.perceptionPlugins) {
+    perception.register(plugin)
+  }
+  for (const handler of planSystem.actions) {
+    actionRegistry.register(handler)
+  }
 
   let running = false
   let timer: ReturnType<typeof setTimeout> | null = null
