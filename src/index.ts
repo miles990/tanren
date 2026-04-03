@@ -20,6 +20,8 @@ export interface TanrenAgent {
   tick(): Promise<TickResult>
   /** Send a message and get a response — injects message, runs tick, extracts response */
   chat(message: string, options?: { from?: string }): Promise<ChatResult>
+  /** Run a self-paced chain — agent decides when to stop */
+  runChain(message?: string, options?: { from?: string }): Promise<TickResult[]>
   /** Start the autonomous loop */
   start(interval?: number): void
   /** Stop the loop gracefully */
@@ -70,6 +72,12 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
         duration: result.observation.duration,
         quality: result.observation.outputQuality,
       }
+    },
+    async runChain(message?: string, options?: { from?: string }): Promise<TickResult[]> {
+      if (message) {
+        loop.injectMessage(options?.from ?? 'user', message)
+      }
+      return loop.runChain()
     },
     start: (interval) => loop.start(interval ?? config.tickInterval),
     stop: () => loop.stop(),
@@ -134,6 +142,9 @@ export { createActionHealthTracker } from './action-health.js'
 
 // Metacognitive Perception Layer
 export { createMPL } from './metacognitive.js'
+
+// Self-Paced Continuation
+export { createContinuationSystem, type ChainState } from './continuation.js'
 
 // Context Modes
 export { detectContextMode, getModeConfig, type ContextMode, type ContextModeConfig } from './context-modes.js'

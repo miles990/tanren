@@ -33,6 +33,7 @@ tanren — Minimal AI agent framework
 
 Commands:
   tick    Run a single perceive→think→act cycle
+  run     Self-paced chain — agent decides when to stop
   chat    Interactive conversation with the agent
   start   Start the autonomous loop
 
@@ -117,6 +118,23 @@ async function main(): Promise<void> {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error(`[tanren] Tick failed: ${msg}`)
+      process.exit(1)
+    }
+  } else if (command === 'run') {
+    const message = args.slice(1).join(' ') || undefined
+    console.log(`[tanren] Self-paced chain${message ? `: "${message}"` : ''}`)
+    console.log('[tanren] Agent decides when to stop. Gates enforce honesty.\n')
+    try {
+      const results = await agent.runChain(message)
+      console.log(`\n[tanren] Chain completed: ${results.length} tick(s)`)
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]
+        const acts = r.actions.map(a => a.type).join(', ') || '(none)'
+        console.log(`  Tick ${i + 1}: ${acts} (${Math.round(r.observation.duration / 1000)}s, quality: ${r.observation.outputQuality}/5)`)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[tanren] Chain failed: ${msg}`)
       process.exit(1)
     }
   } else if (command === 'chat') {

@@ -35,6 +35,7 @@ import { createClaudeCliProvider } from './llm/claude-cli.js'
 import { createPlanSystem } from './plans.js'
 import { createActionHealthTracker } from './action-health.js'
 import { createMPL } from './metacognitive.js'
+import { createContinuationSystem } from './continuation.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
@@ -69,6 +70,8 @@ export interface AgentLoop {
   tick(mode?: TickMode, triggerEvent?: TriggerEvent): Promise<TickResult>
   /** Inject a message for the next tick — perception will include it */
   injectMessage(from: string, text: string): void
+  /** Run a self-paced chain — agent decides when to stop */
+  runChain(): Promise<TickResult[]>
   start(interval?: number): void
   stop(): void
   isRunning(): boolean
@@ -177,6 +180,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   let currentComplexity = ''
   let currentContextModeName = ''
   let currentMaxFeedbackRounds = 0
+
+  // Self-paced continuation — agent decides when to stop
+  const continuation = createContinuationSystem(config.memoryDir)
+  perception.register(continuation.getChainPerception())
 
   // Metacognitive Perception Layer — let agent see its own thinking (Akari's design)
   const mpl = createMPL(config.memoryDir, {
@@ -674,6 +681,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // MPL post-tick: serialize results for next tick's perception
     mpl.postTick(tickResult, tickCount)
 
+    // Continuation: record tick in chain if active
+    if (continuation.getState().active) {
+      continuation.recordTick(tickResult, tickCount)
+    }
+
     // Persist tick to journal (append-only JSONL)
     persistTick(journalDir, tickJournalPath, tickResult)
 
@@ -822,6 +834,23 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     tick,
     injectMessage(from: string, text: string) {
       pendingMessage = { from, text }
+    },
+    async runChain(): Promise<TickResult[]> {
+      const results: TickResult[] = []
+      continuation.startChain()
+
+      while (true) {
+        const result = await tick()
+        results.push(result)
+
+        const decision = continuation.shouldContinue(result)
+        console.error(`[tanren] Chain tick ${results.length}: ${decision.continue ? 'continue' : 'stop'} — ${decision.reason}`)
+
+        if (!decision.continue) break
+      }
+
+      continuation.endChain()
+      return results
     },
     start,
     stop,
