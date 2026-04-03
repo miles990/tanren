@@ -211,8 +211,8 @@ async function autoCommitMemory(memoryDir: string): Promise<boolean> {
       timeout: 3000,
     })
 
-    // Check for uncommitted changes in memory dir
-    const status = execFileSync('git', ['status', '--porcelain', memoryDir], {
+    // Check for uncommitted changes in entire repo (agent may edit config, source, etc.)
+    const status = execFileSync('git', ['status', '--porcelain'], {
       cwd: memoryDir,
       encoding: 'utf-8',
       timeout: 5000,
@@ -265,8 +265,8 @@ async function autoCommitMemory(memoryDir: string): Promise<boolean> {
     // Generate meaningful commit message
     const commitMessage = generateCommitMessage(currentSession!, changedFiles, significance)
 
-    // Stage and commit
-    execFileSync('git', ['add', memoryDir], {
+    // Stage all changes — agent's work = agent's commit
+    execFileSync('git', ['add', '-A'], {
       cwd: memoryDir,
       timeout: 5000,
     })
