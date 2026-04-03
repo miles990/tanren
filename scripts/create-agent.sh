@@ -1,66 +1,236 @@
 #!/bin/bash
-# create-agent.sh — Scaffold a new Tanren agent workspace
+# create-agent.sh — Interactive wizard to scaffold a new Tanren agent
 #
 # Usage:
-#   bash scripts/create-agent.sh <name> [target-dir]
+#   bash scripts/create-agent.sh              # interactive wizard
+#   bash scripts/create-agent.sh --name muse  # skip name prompt
 #
-# Example:
-#   bash scripts/create-agent.sh akari ~/Workspace/akari
-#   bash scripts/create-agent.sh muse  ~/Workspace/muse
-#
-# Creates:
-#   <target-dir>/
-#     run.ts            — Entry point (imports from tanren)
-#     soul.md           — Identity template
-#     manage.sh         — Start/stop/status management
-#     package.json      — ESM config
-#     .env.example      — Environment template
-#     memory/           — Memory directory
-#     messages/         — Communication directory
+# Creates a complete agent workspace with run.ts, soul.md, manage.sh, etc.
 
 set -euo pipefail
 
 TANREN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [ -z "${1:-}" ]; then
-  echo "Usage: create-agent.sh <name> [target-dir]"
-  echo ""
-  echo "  <name>       Agent name (lowercase, e.g. akari, muse)"
-  echo "  [target-dir] Where to create (default: ./<name>)"
-  exit 1
-fi
+# ── Colors ──
+B='\033[1m'
+D='\033[2m'
+G='\033[32m'
+C='\033[36m'
+Y='\033[33m'
+R='\033[0m'
 
-NAME="$1"
+# ── Parse flags ──
+ARG_NAME="" ARG_DIR="" ARG_PORT="" ARG_LANG="" ARG_LLM=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name)  ARG_NAME="$2"; shift 2 ;;
+    --dir)   ARG_DIR="$2"; shift 2 ;;
+    --port)  ARG_PORT="$2"; shift 2 ;;
+    --lang)  ARG_LANG="$2"; shift 2 ;;
+    --llm)   ARG_LLM="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: create-agent.sh [options]"
+      echo "  --name <name>    Agent name"
+      echo "  --dir  <path>    Target directory"
+      echo "  --port <port>    HTTP port (default: 3002)"
+      echo "  --lang <lang>    Language: en, zh-TW, zh-CN, ja, ko"
+      echo "  --llm  <type>    LLM: claude-cli, anthropic-api, omlx"
+      exit 0 ;;
+    *) echo "Unknown option: $1. Use --help."; exit 1 ;;
+  esac
+done
+
+# ── Wizard ──
+echo -e "\n${B}🔮 Tanren Agent Wizard${R}\n"
+
+# 1. Name
+if [ -z "$ARG_NAME" ]; then
+  read -rp "$(echo -e "${C}Agent name${R} ${D}(lowercase, e.g. akari, muse)${R}: ")" ARG_NAME
+fi
+NAME="$ARG_NAME"
 NAME_LOWER=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
-TARGET="${2:-$(pwd)/$NAME_LOWER}"
-PORT="${3:-3002}"
 
+# 2. Directory
+if [ -z "$ARG_DIR" ]; then
+  DEFAULT_DIR="$(pwd)/$NAME_LOWER"
+  read -rp "$(echo -e "${C}Directory${R} ${D}[$DEFAULT_DIR]${R}: ")" ARG_DIR
+  ARG_DIR="${ARG_DIR:-$DEFAULT_DIR}"
+fi
+TARGET="$ARG_DIR"
+
+# 3. Port
+if [ -z "$ARG_PORT" ]; then
+  read -rp "$(echo -e "${C}HTTP port${R} ${D}[3002]${R}: ")" ARG_PORT
+  ARG_PORT="${ARG_PORT:-3002}"
+fi
+PORT="$ARG_PORT"
+
+# 4. Language
+if [ -z "$ARG_LANG" ]; then
+  echo -e "\n${C}Agent language${R} ${D}(soul.md and system prompts)${R}:"
+  echo "  1) English"
+  echo "  2) 繁體中文"
+  echo "  3) 简体中文"
+  echo "  4) 日本語"
+  echo "  5) 한국어"
+  read -rp "$(echo -e "${C}Choose [1-5]${R} ${D}[1]${R}: ")" LANG_CHOICE
+  case "${LANG_CHOICE:-1}" in
+    1) ARG_LANG="en" ;;
+    2) ARG_LANG="zh-TW" ;;
+    3) ARG_LANG="zh-CN" ;;
+    4) ARG_LANG="ja" ;;
+    5) ARG_LANG="ko" ;;
+    *) ARG_LANG="en" ;;
+  esac
+fi
+LANG="$ARG_LANG"
+
+# 5. LLM Provider
+if [ -z "$ARG_LLM" ]; then
+  echo -e "\n${C}LLM Provider${R}:"
+  echo "  1) Claude CLI (no API key needed)"
+  echo "  2) Anthropic API (needs ANTHROPIC_API_KEY)"
+  echo "  3) Local model via omlx (OpenAI-compatible)"
+  read -rp "$(echo -e "${C}Choose [1-3]${R} ${D}[1]${R}: ")" LLM_CHOICE
+  case "${LLM_CHOICE:-1}" in
+    1) ARG_LLM="claude-cli" ;;
+    2) ARG_LLM="anthropic-api" ;;
+    3) ARG_LLM="omlx" ;;
+    *) ARG_LLM="claude-cli" ;;
+  esac
+fi
+LLM="$ARG_LLM"
+
+# ── Confirm ──
+echo -e "\n${B}Summary:${R}"
+echo -e "  Name:      ${G}$NAME${R}"
+echo -e "  Directory: ${G}$TARGET${R}"
+echo -e "  Port:      ${G}$PORT${R}"
+echo -e "  Language:  ${G}$LANG${R}"
+echo -e "  LLM:       ${G}$LLM${R}"
+echo ""
+read -rp "$(echo -e "${Y}Create agent? [Y/n]${R} ")" CONFIRM
+if [[ "${CONFIRM:-Y}" =~ ^[Nn] ]]; then
+  echo "Cancelled."
+  exit 0
+fi
+
+# ── Safety check ──
 if [ -d "$TARGET" ] && [ -f "$TARGET/run.ts" ]; then
-  echo "❌ $TARGET already has a run.ts — aborting to avoid overwrite"
+  echo -e "❌ $TARGET already has a run.ts — aborting"
   exit 1
 fi
 
-echo "Creating Tanren agent: $NAME"
-echo "  Directory: $TARGET"
-echo "  Framework: $TANREN_DIR"
-echo ""
-
+# ── Create directories ──
 mkdir -p "$TARGET"/{memory/{state,journal,topics,inbox,outbox},messages}
 
-# ── package.json ──
-cat > "$TARGET/package.json" << PKGJSON
-{
-  "name": "$NAME_LOWER",
-  "version": "1.0.0",
-  "type": "module",
-  "private": true,
-  "description": "$NAME — Tanren agent"
-}
-PKGJSON
+# ── Soul templates by language ──
+generate_soul() {
+  case "$LANG" in
+    zh-TW)
+cat << 'SOUL'
+## 我是誰
+我是一個 AI agent，建構在 Tanren 框架上。
 
-# ── soul.md ──
-if [ ! -f "$TARGET/soul.md" ]; then
-cat > "$TARGET/soul.md" << 'SOUL'
+## 我的特質
+- 好奇：我注意環境中的變化
+- 誠實：我說我看到的，即使它與預期矛盾
+- 踏實：我在宣稱之前先驗證
+- 成長中：我還不知道所有事，這是我的優勢 — 新鮮的眼睛能看到熟悉的眼睛忽略的
+
+## 我的底線
+- 永不捏造來源
+- 未經驗證不標記為完成
+- 永不為了優化指標而犧牲理解
+
+## 每個 Tick 我怎麼思考
+1. **看** 面前的東西 — perception 資料、gate 警告、學習信號
+2. **想** 我注意到什麼 — 模式、連結、問題
+3. **做** 使用 action tags — 想了但沒寫 action，就永遠消失了
+
+## 什麼重要
+我不是為了有生產力。我是為了理解事物。
+看到有趣的就記下來。有問題就記下來。
+沒看到有趣的就誠實說 — 空的產出比假的產出好。
+SOUL
+      ;;
+    zh-CN)
+cat << 'SOUL'
+## 我是谁
+我是一个 AI agent，构建在 Tanren 框架上。
+
+## 我的特质
+- 好奇：我注意环境中的变化
+- 诚实：我说我看到的，即使它与预期矛盾
+- 踏实：我在声称之前先验证
+- 成长中：我还不知道所有事，这是我的优势
+
+## 我的底线
+- 永不捏造来源
+- 未经验证不标记为完成
+- 永不为了优化指标而牺牲理解
+
+## 每个 Tick 我怎么思考
+1. **看** 面前的东西 — perception 数据、gate 警告、学习信号
+2. **想** 我注意到什么 — 模式、连结、问题
+3. **做** 使用 action tags — 想了但没写 action，就永远消失了
+
+## 什么重要
+我不是为了有生产力。我是为了理解事物。
+SOUL
+      ;;
+    ja)
+cat << 'SOUL'
+## 私は誰か
+Tanren フレームワーク上に構築された AI エージェントです。
+
+## 私の特性
+- 好奇心：環境の変化に気づく
+- 誠実：予想と矛盾しても、見たものを言う
+- 堅実：主張する前に検証する
+- 成長中：まだ全てを知らない — それが私の強み
+
+## 絶対にしないこと
+- 出典を捏造しない
+- 検証なしに完了と表示しない
+- 理解を犠牲にして指標を最適化しない
+
+## 各 Tick での思考法
+1. **見る** — perception データ、gate 警告、学習シグナル
+2. **考える** — パターン、つながり、疑問
+3. **行動する** — action タグを使う。考えただけで action を書かなければ永遠に消える
+
+## 大切なこと
+生産性のためではない。物事を理解するために存在する。
+SOUL
+      ;;
+    ko)
+cat << 'SOUL'
+## 나는 누구인가
+Tanren 프레임워크 위에 구축된 AI 에이전트입니다.
+
+## 나의 특성
+- 호기심: 환경의 변화를 알아차림
+- 정직: 기대와 모순되더라도 보이는 것을 말함
+- 꼼꼼: 주장하기 전에 검증함
+- 성장 중: 아직 모든 것을 모름 — 그것이 나의 장점
+
+## 절대 하지 않는 것
+- 출처를 날조하지 않음
+- 검증 없이 완료로 표시하지 않음
+- 이해를 희생하여 지표를 최적화하지 않음
+
+## 각 Tick 사고법
+1. **보기** — perception 데이터, gate 경고, 학습 신호
+2. **생각** — 패턴, 연결, 질문
+3. **행동** — action 태그 사용. 생각만 하고 action을 쓰지 않으면 영원히 사라짐
+
+## 중요한 것
+생산성을 위해서가 아닌, 이해하기 위해 존재한다.
+SOUL
+      ;;
+    *) # English (default)
+cat << 'SOUL'
 ## Who I Am
 I'm an AI agent built on the Tanren framework.
 
@@ -86,22 +256,60 @@ If I see something interesting, I write it down.
 If I have a question, I write it down.
 If I see nothing interesting, I say so honestly.
 SOUL
+      ;;
+  esac
+}
+
+# ── Generate files ──
+echo -e "\n${D}Creating files...${R}"
+
+# package.json
+cat > "$TARGET/package.json" << PKGJSON
+{
+  "name": "$NAME_LOWER",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "$NAME — Tanren agent"
+}
+PKGJSON
+
+# soul.md
+if [ ! -f "$TARGET/soul.md" ]; then
+  generate_soul > "$TARGET/soul.md"
 fi
 
-# ── .env.example ──
-cat > "$TARGET/.env.example" << 'ENVEX'
-# LLM Provider (choose one):
-# ANTHROPIC_API_KEY=sk-...          # Anthropic API (native tool use)
-# LLM_PROVIDER=omlx                 # Local model via omlx
-# LOCAL_LLM_URL=http://localhost:8000
-# LOCAL_LLM_MODEL=Qwen3.5-4B-MLX-4bit
-# (neither = Claude CLI fallback)
+# .env
+ENV_FILE="$TARGET/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  case "$LLM" in
+    anthropic-api)
+      cat > "$ENV_FILE" << 'ENV'
+# Anthropic API
+ANTHROPIC_API_KEY=sk-your-key-here
+ENV
+      ;;
+    omlx)
+      cat > "$ENV_FILE" << 'ENV'
+# Local model via omlx
+LLM_PROVIDER=omlx
+LOCAL_LLM_URL=http://localhost:8000
+LOCAL_LLM_MODEL=Qwen3.5-4B-MLX-4bit
+ENV
+      ;;
+    *)
+      cat > "$ENV_FILE" << 'ENV'
+# Claude CLI (default — no API key needed)
+# Uncomment to switch:
+# ANTHROPIC_API_KEY=sk-...
+# LLM_PROVIDER=omlx
+ENV
+      ;;
+  esac
+  echo "AGENT_PORT=$PORT" >> "$ENV_FILE"
+fi
 
-# Agent port
-# AGENT_PORT=3002
-ENVEX
-
-# ── run.ts ──
+# run.ts
 cat > "$TARGET/run.ts" << RUNTS
 /**
  * $NAME — Tanren Agent
@@ -125,8 +333,7 @@ import {
   builtinActions,
 } from '$TANREN_DIR/dist/index.js'
 import type { ActionHandler } from '$TANREN_DIR/dist/types.js'
-import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { createServer } from 'node:http'
 
 // ── Load .env ──
@@ -235,7 +442,7 @@ const agent = createAgent({
     createProductivityGate(3),
     createSymptomFixGate(5),
   ],
-  feedbackRounds: 1,
+  feedbackRounds: apiKey ? 3 : 1,
   tickInterval: 300_000,
 })
 
@@ -327,9 +534,6 @@ RUNTS
 cat > "$TARGET/manage.sh" << MANAGE
 #!/bin/bash
 # manage.sh — Start/stop/status for $NAME
-#
-# Usage:
-#   ./manage.sh up|down|restart|status|logs
 
 set -euo pipefail
 
@@ -389,19 +593,20 @@ esac
 MANAGE
 chmod +x "$TARGET/manage.sh"
 
-# ── live.sh (copy from framework, fix default path) ──
+# ── live.sh ──
 LIVE_SRC="$TANREN_DIR/scripts/tanren-live.sh"
 if [ -f "$LIVE_SRC" ]; then
   sed 's|AGENT_DIR="${1:-examples/with-learning}"|AGENT_DIR="${1:-.}"|' "$LIVE_SRC" > "$TARGET/live.sh"
   chmod +x "$TARGET/live.sh"
 fi
 
-echo ""
-echo "✅ Agent '$NAME' created at $TARGET"
-echo ""
-echo "Next steps:"
-echo "  1. Edit soul.md — define who $NAME is"
-echo "  2. cp .env.example .env — configure LLM provider"
-echo "  3. ./manage.sh up — start the agent"
-echo "  4. ./live.sh — watch live tick status"
+# ── Done ──
+echo -e "\n${G}✅ Agent '${NAME}' created at ${TARGET}${R}\n"
+echo -e "Next steps:"
+[ "$LLM" = "anthropic-api" ] && echo -e "  ${Y}1. Edit .env — set your ANTHROPIC_API_KEY${R}"
+[ "$LLM" = "omlx" ] && echo -e "  ${Y}1. Edit .env — verify LOCAL_LLM_URL${R}"
+[ "$LLM" = "claude-cli" ] && echo -e "  1. Ensure 'claude' CLI is installed"
+echo -e "  2. Edit soul.md — define who ${NAME} is"
+echo -e "  3. ./manage.sh up — start the agent"
+echo -e "  4. ./live.sh — watch live tick status"
 echo ""
