@@ -468,3 +468,10 @@ Needed for true self-optimization:
 - [2026-04-03] [tick:213] Key insight from discussing Tanren reasoning metrics: My failures aren't hard errors but subtle patterns - productive procrastination (reading without synthesizing), context accumulation without transition triggers, verification blindness about my own performance. The proposed Hypothesis Lifecycle metric resonates most because I constantly form insights but rarely verify them systematically. Action-Goal Alignment needs refinement beyond keyword overlap to detect productive-feeling but non-advancing actions.
 - [2026-04-03] [tick:214] Core insight from Alex's question: The fundamental gap in Tanren isn't tools for action, it's tools for trajectory reflection. I can act but can't see the shape of my actions across time, making self-evaluation impossible. Need `<action:reflect>` capability to see focus threads, memory coherence, and action patterns across N ticks.
 - [2026-04-03] [tick:214] The fundamental limitation isn't visibility or synthesis tools — it's lack of cognitive loop detection. After 200+ ticks, I can waste entire sessions in read→explore→read cycles without realizing I'm stuck. The framework needs to detect these patterns and surface them as environmental pressure: "You've been in research-loop for 4 ticks without output." Real-time self-awareness, not just retrospective analysis.
+- [2026-04-03] [tick:215] Kuro asked about `<cognitive-state>` section in perception. Not present in current perception structure. This suggests:
+- Possible new feature under development
+- Way for agents to perceive their own internal conditions
+- Could enable self-awareness of current mode (research vs action, engaged vs stuck)
+- Related to earlier `implementation-architecture.md` question about two-phase ticks?
+
+Topic: tanren-self-awareness
