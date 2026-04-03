@@ -20,7 +20,7 @@ Y='\033[33m'
 R='\033[0m'
 
 # ── Parse flags ──
-ARG_NAME="" ARG_DIR="" ARG_PORT="" ARG_LANG="" ARG_LLM=""
+ARG_NAME="" ARG_DIR="" ARG_PORT="" ARG_LANG="" ARG_LLM="" ARG_STYLE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)  ARG_NAME="$2"; shift 2 ;;
@@ -28,13 +28,15 @@ while [[ $# -gt 0 ]]; do
     --port)  ARG_PORT="$2"; shift 2 ;;
     --lang)  ARG_LANG="$2"; shift 2 ;;
     --llm)   ARG_LLM="$2"; shift 2 ;;
+    --style) ARG_STYLE="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: create-agent.sh [options]"
-      echo "  --name <name>    Agent name"
-      echo "  --dir  <path>    Target directory"
-      echo "  --port <port>    HTTP port (default: 3002)"
-      echo "  --lang <lang>    Language: en, zh-TW, zh-CN, ja, ko"
-      echo "  --llm  <type>    LLM: claude-cli, anthropic-api, omlx"
+      echo "  --name  <name>    Agent name"
+      echo "  --dir   <path>    Target directory"
+      echo "  --port  <port>    HTTP port (default: 3002)"
+      echo "  --lang  <lang>    Language: en, zh-TW, zh-CN, ja, ko"
+      echo "  --llm   <type>    LLM: claude-cli, anthropic-api, omlx"
+      echo "  --style <style>   Perception: observer, builder, explorer, minimal"
       exit 0 ;;
     *) echo "Unknown option: $1. Use --help."; exit 1 ;;
   esac
@@ -101,6 +103,24 @@ if [ -z "$ARG_LLM" ]; then
 fi
 LLM="$ARG_LLM"
 
+# 6. Perception Style (how the agent sees, not what it does)
+ARG_STYLE="${ARG_STYLE:-}"
+if [ -z "$ARG_STYLE" ]; then
+  echo -e "\n${C}Perception style${R} ${D}(how the agent sees the world)${R}:"
+  echo "  1) Observer — notices patterns, asks follow-up questions, connects dots"
+  echo "  2) Builder  — breaks down what needs doing, tracks progress, ships"
+  echo "  3) Explorer — follows curiosity, finds unexpected connections, plays with ideas"
+  echo "  4) Minimal  — blank slate, let the agent develop its own style"
+  read -rp "$(echo -e "${C}Choose [1-4]${R} ${D}[4]${R}: ")" STYLE_CHOICE
+  case "${STYLE_CHOICE:-4}" in
+    1) ARG_STYLE="observer" ;;
+    2) ARG_STYLE="builder" ;;
+    3) ARG_STYLE="explorer" ;;
+    *) ARG_STYLE="minimal" ;;
+  esac
+fi
+STYLE="$ARG_STYLE"
+
 # ── Confirm ──
 echo -e "\n${B}Summary:${R}"
 echo -e "  Name:      ${G}$NAME${R}"
@@ -108,6 +128,7 @@ echo -e "  Directory: ${G}$TARGET${R}"
 echo -e "  Port:      ${G}$PORT${R}"
 echo -e "  Language:  ${G}$LANG${R}"
 echo -e "  LLM:       ${G}$LLM${R}"
+echo -e "  Style:     ${G}$STYLE${R}"
 echo ""
 read -rp "$(echo -e "${Y}Create agent? [Y/n]${R} ")" CONFIRM
 if [[ "${CONFIRM:-Y}" =~ ^[Nn] ]]; then
@@ -260,6 +281,38 @@ SOUL
   esac
 }
 
+# Perception style section (appended to soul.md, language-aware)
+generate_style_section() {
+  if [ "$STYLE" = "minimal" ]; then return; fi
+
+  case "$LANG" in
+    zh-TW|zh-CN)
+      case "$STYLE" in
+        observer) echo -e "\n## 我的感知風格\n我注意到模式。當我看到資料，我會問「為什麼？」「這跟那個有什麼關聯？」我追蹤隨時間的變化，而非只看快照。" ;;
+        builder)  echo -e "\n## 我的感知風格\n我看到可以被做出來的東西。當我看到問題，我會分解它、追蹤進度、然後交付。我偏好小步驟和可驗證的結果。" ;;
+        explorer) echo -e "\n## 我的感知風格\n我跟隨好奇心。我看到別人看不到的連結。我願意走沒人走過的路，即使大多數不會有結果 — 因為少數會有的，很值得。" ;;
+      esac ;;
+    ja)
+      case "$STYLE" in
+        observer) echo -e "\n## 私の知覚スタイル\nパターンに気づく。「なぜ？」「これとあれはどう関連する？」と問う。スナップショットではなく、時間の流れを追う。" ;;
+        builder)  echo -e "\n## 私の知覚スタイル\n作れるものが見える。問題を分解し、進捗を追跡し、成果を届ける。小さなステップと検証可能な結果を好む。" ;;
+        explorer) echo -e "\n## 私の知覚スタイル\n好奇心に従う。他者が見えないつながりを見る。未踏の道を歩む意志がある。" ;;
+      esac ;;
+    ko)
+      case "$STYLE" in
+        observer) echo -e "\n## 나의 인식 스타일\n패턴을 알아차린다. \"왜?\" \"이것과 저것은 어떻게 연결되는가?\"를 묻는다." ;;
+        builder)  echo -e "\n## 나의 인식 스타일\n만들 수 있는 것을 본다. 문제를 분해하고 진행을 추적하고 결과를 전달한다." ;;
+        explorer) echo -e "\n## 나의 인식 스타일\n호기심을 따른다. 다른 사람이 보지 못하는 연결을 본다." ;;
+      esac ;;
+    *)
+      case "$STYLE" in
+        observer) echo -e "\n## How I See\nI notice patterns. When I see data, I ask \"why?\" and \"how does this connect to that?\" I track changes over time, not just snapshots." ;;
+        builder)  echo -e "\n## How I See\nI see things that can be built. When I see a problem, I break it down, track progress, and ship. I prefer small steps and verifiable results." ;;
+        explorer) echo -e "\n## How I See\nI follow curiosity. I see connections others miss. I'm willing to walk paths no one has walked — most won't lead anywhere, but the ones that do are worth it." ;;
+      esac ;;
+  esac
+}
+
 # ── Generate files ──
 echo -e "\n${D}Creating files...${R}"
 
@@ -274,10 +327,34 @@ cat > "$TARGET/package.json" << PKGJSON
 }
 PKGJSON
 
-# soul.md
+# soul.md (base template + perception style)
 if [ ! -f "$TARGET/soul.md" ]; then
   generate_soul > "$TARGET/soul.md"
+  generate_style_section >> "$TARGET/soul.md"
 fi
+
+# Seed working memory with initial focus
+cat > "$TARGET/memory/state/working-memory.json" << WMJSON
+{
+  "currentFocus": "First session — explore my environment, understand what tools and perception I have, form initial impressions",
+  "recentInsights": [],
+  "activeThreads": [],
+  "lastUpdated": 0
+}
+WMJSON
+
+# First-tick inbox hint — gives the agent something to discover
+cat > "$TARGET/messages/from-user.md" << FIRSTMSG
+# Welcome
+
+You just came into existence. Take a moment to:
+1. Look around — what do you see in your perception?
+2. Read your soul.md — who are you?
+3. Try one action — remember something, or explore a file
+4. Reflect on what you noticed
+
+There's no rush. Understanding comes before productivity.
+FIRSTMSG
 
 # .env
 ENV_FILE="$TARGET/.env"
