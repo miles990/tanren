@@ -433,7 +433,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Behavior-driven, not keyword-driven — look at what the model DID, not what the user SAID.
       const roundRisk = getRoundRiskTier(actions)
       const initialHadNoTools = actions.length === 0
-      const skipFeedback = !initialHadNoTools && roundRisk === 1 && actionsFailed === 0
+      const initialHasRespond = actions.some(a => a.type === 'respond')
+      const skipFeedback = (!initialHadNoTools && roundRisk === 1 && actionsFailed === 0)
+        || initialHasRespond  // Agent already responded — tick is complete
 
       // Dynamic cognitive budget: framework observes environmental signals to decide
       // when to stop, rather than using a fixed number. config.feedbackRounds is now
@@ -591,7 +593,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           allActions.push(...novelActions)
           actionResults.push(...roundResults)
 
-          // (Forced synthesize now handled in the novelActions===0 branch above)
+          // Early exit: if agent called respond, it believes the tick is complete.
+          // Don't keep looping — respect the agent's cognitive signal.
+          if (novelActions.some(a => a.type === 'respond')) break
         }
       } else {
         // Text-based feedback mini-loop (legacy)
