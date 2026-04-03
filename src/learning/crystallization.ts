@@ -38,6 +38,7 @@ export type PatternType =
   | 'empty-streak'       // no visible output for N ticks
   | 'action-streak'      // same action type dominates
   | 'gate-ignored'       // agent keeps triggering same gate warning
+  | 'effective-sequence' // productive tick with visible output + reasonable duration
 
 interface PatternExample {
   timestamp: number
@@ -120,7 +121,7 @@ export function createCrystallization(stateDir: string): CrystallizationEngine {
 
     getCandidates(): Pattern[] {
       return state.patterns.filter(
-        p => p.occurrences >= CRYSTALLIZATION_THRESHOLD && !p.crystallized
+        p => p.occurrences >= CRYSTALLIZATION_THRESHOLD && !p.crystallized && p.type !== 'effective-sequence'
       )
     },
 
@@ -218,6 +219,25 @@ function detectSignatures(tick: TickResult): SignatureHit[] {
     }
   }
 
+  // Detector 5: Effective sequences (positive pattern)
+  // Tick had visible output + reasonable duration + no gate warnings
+  // This is NOT a reward — it's a factual record of what the agent did when things went well.
+  const VISIBLE_ACTIONS = new Set(['respond', 'write', 'edit', 'append', 'shell', 'synthesize'])
+  const hasVisibleOutput = tick.actions.some(a => VISIBLE_ACTIONS.has(a.type))
+  const noWarnings = tick.gateResults.every(r => r.action === 'pass')
+  const reasonableDuration = tick.observation.duration < 120_000 // under 2 min
+  const hasMultipleActionTypes = new Set(tick.actions.map(a => a.type)).size >= 2
+
+  if (hasVisibleOutput && noWarnings && reasonableDuration && hasMultipleActionTypes) {
+    const actionSequence = [...new Set(tick.actions.map(a => a.type))].join('→')
+    hits.push({
+      type: 'effective-sequence',
+      signature: `effective:${actionSequence}`,
+      description: `Effective tick: ${actionSequence} (${Math.round(tick.observation.duration / 1000)}s, no warnings)`,
+      summary: `${actionSequence} in ${Math.round(tick.observation.duration / 1000)}s`,
+    })
+  }
+
   return hits
 }
 
@@ -234,6 +254,14 @@ function patternToGate(pattern: Pattern): Gate {
       return makeActionStreakGate(pattern)
     case 'gate-ignored':
       return makeEscalationGate(pattern)
+    case 'effective-sequence':
+      // Effective patterns are NOT crystallized into gates — they're transparency, not constraints.
+      // Return a pass-through gate so the crystallization engine doesn't break.
+      return defineGate({
+        name: `effective-${pattern.id}`,
+        description: `Effective pattern observed: ${pattern.description}`,
+        check: () => ({ action: 'pass' }),
+      })
   }
 }
 

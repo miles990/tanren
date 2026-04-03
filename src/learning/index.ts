@@ -157,10 +157,23 @@ export function createLearningSystem(config: LearningConfig): LearningSystem {
       }
 
       // Rising patterns (approaching threshold but not yet crystallized)
-      const rising = this.getPatterns().filter(p => p.occurrences >= 2 && !p.crystallized)
+      const allPatterns = this.getPatterns()
+      const rising = allPatterns.filter(p => p.occurrences >= 2 && !p.crystallized && p.type !== 'effective-sequence')
       if (rising.length > 0) {
         lines.push(
           `📊 Rising patterns: ${rising.map(p => `${p.description} (${p.occurrences}x)`).join('; ')}`
+        )
+      }
+
+      // Retrospective effectiveness — show effective patterns the agent has exhibited
+      // Not a reward. Transparency: "here's what you did when things went well."
+      const effective = allPatterns
+        .filter(p => p.type === 'effective-sequence' && p.occurrences >= 2)
+        .sort((a, b) => b.occurrences - a.occurrences)
+        .slice(0, 3)
+      if (effective.length > 0) {
+        lines.push(
+          `✦ Effective patterns: ${effective.map(p => `${p.description.replace('Effective tick: ', '')} (${p.occurrences}x)`).join('; ')}`
         )
       }
 
