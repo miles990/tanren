@@ -194,6 +194,37 @@ export function createAnalysisWithoutActionGate(
   }
 }
 
+// === Built-in Gate: Productivity Gate ===
+// Warns when agent has been doing only internal actions (remember/read/search)
+// without any externally visible output (respond/write/edit/shell)
+
+export function createProductivityGate(threshold: number = 3): Gate {
+  let consecutiveInternalOnly = 0
+  const INTERNAL_ONLY = new Set(['remember', 'read', 'search', 'explore', 'reflect', 'focus', 'clear-inbox'])
+
+  return {
+    name: 'productivity-gate',
+    description: `Warn after ${threshold} ticks with only internal actions (no visible output)`,
+    check(ctx) {
+      const actions = ctx.tick.actions
+      // Has actions, but all are internal
+      if (actions.length > 0 && actions.every(a => INTERNAL_ONLY.has(a.type))) {
+        consecutiveInternalOnly++
+        if (consecutiveInternalOnly >= threshold) {
+          return {
+            action: 'warn',
+            message: `${consecutiveInternalOnly} consecutive ticks with only internal actions (${actions.map(a => a.type).join(', ')}). Reading and remembering is not output — write, respond, or build something.`,
+          }
+        }
+        return { action: 'pass' }
+      }
+
+      consecutiveInternalOnly = 0
+      return { action: 'pass' }
+    },
+  }
+}
+
 // === Built-in Gate: Symptom Fix Streak ===
 // Warns when too many consecutive fixes might be treating symptoms
 

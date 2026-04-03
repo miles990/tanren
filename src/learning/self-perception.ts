@@ -83,10 +83,21 @@ export function createSelfPerception(): SelfPerceptionEngine {
         signals.push('output-produced')
       }
 
-      // Signal 5: Duration anomaly (too fast = maybe nothing happened)
+      // Signal 5: Duration anomaly
       if (tick.observation.duration < 1000 && tick.actions.length === 0) {
         score -= 0.5
         signals.push('suspiciously-fast')
+      } else if (tick.observation.duration > 180_000) {
+        // Over 3 minutes is a sign of inefficiency
+        score -= 0.5
+        signals.push('slow-tick')
+      }
+
+      // Signal 6: Action diversity — all-internal ticks (only remember/read/search) score lower
+      const INTERNAL_ONLY = new Set(['remember', 'read', 'search', 'explore', 'reflect', 'focus', 'clear-inbox'])
+      if (tick.actions.length > 0 && tick.actions.every(a => INTERNAL_ONLY.has(a.type))) {
+        score -= 0.5
+        signals.push('internal-only')
       }
 
       // Clamp to 1-5

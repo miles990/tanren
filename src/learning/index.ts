@@ -27,7 +27,7 @@ export interface LearningSystem {
   /** Get all detected patterns */
   getPatterns(): Pattern[]
   /** Get context string to inject into next tick */
-  getContextSection(): string
+  getContextSection(recentTicks?: TickResult[]): string
   /** Persist state */
   save(): void
 }
@@ -123,21 +123,37 @@ export function createLearningSystem(config: LearningConfig): LearningSystem {
       return crystallization?.getPatterns() ?? []
     },
 
-    getContextSection(): string {
-      if (!lastResult) return ''
-
+    getContextSection(recentTicks?: TickResult[]): string {
       const lines: string[] = []
 
-      // Quality signal
-      if (lastResult.quality <= 2) {
-        lines.push(`⚠ Last tick quality: ${lastResult.quality}/5 [${lastResult.signals.join(', ')}]`)
+      // Quality signal — show for anything below 4 (not just ≤ 2)
+      if (lastResult) {
+        if (lastResult.quality <= 3) {
+          lines.push(`⚠ Last tick quality: ${lastResult.quality}/5 [${lastResult.signals.join(', ')}]`)
+        }
+
+        // New gates
+        if (lastResult.newGates.length > 0) {
+          lines.push(
+            `🔮 Crystallized ${lastResult.newGates.length} new gate(s): ${lastResult.newGates.map(g => g.name).join(', ')}`
+          )
+        }
       }
 
-      // New gates
-      if (lastResult.newGates.length > 0) {
-        lines.push(
-          `🔮 Crystallized ${lastResult.newGates.length} new gate(s): ${lastResult.newGates.map(g => g.name).join(', ')}`
-        )
+      // Quality trend — always show if we have enough data
+      if (recentTicks && recentTicks.length >= 3 && selfPerception) {
+        const trend = selfPerception.getQualityTrend(recentTicks)
+        if (trend.direction !== 'stable' || trend.average < 4) {
+          lines.push(`📈 Quality trend: ${trend.average.toFixed(1)}/5 (${trend.direction}) over ${trend.windowSize} ticks`)
+        }
+
+        // Duration stats — let the agent see its own speed
+        const durations = recentTicks.map(t => t.observation.duration / 1000)
+        const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length
+        const slowTicks = durations.filter(d => d > 180).length
+        if (avgDuration > 60 || slowTicks > 0) {
+          lines.push(`⏱ Avg tick: ${avgDuration.toFixed(0)}s | ${slowTicks}/${durations.length} over 3min`)
+        }
       }
 
       // Rising patterns (approaching threshold but not yet crystallized)

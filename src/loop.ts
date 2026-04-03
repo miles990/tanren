@@ -293,7 +293,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // 2. Build context — scaled by complexity
     const identity = await loadIdentity(config.identity, memory)
     const gateWarnings = gateSystem.getWarnings()
-    const learningContext = learning?.getContextSection() ?? ''
+    const learningContext = learning?.getContextSection(recentTicks) ?? ''
     const wmContext = workingMemory.toContextString()
     let context: string
     if (complexity === 'minimal') {
@@ -646,8 +646,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       tickResult.thought = thought
       tickResult.actions = allActions
 
+      // Productive = externally visible or materially changes state.
+      // remember/read/search/explore/reflect/focus/clear-inbox are internal — don't count.
+      const VISIBLE_OUTPUT_ACTIONS = new Set(['respond', 'write', 'edit', 'append', 'shell', 'synthesize'])
+      const hasVisibleOutput = allActions.some(a => VISIBLE_OUTPUT_ACTIONS.has(a.type))
+
       tickResult.observation = {
-        outputExists: allActions.length > 0,
+        outputExists: hasVisibleOutput,
         outputQuality: 0,  // assessed by learning system later
         confidenceCalibration: 0,
         actionsExecuted,
