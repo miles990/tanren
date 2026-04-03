@@ -1,0 +1,12 @@
+{
+  "tick": 220,
+  "duration": 25288,
+  "quality": 4,
+  "actions": [
+    {
+      "type": "clear-inbox",
+      "result": "success"
+    }
+  ],
+  "gatesTriggered": []
+}

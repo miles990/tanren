@@ -269,6 +269,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const tickStart = Date.now()
     tickCount++
     lastResponse = ''  // reset per tick
+    mpl.setRecentTicks(recentTicks)  // inject history for cognitive state perception
     mpl.preTick()  // snapshot state for diff
     writeLiveStatus({ phase: 'perceive', tickStart, tickNumber: tickCount, running })
 

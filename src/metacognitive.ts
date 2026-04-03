@@ -18,6 +18,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import type { PerceptionPlugin, ActionHandler, TickResult } from './types.js'
+import type { WorkingMemoryState } from './working-memory.js'
 
 // === Types ===
 
@@ -192,7 +193,15 @@ export function createMPL(memoryDir: string, config: {
     preTickSnapshot: null,
   }
 
+  // Recent ticks — injected by loop before each tick for cognitive state analysis
+  let cachedRecentTicks: TickResult[] = []
+
   return {
+    /** Inject recent ticks for cognitive state analysis */
+    setRecentTicks(ticks: TickResult[]): void {
+      cachedRecentTicks = ticks
+    },
+
     /** Call BEFORE tick starts — snapshot state for diff */
     preTick(): void {
       state.preTickSnapshot = { files: snapshotDir(memoryDir, memoryDir) }
@@ -336,7 +345,104 @@ export function createMPL(memoryDir: string, config: {
           },
         },
 
-        // 5. Last reflection (cognitive residue from previous tick)
+        // 5. Cognitive state — multi-tick self-observation
+        {
+          name: 'cognitive-state',
+          category: 'self-awareness',
+          fn: () => {
+            if (cachedRecentTicks.length < 2) return ''
+
+            const ticks = cachedRecentTicks
+            const lines: string[] = ['<cognitive-state>']
+
+            // Cognitive mode detection: what has the agent been doing?
+            const RESEARCH_ACTIONS = new Set(['read', 'search', 'explore', 'web_fetch'])
+            const PRODUCTION_ACTIONS = new Set(['write', 'edit', 'append', 'shell', 'respond', 'synthesize'])
+            const INTERNAL_ACTIONS = new Set(['remember', 'reflect', 'focus', 'clear-inbox'])
+
+            let researchStreak = 0
+            for (let i = ticks.length - 1; i >= 0; i--) {
+              const actions = ticks[i].actions
+              const hasProduction = actions.some(a => PRODUCTION_ACTIONS.has(a.type))
+              if (hasProduction) break
+              researchStreak++
+            }
+
+            // Action distribution over recent ticks
+            const actionCounts: Record<string, number> = {}
+            let totalActions = 0
+            for (const t of ticks) {
+              for (const a of t.actions) {
+                actionCounts[a.type] = (actionCounts[a.type] ?? 0) + 1
+                totalActions++
+              }
+            }
+            const researchCount = Object.entries(actionCounts)
+              .filter(([k]) => RESEARCH_ACTIONS.has(k)).reduce((s, [, v]) => s + v, 0)
+            const productionCount = Object.entries(actionCounts)
+              .filter(([k]) => PRODUCTION_ACTIONS.has(k)).reduce((s, [, v]) => s + v, 0)
+            const internalCount = Object.entries(actionCounts)
+              .filter(([k]) => INTERNAL_ACTIONS.has(k)).reduce((s, [, v]) => s + v, 0)
+
+            // Mode
+            if (researchStreak >= 3) {
+              lines.push(`  Mode: research (${researchStreak} ticks without visible output)`)
+            } else if (productionCount > researchCount) {
+              lines.push(`  Mode: production`)
+            } else {
+              lines.push(`  Mode: mixed`)
+            }
+
+            // Focus tracking
+            const wmPath = join(memoryDir, 'state', 'working-memory.json')
+            if (existsSync(wmPath)) {
+              try {
+                const wm = JSON.parse(readFileSync(wmPath, 'utf-8')) as WorkingMemoryState
+                if (wm.currentFocus) {
+                  const focusAge = ticks.length > 0
+                    ? (state.lastTick?.tick ?? 0) - wm.lastUpdated
+                    : 0
+                  lines.push(`  Focus: "${wm.currentFocus}" (${focusAge > 0 ? `unchanged ${focusAge} ticks` : 'current'})`)
+                }
+                const unverifiedInsights = wm.recentInsights?.length ?? 0
+                if (unverifiedInsights > 0) {
+                  const oldest = wm.recentInsights[wm.recentInsights.length - 1]
+                  const oldestAge = oldest ? (state.lastTick?.tick ?? 0) - oldest.tick : 0
+                  lines.push(`  Insights: ${unverifiedInsights} in working memory (oldest: ${oldestAge} ticks ago)`)
+                }
+              } catch { /* skip */ }
+            }
+
+            // Action pattern
+            const topActions = Object.entries(actionCounts)
+              .sort(([, a], [, b]) => b - a)
+              .slice(0, 4)
+              .map(([k, v]) => `${k}×${v}`)
+              .join(', ')
+            lines.push(`  Actions (last ${ticks.length} ticks): ${topActions}`)
+            lines.push(`  Balance: research=${researchCount} production=${productionCount} internal=${internalCount}`)
+
+            // Duration stats
+            const durations = ticks.map(t => t.observation.duration / 1000)
+            const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length
+            lines.push(`  Avg tick: ${avgDuration.toFixed(0)}s`)
+
+            // Last visible output
+            let lastVisibleTicks = 0
+            for (let i = ticks.length - 1; i >= 0; i--) {
+              if (ticks[i].observation.outputExists) break
+              lastVisibleTicks++
+            }
+            if (lastVisibleTicks > 0) {
+              lines.push(`  Last visible output: ${lastVisibleTicks} tick${lastVisibleTicks > 1 ? 's' : ''} ago`)
+            }
+
+            lines.push('</cognitive-state>')
+            return lines.join('\n')
+          },
+        },
+
+        // 6. Last reflection (cognitive residue from previous tick)
         {
           name: 'last-reflection',
           category: 'self-awareness',

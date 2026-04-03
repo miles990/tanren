@@ -1,0 +1,12 @@
+{
+  "actions": {
+    "clear-inbox": {
+      "type": "clear-inbox",
+      "success": 1,
+      "failure": 0,
+      "lastResult": "success",
+      "lastTick": 220
+    }
+  },
+  "tick": 220
+}
