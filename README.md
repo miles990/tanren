@@ -1,20 +1,21 @@
 # Tanren（鍛錬）
 
-Minimal AI agent framework with built-in learning. ~3,500 lines of TypeScript.
+Minimal AI agent framework with built-in learning and self-perception. TypeScript.
 
-**Tanren agents perceive, think, act, and learn from their own experience.**
+**Tanren agents perceive, think, act, learn — and observe their own cognitive patterns.**
 
 ```
 Perception → LLM → Actions → Gates → Learning
-     ↑                                    |
-     └────────────────────────────────────┘
+     ↑          ↑                        |
+     |    Cognitive State                |
+     └───────────────────────────────────┘
 ```
 
 ## Why Tanren
 
 Most agent frameworks are goal-driven: give it a task, watch it plan steps. Tanren is **perception-driven**: the agent sees its environment first, then decides what to do. The difference matters — goal-driven agents have hands but no eyes.
 
-Tanren was extracted from 195 cycles of running a real autonomous agent ([mini-agent](https://github.com/anthropics/mini-agent)). Every module exists because it solved a real problem, not because it seemed like a good idea.
+Tanren was forged from running a real autonomous agent. Every module exists because it solved a real problem, not because it seemed like a good idea.
 
 ### Design decisions
 
@@ -25,29 +26,47 @@ Tanren was extracted from 195 cycles of running a real autonomous agent ([mini-a
 | File = Truth | The filesystem is the single source of truth |
 | Gates > guardrails | Code-level constraints that block bad patterns before they execute |
 | Learning built-in | Agents detect their own failure patterns and crystallize fixes |
-| Claude CLI default | No API key needed. Uses your local `claude` installation |
+| Framework ≠ Agent | Framework provides tools. Agents own their workspace, identity, and memory |
+
+### LLM Providers
+
+| Provider | Config | API key needed |
+|----------|--------|---------------|
+| Claude CLI | default | No (uses local `claude` installation) |
+| Anthropic API | `createAnthropicProvider()` | Yes |
+| OpenAI-compatible | `createOpenAIProvider()` | Depends (Ollama, vLLM, omlx, etc.) |
+| Fallback chain | `createFallbackProvider(primary, fallback)` | Depends |
 
 ## Quickstart
 
 ```bash
-mkdir my-agent && cd my-agent
-npm init -y
-npm install tanren
+# Scaffold a new agent
+bash scripts/create-agent.sh my-agent ~/Workspace/my-agent
+
+cd ~/Workspace/my-agent
+cp .env.example .env     # configure LLM provider
+edit soul.md             # define identity
+
+./manage.sh up           # start (HTTP server on port 3002)
+./manage.sh status       # check health
+./live.sh                # watch live tick status
 ```
 
-Create `soul.md`:
+The scaffold creates:
 
-```markdown
-## Who I Am
-I'm a research assistant. I find interesting things and remember them.
-
-## My Traits
-- Curious: I notice what changes in my environment
-- Honest: I say what I see
-- Grounded: I verify before I claim
+```
+my-agent/
+  run.ts              — entry point (imports from tanren)
+  soul.md             — agent identity
+  manage.sh           — up/down/restart/status/logs
+  live.sh             — live tick TUI monitor
+  package.json        — ESM config
+  .env.example        — LLM provider template
+  memory/             — all agent memory (File = Truth)
+  messages/           — communication inbox/outbox
 ```
 
-Create `run.ts`:
+Or create manually:
 
 ```typescript
 import { createAgent } from 'tanren'
@@ -60,117 +79,114 @@ const agent = createAgent({
   ],
 })
 
-// Single tick
 const result = await agent.tick()
-console.log(result.thought)
-
-// Or run as a loop (tick every 60s)
-agent.start(60_000)
+agent.start(60_000) // or run as a loop
 ```
-
-That's it. 10 lines to a working agent.
 
 ## Architecture
 
 ```
 src/
-├── types.ts           — shared interfaces
-├── memory.ts          — file-based memory with grep search
-├── perception.ts      — plugin system with caching
-├── actions.ts         — tag parsing + built-in handlers
-├── gates.ts           — code-level constraints
-├── loop.ts            — tick orchestration + crash resume
-├── index.ts           — createAgent() entry point
+├── types.ts              — shared interfaces
+├── memory.ts             — file-based memory with grep search
+├── perception.ts         — plugin system with caching
+├── actions.ts            — tag parsing + built-in handlers (risk tiers)
+├── gates.ts              — code-level constraints (4 built-in gates)
+├── loop.ts               — tick orchestration + crash resume + feedback rounds
+├── index.ts              — createAgent() entry point
+├── metacognitive.ts      — MPL: cognitive state, anomaly detection, state diff
+├── working-memory.ts     — cross-tick persistence (focus, insights, threads)
+├── plans.ts              — multi-step plan tracking with verification
+├── continuation.ts       — multi-tick chain orchestration
 ├── llm/
-│   ├── claude-cli.ts  — default provider (no API key)
-│   ├── anthropic.ts   — direct Anthropic API
-│   └── openai.ts      — any OpenAI-compatible API
+│   ├── claude-cli.ts     — default provider (no API key)
+│   ├── anthropic.ts      — Anthropic API (native tool use)
+│   └── openai.ts         — OpenAI-compatible (Ollama, vLLM, omlx)
 └── learning/
-    ├── index.ts        — coordinator
-    ├── self-perception.ts — structural quality signals
+    ├── index.ts           — coordinator (quality trend + duration stats)
+    ├── self-perception.ts — structural quality signals (6 dimensions)
     └── crystallization.ts — pattern → gate auto-generation
 ```
 
-### Modules
+### Core Loop
 
-**Memory** — Read, write, search, remember. All files, no database. Auto-commits changes to git.
+Each tick: `perceive → think → act → observe → learn`
 
-**Perception** — Plugins that return strings. Each plugin has a name, a function, and an optional interval. The loop calls all plugins before each tick and concatenates results into the LLM context.
+- **Perception** — plugins gather environment data + metacognitive state
+- **Think** — LLM receives perception context, produces thought + action tags
+- **Act** — actions parsed, risk-tiered, executed with feedback rounds
+- **Observe** — structural signals measured (visible output, duration, action diversity)
+- **Learn** — crystallization detects patterns, self-perception scores quality
 
-**Actions** — The LLM responds with `<action:type>content</action:type>` tags. Built-in actions: `remember`, `write`, `append`, `search`, `shell`. Add your own with `ActionHandler`.
+### Metacognitive Perception Layer (MPL)
 
-**Gates** — Code that runs after the LLM responds but before actions execute. Gates can `pass`, `warn`, or `block`. Two built-in gates:
-- **Output Gate** — warns when the agent produces no visible output for N consecutive ticks
-- **Symptom Fix Gate** — warns when the agent keeps fixing symptoms instead of root causes
+The agent can observe its own cognitive patterns — zero LLM calls, pure structural signals:
 
-**Learning** — Two subsystems:
-- **Self-Perception** — structural signals about tick quality (not self-reported, measured)
-- **Crystallization** — detects recurring patterns and generates gate code automatically
-
-**Loop** — The orchestrator. `perceive → think → act → observe`. Handles crash recovery via checkpoints. Never hangs, never loses state.
-
-### LLM Providers
-
-```typescript
-import { createClaudeCliProvider, createAnthropicProvider, createOpenAIProvider } from 'tanren'
-
-// Claude CLI (default — no API key)
-createAgent({ llm: createClaudeCliProvider() })
-
-// Anthropic API
-createAgent({ llm: createAnthropicProvider({ apiKey: '...', model: 'claude-sonnet-4-20250514' }) })
-
-// Any OpenAI-compatible API (Ollama, vLLM, etc.)
-createAgent({ llm: createOpenAIProvider({ baseUrl: 'http://localhost:11434/v1', model: 'llama3' }) })
+```xml
+<cognitive-state>
+  Mode: research (5 ticks without visible output)
+  Focus: "constraint texture" (unchanged 12 ticks)
+  Actions (last 10 ticks): remember×8, read×6, respond×2
+  Balance: research=6 production=2 internal=8
+  Avg tick: 94s
+  Last visible output: 3 ticks ago
+</cognitive-state>
 ```
+
+Also includes: `<last-tick>` action results, `<state-diff>` file changes, `<anomalies>` early warnings, `<last-reflection>` cognitive residue.
 
 ## Gates
 
-Gates are the mechanism for encoding lessons as code. Instead of writing "don't do X" in a prompt (which gets ignored), write a gate that detects X and blocks it.
+Code-level behavioral constraints. Prompts are suggestions; gates are laws.
+
+4 built-in gates:
+
+| Gate | Detects |
+|------|---------|
+| `createOutputGate(N)` | N consecutive ticks with no visible output |
+| `createAnalysisWithoutActionGate(N)` | N ticks with substantial thought but zero actions |
+| `createProductivityGate(N)` | N ticks with only internal actions (remember/read/search) |
+| `createSymptomFixGate(N)` | N consecutive fix-like actions (treating symptoms) |
+
+Custom gates:
 
 ```typescript
 import { defineGate } from 'tanren'
 
-const noEmptyOutput = defineGate({
-  name: 'output-required',
-  description: 'Block ticks that produce no actions',
+const myGate = defineGate({
+  name: 'my-constraint',
+  description: 'What this catches',
   check: (ctx) => {
-    if (ctx.tick.actions.length === 0) {
-      return { action: 'warn', message: 'No actions in this tick' }
-    }
+    if (/* bad pattern */) return { action: 'warn', message: '...' }
     return { action: 'pass' }
   },
 })
 
-createAgent({ gates: [noEmptyOutput] })
-```
-
-Gates can also be loaded from a directory:
-
-```typescript
-createAgent({ gatesDir: './gates' })
+createAgent({ gates: [myGate] })
 ```
 
 ## Learning
 
-When enabled (default), the agent observes its own behavior and evolves:
+Self-perception measures 6 structural signals per tick:
 
-1. **Self-Perception** measures structural signals each tick (duration, action count, failures)
-2. **Crystallization** detects recurring patterns across ticks
-3. Patterns that repeat 3+ times get crystallized into gate code
-4. Generated gates are saved to the `gates/` directory and loaded automatically
+1. **Action existence** — did the agent act at all?
+2. **Action success rate** — did actions execute without errors?
+3. **Gate results** — was the agent warned or blocked?
+4. **Visible output** — did actions produce externally visible results? (respond/write/edit/shell — not remember/read/search)
+5. **Duration** — was the tick abnormally slow (>3min)?
+6. **Action diversity** — was it all internal actions with no visible output?
 
-This is how prompt knowledge becomes code knowledge. The agent doesn't just remember mistakes — it builds immune responses.
+Quality trend and duration stats are injected into the agent's perception, so it can see its own performance patterns.
 
-### Anti-Goodhart
+**Crystallization** detects recurring patterns (repeated failures, action streaks, empty streaks, ignored gate warnings) and auto-generates gates. Prompt knowledge becomes code knowledge.
 
-Learning has a built-in anti-Goodhart check: it only measures environmental outcomes (observable changes), never self-reported quality. An agent can't game metrics it doesn't control.
+**Anti-Goodhart**: only measures environmental outcomes, never self-reported quality. An agent can't game metrics it doesn't control.
 
 ## Configuration
 
 ```typescript
 interface TanrenConfig {
-  identity: string              // path to soul.md or inline string
+  identity: string              // path to soul.md
   memoryDir: string             // where memories live
 
   llm?: LLMProvider             // default: Claude CLI
@@ -180,7 +196,8 @@ interface TanrenConfig {
   actions?: ActionHandler[]     // custom action handlers
 
   tickInterval?: number         // ms between ticks (default: 60000)
-  maxConcurrentDelegations?: number
+  feedbackRounds?: number       // action feedback rounds per tick (default: 1)
+  toolDegradation?: boolean     // degrade read tools after round 0 (default: true)
 
   learning?: {
     enabled?: boolean           // default: true
@@ -188,33 +205,26 @@ interface TanrenConfig {
     crystallization?: boolean
     antiGoodhart?: boolean
   }
+
+  cognitiveMode?: {
+    enabled?: boolean           // auto-detect contemplative/conversational/collaborative
+  }
+
+  eventDriven?: {
+    enabled?: boolean           // reactive ticks on external events
+  }
 }
-```
-
-## CLI
-
-```bash
-# Run a single tick
-npx tanren tick --config ./tanren.config.ts
-
-# Start the loop
-npx tanren start --config ./tanren.config.ts
-
-# Start with custom interval
-npx tanren start --config ./tanren.config.ts --interval 120000
 ```
 
 ## Philosophy
 
-Tanren means "forging through practice" (鍛錬). The name reflects how the framework was built — not designed in advance, but forged through 52 days of running a real agent.
-
-Three principles:
+Tanren means "forging through practice" (鍛錬). Three principles:
 
 1. **Perception before action.** See the world before deciding what to do. Goal-driven agents have hands but no eyes.
 
-2. **Gates before guardrails.** Don't tell the LLM "please don't do X" — write code that detects X and blocks it. Prompts are suggestions; gates are laws.
+2. **Gates before guardrails.** Don't tell the LLM "please don't do X" — write code that detects X and blocks it.
 
-3. **Learning is crystallization.** Knowledge that stays in prompts eventually gets ignored. Knowledge crystallized into code becomes permanent. The agent's growth is measured by how much knowledge has moved from text to code.
+3. **Learning is crystallization.** Knowledge in prompts gets ignored. Knowledge crystallized into code becomes permanent. An agent's growth is measured by how much knowledge has moved from text to code.
 
 ## License
 
