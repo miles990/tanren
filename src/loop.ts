@@ -435,19 +435,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       const initialHadNoTools = actions.length === 0
       const skipFeedback = !initialHadNoTools && roundRisk === 1 && actionsFailed === 0
 
-      // Feedback rounds: 0 for Tier 1 (no impl), reduced for Tier 2, full for Tier 3
-      const COGNITIVE_FEEDBACK_ROUNDS: Record<string, number> = {
-        conversational: 1,
-        contemplative: 2,
-        collaborative: config.feedbackRounds ?? 5,
-      }
-      const baseFeedbackRounds = cognitiveContext
-        ? COGNITIVE_FEEDBACK_ROUNDS[cognitiveContext.mode] ?? (config.feedbackRounds ?? 1)
-        : config.feedbackRounds ?? 1
+      // Dynamic cognitive budget: framework observes environmental signals to decide
+      // when to stop, rather than using a fixed number. config.feedbackRounds is now
+      // a ceiling (safety net), not a target. The loop exits early when:
+      //   - No novel actions (repetition detected)
+      //   - Idle threshold exceeded (model stopped calling tools)
+      //   - Production convergence (synthesize threshold hit)
+      // This gives weak models more room and strong models less waste.
+      const configMax = config.feedbackRounds ?? 10
       const maxFeedbackRounds = skipFeedback ? 0
-        : initialHadNoTools ? Math.max(baseFeedbackRounds, 2) // No tools yet → at least 2 rounds to force tool use
-        : roundRisk <= 2 ? Math.min(baseFeedbackRounds, 3)   // Tier 2: capped at 3 rounds
-        : baseFeedbackRounds                                   // Tier 3: full rounds
+        : initialHadNoTools ? Math.max(configMax, 2)  // No tools yet → at least 2 rounds
+        : configMax                                     // Environmental signals handle the rest
       currentMaxFeedbackRounds = maxFeedbackRounds
 
       if (useToolUse && structuredActions !== null) {
@@ -483,7 +481,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         let roundsSinceLastToolUse = 0
         // Track rounds without productive output (write/respond/synthesize)
         // Counts both read-only rounds AND idle thinking rounds as "unproductive"
-        const PRODUCTIVE_ACTIONS = new Set(['write', 'edit', 'respond', 'synthesize', 'focus', 'remember'])
+        const PRODUCTIVE_ACTIONS = new Set(['write', 'edit', 'append', 'respond', 'synthesize', 'shell'])
         let roundsWithoutProduction = actions.every(a => !PRODUCTIVE_ACTIONS.has(a.type)) ? 1 : 0  // count initial round
         const SYNTHESIZE_THRESHOLD = 2  // force synthesize after N unproductive rounds (lowered: model typically does 1 read round then goes idle)
 
