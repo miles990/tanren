@@ -389,6 +389,13 @@ esac
 MANAGE
 chmod +x "$TARGET/manage.sh"
 
+# ── live.sh (copy from framework, fix default path) ──
+LIVE_SRC="$TANREN_DIR/scripts/tanren-live.sh"
+if [ -f "$LIVE_SRC" ]; then
+  sed 's|AGENT_DIR="${1:-examples/with-learning}"|AGENT_DIR="${1:-.}"|' "$LIVE_SRC" > "$TARGET/live.sh"
+  chmod +x "$TARGET/live.sh"
+fi
+
 echo ""
 echo "✅ Agent '$NAME' created at $TARGET"
 echo ""
@@ -396,4 +403,5 @@ echo "Next steps:"
 echo "  1. Edit soul.md — define who $NAME is"
 echo "  2. cp .env.example .env — configure LLM provider"
 echo "  3. ./manage.sh up — start the agent"
+echo "  4. ./live.sh — watch live tick status"
 echo ""
