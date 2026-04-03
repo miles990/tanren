@@ -78,32 +78,17 @@ export function createActionHealthTracker(stateDir: string) {
           const entries = Object.values(state.actions)
           if (entries.length === 0) return ''
 
-          // Only show actions with recent failures or mixed results
-          const noteworthy = entries.filter(a =>
-            a.failure > 0 || a.lastResult === 'failure'
-          )
-          // Also show recently recovered actions (was failing, now succeeding)
-          const recovered = entries.filter(a =>
-            a.failure > 0 && a.lastResult === 'success'
-          )
-
-          if (noteworthy.length === 0 && recovered.length === 0) return ''
-
+          // Show ALL actions with their real status — agent needs truth, not filtered news
           const lines: string[] = ['<action-health>']
 
-          for (const a of recovered) {
-            lines.push(`  ${a.type}: ✅ RECOVERED (was failing, now works) — ${a.success} success, ${a.failure} failures total`)
-          }
-
-          for (const a of noteworthy) {
-            if (recovered.includes(a)) continue // already shown
-            const rate = a.success + a.failure > 0
-              ? Math.round(a.success / (a.success + a.failure) * 100)
-              : 0
-            const status = a.lastResult === 'failure'
-              ? `❌ last failed${a.lastError ? ': ' + a.lastError : ''}`
-              : `✅ last succeeded (${rate}% success rate)`
-            lines.push(`  ${a.type}: ${status}`)
+          for (const a of entries) {
+            if (a.failure > 0 && a.lastResult === 'success') {
+              lines.push(`  ${a.type}: ✅ RECOVERED — ${a.success} success, ${a.failure} failures total`)
+            } else if (a.failure > 0 && a.lastResult === 'failure') {
+              lines.push(`  ${a.type}: ❌ FAILING — ${a.failure} failures${a.lastError ? ': ' + a.lastError : ''}`)
+            } else {
+              lines.push(`  ${a.type}: ✅ ${a.success} success, 0 failures`)
+            }
           }
 
           lines.push('</action-health>')
