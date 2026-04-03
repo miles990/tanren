@@ -15,7 +15,7 @@ set -euo pipefail
 LABEL="com.tanren.akari"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PLIST_SRC="$(cd "$(dirname "$0")" && pwd)/com.tanren.akari.plist"
-TANREN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+AKARI_DIR="/Users/user/Workspace/akari"
 LOG_DIR="$HOME/.tanren"
 LOG_FILE="$LOG_DIR/akari.log"
 ERR_FILE="$LOG_DIR/akari.error.log"
@@ -37,8 +37,8 @@ case "${1:-status}" in
     fi
     ensure_log_dir
     echo "Starting Akari on port $PORT..."
-    cd "$TANREN_DIR"
-    nohup npx tsx examples/with-learning/run.ts --serve \
+    cd "$AKARI_DIR"
+    nohup npx tsx reference-run.ts --serve \
       > "$LOG_FILE" 2> "$ERR_FILE" &
 
     # Wait for startup
