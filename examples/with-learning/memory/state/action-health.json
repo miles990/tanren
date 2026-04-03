@@ -2,11 +2,18 @@
   "actions": {
     "clear-inbox": {
       "type": "clear-inbox",
+      "success": 2,
+      "failure": 0,
+      "lastResult": "success",
+      "lastTick": 221
+    },
+    "remember": {
+      "type": "remember",
       "success": 1,
       "failure": 0,
       "lastResult": "success",
-      "lastTick": 220
+      "lastTick": 221
     }
   },
-  "tick": 220
+  "tick": 221
 }

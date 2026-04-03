@@ -1,8 +1,12 @@
 {
-  "tick": 220,
-  "duration": 25288,
+  "tick": 221,
+  "duration": 27341,
   "quality": 4,
   "actions": [
+    {
+      "type": "remember",
+      "result": "success"
+    },
     {
       "type": "clear-inbox",
       "result": "success"

@@ -1,10 +1,11 @@
 {
-  "tick": 220,
+  "tick": 221,
   "changes": [
-    "  + state/action-health.json (new)",
+    "  ~ memory.md (modified)",
+    "  ~ state/action-health.json (modified)",
     "  ~ state/crystallization.json (modified)",
     "  ~ state/gate-state.json (modified)",
-    "  + state/last-tick-actions.json (new)",
+    "  ~ state/last-tick-actions.json (modified)",
     "  ~ state/live-status.json (modified)",
     "  ~ state/working-memory.json (modified)"
   ]
