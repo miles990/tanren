@@ -41,6 +41,7 @@ import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createEvolutionEngine } from './evolution.js'
+import { groundQuestion } from './socratic.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
 import { detectContextMode, type ContextModeConfig } from './context-modes.js'
@@ -125,6 +126,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   }
 
   // Injected message perception — consumed once per tick
+  // Socratic grounding: abstract questions get enriched with concrete context
   perception.register({
     name: 'injected-message',
     category: 'input',
@@ -132,7 +134,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       if (!pendingMessage) return ''
       const { from, text } = pendingMessage
       pendingMessage = null  // consume
-      return `<message from="${from}">\n${text}\n</message>`
+      const grounded = groundQuestion(text, config.memoryDir)
+      return `<message from="${from}">\n${grounded}\n</message>`
     },
   })
 
