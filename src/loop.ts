@@ -347,15 +347,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const hasIncomingMessage = hadMessageThisTick || messageContent.length > 0
 
     if (useToolUse) {
-      // Context-sensitive tool exposure: environment state shapes available tools.
-      // Make correct behavior the path of least resistance.
+      // Research-first: initial round excludes respond when there's a message.
+      // Forces LLM to gather information before answering. Respond unlocked in
+      // feedback rounds. Simple questions: 1 research round + 1 respond round (~6s).
+      // Complex questions: multiple research rounds + 1 deep respond.
       const allToolDefs = actionRegistry.toToolDefinitions()
-      // Response-focused but not crippled: include search/read so agent can
-      // research before responding. The goal is "respond is the natural path",
-      // not "respond is the ONLY option".
-      const RESPONSE_TOOLS = new Set(['respond', 'remember', 'clear-inbox', 'reflect', 'search', 'read', 'query-history'])
       const toolDefs = hasIncomingMessage
-        ? allToolDefs.filter(t => RESPONSE_TOOLS.has(t.name))  // message → respond is the natural path
+        ? allToolDefs.filter(t => t.name !== 'respond')
         : allToolDefs
 
       const baseToolSystemPrompt = buildToolUseSystemPrompt(identity)
@@ -452,9 +450,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Behavior-driven, not keyword-driven — look at what the model DID, not what the user SAID.
       const roundRisk = getRoundRiskTier(actions)
       const initialHadNoTools = actions.length === 0
-      const initialHasRespond = actions.some(a => a.type === 'respond')
-      const skipFeedback = (!initialHadNoTools && roundRisk === 1 && actionsFailed === 0)
-        || initialHasRespond  // Agent already responded — tick is complete
+      const initialRespondContent = actions.find(a => a.type === 'respond')?.content ?? ''
+      // Never skip feedback when there's a message — respond was excluded from initial tools
+      // and needs at least 1 feedback round to be delivered.
+      const skipFeedback = hasIncomingMessage ? false
+        : (!initialHadNoTools && roundRisk === 1 && actionsFailed === 0)
+        || initialRespondContent.length > 300
 
       // Dynamic cognitive budget: framework observes environmental signals to decide
       // when to stop, rather than using a fixed number. config.feedbackRounds is now
@@ -612,9 +613,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           allActions.push(...novelActions)
           actionResults.push(...roundResults)
 
-          // Early exit: if agent called respond, it believes the tick is complete.
-          // Don't keep looping — respect the agent's cognitive signal.
-          if (novelActions.some(a => a.type === 'respond')) break
+          // Exit on substantial respond (>300 chars). Short responds may be
+          // preliminary — allow feedback rounds to deepen.
+          const feedbackRespond = novelActions.find(a => a.type === 'respond')
+          if (feedbackRespond && feedbackRespond.content.length > 300) break
         }
       } else {
         // Text-based feedback mini-loop (legacy)
