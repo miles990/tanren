@@ -333,16 +333,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     let structuredActions: Action[] | null = null
 
     // Always use tool_use when available — agent decides which tools to call.
-    // Previous design gated tool_use on complexity classification, but char-length
-    // thresholds are unreliable across languages and rob the agent of choice.
     const useToolUse = isToolUseProvider(llm)
+
+    // Detect if there's a message to respond to (from any source: in-process or file inbox)
+    const hasIncomingMessage = hadMessageThisTick || messageContent.length > 0
 
     if (useToolUse) {
       // Context-sensitive tool exposure: environment state shapes available tools.
       // Make correct behavior the path of least resistance.
       const allToolDefs = actionRegistry.toToolDefinitions()
       const RESPONSE_TOOLS = new Set(['respond', 'remember', 'clear-inbox', 'reflect'])
-      const toolDefs = hadMessageThisTick
+      const toolDefs = hasIncomingMessage
         ? allToolDefs.filter(t => RESPONSE_TOOLS.has(t.name))  // message → respond is the natural path
         : allToolDefs
 
@@ -656,7 +657,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Floor 1: If there's a pending message, must have respond action.
       // If LLM didn't call respond, extract a response from thought.
       const hasRespond = allActions.some(a => a.type === 'respond')
-      if (hadMessageThisTick && !hasRespond && thought.length > 50) {
+      if (hasIncomingMessage && !hasRespond && thought.length > 50) {
         // Auto-extract: use thought as response (code guarantee, not prompt hope)
         const autoResponse = thought.replace(/<action:\w+>[\s\S]*?<\/action:\w+>/g, '').trim()
         if (autoResponse.length > 20) {
