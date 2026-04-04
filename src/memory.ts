@@ -66,7 +66,11 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
     async remember(content: string, opts?: { topic?: string; tickCount?: number }): Promise<void> {
       const timestamp = new Date().toISOString()
       const tickTag = opts?.tickCount != null ? ` [tick:${opts.tickCount}]` : ''
-      const entry = `- [${timestamp.slice(0, 10)}]${tickTag} ${content}\n`
+
+      // Auto-extract concept tags from content (framework-level, not agent-level)
+      const tags = extractConceptTags(content)
+      const tagSuffix = tags.length > 0 ? ` ${tags.map(t => `#${t}`).join(' ')}` : ''
+      const entry = `- [${timestamp.slice(0, 10)}]${tickTag} ${content}${tagSuffix}\n`
 
       if (opts?.topic) {
         const topicFile = `topics/${sanitizeFilename(opts.topic)}.md`
@@ -79,6 +83,9 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
       } else {
         await self.append('memory.md', entry)
       }
+
+      // Update tag index (fire-and-forget)
+      updateTagIndex(memoryDir, content, tags, opts?.topic ?? 'general', timestamp).catch(() => {})
     },
 
     async recall(query: string): Promise<string[]> {
@@ -186,6 +193,113 @@ function grepSearch(dir: string, query: string): SearchResult[] {
       return []
     }
     return []
+  }
+}
+
+// === Concept Tag Extraction ===
+// Auto-extracts key concepts from memory content — no LLM, pure heuristic.
+// Extracts nouns/concepts >3 chars, filters stop words, takes top 3.
+
+const STOP_WORDS = new Set([
+  'the', 'this', 'that', 'with', 'from', 'have', 'been', 'will', 'would', 'could',
+  'should', 'about', 'there', 'their', 'they', 'what', 'when', 'where', 'which',
+  'more', 'some', 'also', 'just', 'like', 'into', 'than', 'then', 'very', 'each',
+  'make', 'made', 'does', 'doing', 'done', 'being', 'after', 'before', 'between',
+  'same', 'other', 'only', 'over', 'still', 'through', 'here', 'much', 'need',
+  'these', 'those', 'your', 'know',
+])
+
+function extractConceptTags(content: string): string[] {
+  // Extract words, filter short/stop words, score by frequency + length
+  const words = content
+    .toLowerCase()
+    .replace(/[^\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff-]+/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w))
+
+  const freq = new Map<string, number>()
+  for (const w of words) freq.set(w, (freq.get(w) ?? 0) + 1)
+
+  return [...freq.entries()]
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([w]) => w)
+}
+
+// === Tag Index ===
+// JSONL file mapping tags → memory entries for fast conceptual lookup.
+
+async function updateTagIndex(
+  memoryDir: string,
+  content: string,
+  tags: string[],
+  source: string,
+  timestamp: string,
+): Promise<void> {
+  if (tags.length === 0) return
+  const indexPath = join(memoryDir, 'state', 'tag-index.jsonl')
+  const entry = JSON.stringify({
+    tags,
+    source,
+    preview: content.slice(0, 100),
+    ts: timestamp,
+  })
+  await appendFile(indexPath, entry + '\n')
+}
+
+// === History Query ===
+// Search ticks.jsonl for behavioral patterns.
+
+export async function queryTickHistory(
+  memoryDir: string,
+  filter: { actionType?: string; minQuality?: number; maxDuration?: number },
+): Promise<Array<{ tick: number; actions: string[]; quality: number; duration: number }>> {
+  const ticksPath = join(memoryDir, 'journal', 'ticks.jsonl')
+  try {
+    const raw = await readFile(ticksPath, 'utf-8')
+    const results: Array<{ tick: number; actions: string[]; quality: number; duration: number }> = []
+
+    for (const line of raw.split('\n').filter(Boolean)) {
+      try {
+        const t = JSON.parse(line)
+        const actions = (t.actions ?? []).map((a: { type: string }) => a.type)
+        const obs = t.observation ?? {}
+        const quality = obs.quality ?? 0
+        const duration = obs.duration ?? 0
+
+        if (filter.actionType && !actions.includes(filter.actionType)) continue
+        if (filter.minQuality && quality < filter.minQuality) continue
+        if (filter.maxDuration && duration > filter.maxDuration) continue
+
+        results.push({ tick: t.tick ?? 0, actions, quality, duration: Math.round(duration / 1000) })
+      } catch { continue }
+    }
+    return results.slice(-50) // last 50 matches
+  } catch {
+    return []
+  }
+}
+
+// === Session Bridge ===
+// Auto-updated at tick end: captures open questions, focus, priorities for next session.
+
+export function buildSessionBridge(
+  workingMemory: { currentFocus: string | null; recentInsights: Array<{ content: string }> },
+  lastActions: string[],
+  tickCount: number,
+): Record<string, unknown> {
+  return {
+    lastTick: tickCount,
+    updatedAt: new Date().toISOString(),
+    currentFocus: workingMemory.currentFocus,
+    openQuestions: workingMemory.recentInsights
+      .filter(i => i.content.includes('?'))
+      .slice(0, 5)
+      .map(i => i.content),
+    recentActivity: lastActions.slice(0, 10),
+    resumeHint: workingMemory.currentFocus
+      ? `Continue working on: ${workingMemory.currentFocus}`
+      : 'No active focus — explore environment or check inbox',
   }
 }
 

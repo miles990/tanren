@@ -660,4 +660,32 @@ export const builtinActions: ActionHandler[] = [
       return `SYNTHESIS COMPLETE. You now have a plan:\n- Gap: ${gap}\n- Proposal: ${proposal}\n- Approach: ${approach}\n\nNow EXECUTE the approach. Read types if needed, then write the code.`
     },
   },
+  {
+    type: 'query-history',
+    description: 'Query your own behavioral history. Search past ticks by action type, quality, or duration. Helps you understand your own patterns.',
+    toolSchema: {
+      properties: {
+        action_type: { type: 'string', description: 'Filter by action type (e.g. "write", "respond", "remember")' },
+        min_quality: { type: 'number', description: 'Minimum quality score (1-5)' },
+        max_duration: { type: 'number', description: 'Maximum duration in seconds' },
+      },
+    },
+    async execute(action, context) {
+      const { queryTickHistory } = await import('./memory.js')
+      const filter = {
+        actionType: action.input?.action_type as string | undefined,
+        minQuality: action.input?.min_quality as number | undefined,
+        maxDuration: action.input?.max_duration
+          ? (action.input.max_duration as number) * 1000  // convert to ms
+          : undefined,
+      }
+      // ticks.jsonl is in memoryDir/journal/ — workDir + memory/ is the convention
+      const memoryDir = (await import('node:path')).join(context.workDir, 'memory')
+      const results = await queryTickHistory(memoryDir, filter)
+      if (results.length === 0) return 'No matching ticks found.'
+      return results.map(r =>
+        `tick ${r.tick}: ${r.actions.join('→')} (${r.duration}s, q=${r.quality})`
+      ).join('\n')
+    },
+  },
 ]

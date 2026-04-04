@@ -708,6 +708,19 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Save gate state
     saveGateState(gateStatePath, gateState)
 
+    // Session bridge: auto-capture state for next session (fire-and-forget)
+    try {
+      const { buildSessionBridge } = await import('./memory.js')
+      const bridge = buildSessionBridge(
+        workingMemory.getState(),
+        tickResult.actions.map(a => a.type),
+        tickCount,
+      )
+      const bridgePath = join(config.memoryDir, 'state', 'session-bridge.json')
+      const { writeFileSync } = await import('node:fs')
+      writeFileSync(bridgePath, JSON.stringify(bridge, null, 2))
+    } catch { /* fire-and-forget */ }
+
     // Clear checkpoint (tick completed successfully)
     clearCheckpoint(checkpointPath)
 

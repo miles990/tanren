@@ -437,6 +437,21 @@ export function createMPL(memoryDir: string, config: {
               lines.push(`  Last visible output: ${lastVisibleTicks} tick${lastVisibleTicks > 1 ? 's' : ''} ago`)
             }
 
+            // Session bridge — continuity from previous session
+            const bridgePath = join(memoryDir, 'state', 'session-bridge.json')
+            if (existsSync(bridgePath) && ticks.length <= 2) {
+              // Only show in first few ticks of a session
+              try {
+                const bridge = JSON.parse(readFileSync(bridgePath, 'utf-8'))
+                if (bridge.resumeHint) {
+                  lines.push(`  Resume: ${bridge.resumeHint}`)
+                }
+                if (bridge.openQuestions?.length > 0) {
+                  lines.push(`  Open questions: ${bridge.openQuestions.slice(0, 3).join('; ')}`)
+                }
+              } catch { /* skip */ }
+            }
+
             lines.push('</cognitive-state>')
             return lines.join('\n')
           },
