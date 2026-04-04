@@ -68,17 +68,28 @@ export function createEvolutionEngine(stateDir: string) {
      * Called after learning, every N ticks.
      */
     analyze(tickCount: number, ticks: Array<{ actions: Array<{ type: string }>; observation: { outputExists: boolean; duration: number } }>): void {
+      // Restart detection: if tickCount < lastAnalysis, the loop restarted
+      if (tickCount < state.lastAnalysis) state.lastAnalysis = 0
       if (tickCount - state.lastAnalysis < state.analysisInterval) return
       state.lastAnalysis = tickCount
 
+      // If in-memory ticks are sparse, supplement from ticks.jsonl history
+      let analysisData = ticks
+      if (ticks.length < 20) {
+        const historical = loadTickHistory(stateDir)
+        if (historical.length > ticks.length) {
+          analysisData = historical
+        }
+      }
+
       // 1. Detect automation candidates — repeated action sequences
-      detectAutomationCandidates(state, ticks)
+      detectAutomationCandidates(state, analysisData)
 
       // 2. Detect resource opportunities — check environment
       detectResourceOpportunities(state)
 
       // 3. Detect effective patterns — high-quality sequences
-      detectEffectivePatterns(state, ticks)
+      detectEffectivePatterns(state, analysisData)
 
       // Prune old candidates
       state.candidates = state.candidates
@@ -284,6 +295,35 @@ function detectEffectivePatterns(
       status: 'proposed',
       validationCount: 0,
     })
+  }
+}
+
+// === Tick History Loader ===
+
+function loadTickHistory(stateDir: string): Array<{ actions: Array<{ type: string }>; observation: { outputExists: boolean; duration: number } }> {
+  // stateDir is memoryDir/state, ticks.jsonl is in memoryDir/journal
+  const ticksPath = join(stateDir, '..', 'journal', 'ticks.jsonl')
+  if (!existsSync(ticksPath)) return []
+
+  try {
+    const raw = readFileSync(ticksPath, 'utf-8')
+    const results: Array<{ actions: Array<{ type: string }>; observation: { outputExists: boolean; duration: number } }> = []
+
+    for (const line of raw.split('\n').filter(Boolean).slice(-50)) { // last 50 ticks
+      try {
+        const t = JSON.parse(line) as TickRecord
+        results.push({
+          actions: (t.actions ?? []).map(a => typeof a === 'string' ? { type: a } : a),
+          observation: {
+            outputExists: t.observation?.outputExists ?? false,
+            duration: t.observation?.duration ?? 0,
+          },
+        })
+      } catch { continue }
+    }
+    return results
+  } catch {
+    return []
   }
 }
 
