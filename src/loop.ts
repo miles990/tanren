@@ -41,6 +41,7 @@ import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createEvolutionEngine } from './evolution.js'
+import { executeBatch } from './action-batch.js'
 import { groundQuestion } from './socratic.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
@@ -428,23 +429,20 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       const actionResults: string[] = []
       const allActions = [...actions]
 
-      // Execute initial actions
-      for (const action of actions) {
-        config.onActionProgress?.({ phase: 'start', action })
-        try {
-          const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
-          actionResults.push(result)
-          actionsExecuted++
-          actionHealth.record(action.type, true, tickCount)
-          config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err)
-          actionResults.push(`[action ${action.type} failed: ${msg}]`)
-          actionsFailed++
-          actionHealth.record(action.type, false, tickCount, msg)
-          config.onActionProgress?.({ phase: 'error', action, error: msg })
-        }
-      }
+      // Execute initial actions via ActionBatch (parallel reads, sequential writes)
+      const initialBatch = await executeBatch(
+        actions,
+        { execute: (action, ctx) => actionRegistry.execute(action, ctx) },
+        { memory, workDir, tickCount, workingMemory },
+        (event) => {
+          config.onActionProgress?.(event)
+          if (event.phase === 'done') actionHealth.record(event.action.type, true, tickCount)
+          else if (event.phase === 'error') actionHealth.record(event.action.type, false, tickCount, event.error)
+        },
+      )
+      actionsExecuted += initialBatch.executed
+      actionsFailed += initialBatch.failed
+      actionResults.push(...initialBatch.results)
 
       // Convergence Condition: feedback needed if model hasn't produced useful output yet.
       // Behavior-driven, not keyword-driven — look at what the model DID, not what the user SAID.
@@ -592,57 +590,26 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           }
           messages.push({ role: 'assistant', content: response.content })
 
-          // Execute actions — read-only actions run in parallel, write actions run sequentially.
-          // This is safe because read-only actions don't modify state.
-          const READ_ONLY_ACTION_TYPES = new Set(['search', 'read', 'explore', 'query-history', 'web_fetch'])
-          const readOnlyActions = novelActions.filter(a => READ_ONLY_ACTION_TYPES.has(a.type))
-          const writeActions = novelActions.filter(a => !READ_ONLY_ACTION_TYPES.has(a.type))
-
-          const roundResults: string[] = new Array(novelActions.length).fill('')
-
-          // Phase 1: parallel read-only actions
-          if (readOnlyActions.length > 0) {
-            const readPromises = readOnlyActions.map(async (action) => {
-              const idx = novelActions.indexOf(action)
-              config.onActionProgress?.({ phase: 'start', action })
-              try {
-                const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
-                roundResults[idx] = result
-                actionsExecuted++
-                actionHealth.record(action.type, true, tickCount)
-                config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
-              } catch (err: unknown) {
-                const msg = err instanceof Error ? err.message : String(err)
-                roundResults[idx] = `[action ${action.type} failed: ${msg}]`
-                actionsFailed++
-                actionHealth.record(action.type, false, tickCount, msg)
-                config.onActionProgress?.({ phase: 'error', action, error: msg })
+          // Execute actions via ActionBatch — auto-parallelizes read-only,
+          // sequences writes, tracks per-action health.
+          const batchResult = await executeBatch(
+            novelActions,
+            { execute: (action, ctx) => actionRegistry.execute(action, ctx) },
+            { memory, workDir, tickCount, workingMemory },
+            (event) => {
+              config.onActionProgress?.(event)
+              if (event.phase === 'done') {
+                actionHealth.record(event.action.type, true, tickCount)
+              } else if (event.phase === 'error') {
+                actionHealth.record(event.action.type, false, tickCount, event.error)
               }
-            })
-            await Promise.all(readPromises)
-          }
-
-          // Phase 2: sequential write actions (order matters)
-          for (const action of writeActions) {
-            const idx = novelActions.indexOf(action)
-            config.onActionProgress?.({ phase: 'start', action })
-            try {
-              const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
-              roundResults[idx] = result
-              actionsExecuted++
-              actionHealth.record(action.type, true, tickCount)
-              config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err)
-              roundResults[idx] = `[action ${action.type} failed: ${msg}]`
-              actionsFailed++
-              actionHealth.record(action.type, false, tickCount, msg)
-              config.onActionProgress?.({ phase: 'error', action, error: msg })
-            }
-          }
+            },
+          )
+          actionsExecuted += batchResult.executed
+          actionsFailed += batchResult.failed
 
           allActions.push(...novelActions)
-          actionResults.push(...roundResults)
+          actionResults.push(...batchResult.results)
 
           // Exit on substantial respond (>300 chars). Short responds may be
           // preliminary — allow feedback rounds to deepen.

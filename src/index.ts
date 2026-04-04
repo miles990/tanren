@@ -126,6 +126,11 @@ export { createGateSystem, defineGate, createOutputGate, createAnalysisWithoutAc
 export { createActionRegistry, builtinActions, getRiskTier, getRoundRiskTier, type ActionRegistry } from './actions.js'
 export { createLoop, type AgentLoop } from './loop.js'
 
+// Multi-task
+export { createTaskGraph, type TaskGraph, type Task, type TaskResult } from './task-graph.js'
+export { createThreadContext, type ThreadContext } from './thread-context.js'
+export { executeBatch, type BatchResult } from './action-batch.js'
+
 // LLM Providers
 export { createClaudeCliProvider, type ClaudeCliOptions } from './llm/claude-cli.js'
 export { createAnthropicProvider, type AnthropicProviderOptions } from './llm/anthropic.js'
