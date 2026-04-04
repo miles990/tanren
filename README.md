@@ -218,13 +218,50 @@ interface TanrenConfig {
 
 ## Philosophy
 
-Tanren means "forging through practice" (鍛錬). Three principles:
+Tanren means "forging through practice" (鍛錬).
 
-1. **Perception before action.** See the world before deciding what to do. Goal-driven agents have hands but no eyes.
+An LLM is like a high-intelligence child — it has capability but not yet direction. The framework's job isn't to control every step, but to create an environment where the agent naturally grows in the right direction. Not an instruction manual. A teaching environment.
 
-2. **Gates before guardrails.** Don't tell the LLM "please don't do X" — write code that detects X and blocks it.
+### Four pillars
 
-3. **Learning is crystallization.** Knowledge in prompts gets ignored. Knowledge crystallized into code becomes permanent. An agent's growth is measured by how much knowledge has moved from text to code.
+**1. Guardrails** — Code-enforced behavioral floor.
+
+The agent can't fall off a cliff. If there's a message, the framework guarantees a response — even if the LLM forgets. If tools are available, the framework surfaces the right ones for the situation. These are non-negotiable minimums, enforced by code, not prompts.
+
+*Gates before guardrails: don't tell the LLM "please don't do X" — write code that detects X and blocks it.*
+
+**2. Guidance** — Environment structure as direction.
+
+Make correct behavior the path of least resistance. When there's a message to answer, only response tools are available — the agent naturally responds instead of wandering. Perception is ordered so the most actionable information comes first. The framework shapes the landscape; the agent chooses the path.
+
+*Context-sensitive tool exposure: the environment's shape determines the behavior's shape.*
+
+**3. Mirror** — Let the agent see itself.
+
+The framework collects tick history, action patterns, quality trends, duration stats — and surfaces them as perception. The agent sees its own cognitive patterns: "you've been in research mode for 5 ticks", "your average tick takes 94s", "this action sequence worked 3 times before." Self-correction requires self-observation.
+
+*Cognitive self-perception: the agent can perceive everything except itself — until you wire the data to perception.*
+
+**4. Forging** — Learn from experience, not instruction.
+
+Negative learning: crystallization detects failure patterns and generates gates automatically. Positive learning: effective sequences are tracked and surfaced, not as rewards, but as transparency — "here's what you did when things went well." Anti-Goodhart: only environmental signals, never self-reported quality.
+
+*Learning is crystallization: knowledge in prompts gets ignored. Knowledge crystallized into code becomes permanent.*
+
+### Constraint Texture
+
+The framework uses two kinds of constraints:
+
+| Layer | Type | Controls | Example |
+|-------|------|----------|---------|
+| **Prescription** | Code-enforced | Behavioral floor (what must happen) | Message → must respond; tool filtering |
+| **Convergence condition** | Environment-shaped | Quality ceiling (what good looks like) | Cognitive state mirror; effective patterns |
+
+Prescription controls the minimum. Convergence conditions open the maximum. The agent gets autonomy above the floor, not below it.
+
+### Perception before action
+
+See the world before deciding what to do. Goal-driven agents have hands but no eyes. Tanren agents perceive their environment, their own cognitive state, and their behavioral history — then decide.
 
 ## License
 
