@@ -87,6 +87,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
   // In-process message queue for chat() — consumed once per tick
   let pendingMessage: { from: string; text: string } | null = null
+  let hadMessageThisTick = false  // behavioral floor: track if this tick had a message
   // Last response from action:respond — extracted per tick
   let lastResponse = ''
 
@@ -269,6 +270,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const tickStart = Date.now()
     tickCount++
     lastResponse = ''  // reset per tick
+    hadMessageThisTick = pendingMessage !== null
     mpl.setRecentTicks(recentTicks)  // inject history for cognitive state perception
     mpl.preTick()  // snapshot state for diff
     writeLiveStatus({ phase: 'perceive', tickStart, tickNumber: tickCount, running })
@@ -330,14 +332,19 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     let thought: string
     let structuredActions: Action[] | null = null
 
-    // Minimal complexity → think() with NO tools (0.37s vs 3.5s with tools)
-    // Agent responds via text tags if needed. No tool_use overhead.
-    const useToolUse = isToolUseProvider(llm) && complexity === 'full'
+    // Always use tool_use when available — agent decides which tools to call.
+    // Previous design gated tool_use on complexity classification, but char-length
+    // thresholds are unreliable across languages and rob the agent of choice.
+    const useToolUse = isToolUseProvider(llm)
 
     if (useToolUse) {
-      // Full complexity: structured tool use path
+      // Context-sensitive tool exposure: environment state shapes available tools.
+      // Make correct behavior the path of least resistance.
       const allToolDefs = actionRegistry.toToolDefinitions()
-      const toolDefs = allToolDefs // full = all tools
+      const RESPONSE_TOOLS = new Set(['respond', 'remember', 'clear-inbox', 'reflect'])
+      const toolDefs = hadMessageThisTick
+        ? allToolDefs.filter(t => RESPONSE_TOOLS.has(t.name))  // message → respond is the natural path
+        : allToolDefs
 
       const baseToolSystemPrompt = buildToolUseSystemPrompt(identity)
       const toolSystemPrompt = cognitiveContext
@@ -639,6 +646,30 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           allActions.push(...followUpActions)
           actionResults.push(...roundResults)
           lastRoundResults = roundResults
+        }
+      }
+
+      // ── Behavioral Floor: code-level guarantees regardless of LLM capability ──
+      // Prescription layer: non-negotiable minimums enforced by code.
+      // Agent gets autonomy above the floor, not below it.
+
+      // Floor 1: If there's a pending message, must have respond action.
+      // If LLM didn't call respond, extract a response from thought.
+      const hasRespond = allActions.some(a => a.type === 'respond')
+      if (hadMessageThisTick && !hasRespond && thought.length > 50) {
+        // Auto-extract: use thought as response (code guarantee, not prompt hope)
+        const autoResponse = thought.replace(/<action:\w+>[\s\S]*?<\/action:\w+>/g, '').trim()
+        if (autoResponse.length > 20) {
+          try {
+            const result = await actionRegistry.execute(
+              { type: 'respond', content: autoResponse, raw: autoResponse },
+              { memory, workDir, tickCount, workingMemory },
+            )
+            allActions.push({ type: 'respond', content: autoResponse, raw: autoResponse })
+            actionResults.push(result)
+            actionsExecuted++
+            console.error(`[floor] Auto-respond: LLM thought but did not call respond (${autoResponse.length} chars)`)
+          } catch { /* floor best-effort, don't break tick */ }
         }
       }
 
