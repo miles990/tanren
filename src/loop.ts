@@ -42,6 +42,7 @@ import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegi
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createEvolutionEngine } from './evolution.js'
 import { executeBatch } from './action-batch.js'
+import { createContextMesh, createMeshPerception, createMeshAction } from './context-mesh.js'
 import { groundQuestion } from './socratic.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
@@ -166,6 +167,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
   // Evolution engine — agent self-evolution via pattern detection
   const evolution = createEvolutionEngine(join(config.memoryDir, 'state'))
+
+  // Causal Context Mesh — unified dependency/causality/threading/question tracking
+  const contextMesh = createContextMesh(config.memoryDir)
+  perception.register(createMeshPerception(contextMesh))
+  actionRegistry.register(createMeshAction(contextMesh))
 
   // Plan system — continuation management across ticks
   const planSystem = createPlanSystem(config.memoryDir, workDir)
@@ -742,7 +748,14 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       tickResult.observation.outputQuality = learningResult.quality
     }
 
-    // 9. Evolution: analyze patterns, propose candidates, validate accepted ones
+    // 9. Causal mesh: register this tick as a node
+    try {
+      const actionTypes = tickResult.actions.map(a => a.type)
+      const contextSummary = messageContent.slice(0, 100) || actionTypes.join('→') || 'autonomous tick'
+      contextMesh.register(`tick-${tickCount}`, tickCount, contextSummary, actionTypes)
+    } catch { /* fire-and-forget */ }
+
+    // 10. Evolution: analyze patterns, propose candidates, validate accepted ones
     try {
       evolution.analyze(tickCount, recentTicks)
       evolution.validate(tickResult)

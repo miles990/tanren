@@ -131,6 +131,9 @@ export { createTaskGraph, type TaskGraph, type Task, type TaskResult } from './t
 export { createThreadContext, type ThreadContext } from './thread-context.js'
 export { executeBatch, type BatchResult } from './action-batch.js'
 
+// Causal Context
+export { createContextMesh, createMeshPerception, createMeshAction, type ContextMesh, type ContextNode, type ContextEdge } from './context-mesh.js'
+
 // LLM Providers
 export { createClaudeCliProvider, type ClaudeCliOptions } from './llm/claude-cli.js'
 export { createAnthropicProvider, type AnthropicProviderOptions } from './llm/anthropic.js'
