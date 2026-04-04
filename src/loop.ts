@@ -342,7 +342,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Context-sensitive tool exposure: environment state shapes available tools.
       // Make correct behavior the path of least resistance.
       const allToolDefs = actionRegistry.toToolDefinitions()
-      const RESPONSE_TOOLS = new Set(['respond', 'remember', 'clear-inbox', 'reflect'])
+      // Response-focused but not crippled: include search/read so agent can
+      // research before responding. The goal is "respond is the natural path",
+      // not "respond is the ONLY option".
+      const RESPONSE_TOOLS = new Set(['respond', 'remember', 'clear-inbox', 'reflect', 'search', 'read', 'query-history'])
       const toolDefs = hasIncomingMessage
         ? allToolDefs.filter(t => RESPONSE_TOOLS.has(t.name))  // message → respond is the natural path
         : allToolDefs
