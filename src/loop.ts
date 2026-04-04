@@ -40,6 +40,7 @@ import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
 import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
+import { createEvolutionEngine } from './evolution.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
 import { detectContextMode, type ContextModeConfig } from './context-modes.js'
@@ -158,6 +159,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
   const workingMemoryPath = join(config.memoryDir, 'state', 'working-memory.json')
   const workingMemory = createWorkingMemory(workingMemoryPath)
+
+  // Evolution engine — agent self-evolution via pattern detection
+  const evolution = createEvolutionEngine(join(config.memoryDir, 'state'))
 
   // Plan system — continuation management across ticks
   const planSystem = createPlanSystem(config.memoryDir, workDir)
@@ -297,13 +301,14 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const identity = await loadIdentity(config.identity, memory)
     const gateWarnings = gateSystem.getWarnings()
     const learningContext = learning?.getContextSection(recentTicks) ?? ''
+    const evolutionContext = evolution.getPerceptionSection()
     const wmContext = workingMemory.toContextString()
     let context: string
     if (complexity === 'minimal') {
       // Minimal: just identity + message, skip heavy perception
       context = `${identity}\n\n<message>\n${messageContent}\n</message>\n\nRespond briefly (1-3 sentences max).`
     } else {
-      const baseContext = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext)
+      const baseContext = buildContext(identity, perceptionOutput, gateWarnings, memory, learningContext + (evolutionContext ? '\n' + evolutionContext : ''))
       context = wmContext
         ? `<working-memory>\n${wmContext}\n</working-memory>\n\n${baseContext}`
         : baseContext
@@ -733,6 +738,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Update observation quality from learning assessment
       tickResult.observation.outputQuality = learningResult.quality
     }
+
+    // 9. Evolution: analyze patterns, propose candidates, validate accepted ones
+    try {
+      evolution.analyze(tickCount, recentTicks)
+      evolution.validate(tickResult)
+    } catch { /* fire-and-forget */ }
 
     // MPL post-tick: serialize results for next tick's perception
     mpl.postTick(tickResult, tickCount)
