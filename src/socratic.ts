@@ -143,13 +143,48 @@ export function groundQuestion(text: string, memoryDir: string): string {
   const context = loadGroundingContext(memoryDir, text)
   if (!context) return text
 
-  // Reframe: turn analytical questions into experience-recall questions.
-  // LLMs produce 10x more depth when recalling concrete experiences vs abstract analysis.
+  // Reframe using Constraint Texture: turn prescriptive questions into
+  // convergence conditions, add experience grounding + opposing viewpoint.
+  const ctReframe = reframeToCT(text)
+
   return `${text}
 
 ---
 [Context from your memory]
 ${context}
-
+${ctReframe ? `\n[CT Reframe]\n${ctReframe}\n` : ''}
 Reframe this as personal experience: list 3 specific moments from your ticks where you encountered this topic. For each moment, describe what happened, what you noticed, and what you learned. Use your actual tick history and memories as evidence.`
+}
+
+/**
+ * Constraint Texture reframing: detect prescription-style questions
+ * and suggest convergence-condition alternatives.
+ *
+ * Three rules (from Akari's self-analysis):
+ * 1. "如何[動作][對象]" → "什麼樣的[對象]能[期望結果]"
+ * 2. "需要/應該[方案]" → "[情境]的理想特性是什麼"
+ * 3. Add opposing viewpoint: "什麼情況下這個假設會錯？"
+ */
+function reframeToCT(text: string): string {
+  const reframes: string[] = []
+
+  // Rule 1: 如何/how → 什麼樣的/what kind of
+  const howMatch = text.match(/如何(.{2,20}?)(?:[？?。]|$)/)?.[1]
+    ?? text.match(/how (?:to |should I |can I )(.{5,40}?)(?:[?.!]|$)/i)?.[1]
+  if (howMatch) {
+    reframes.push(`Convergence reframe: instead of "how to ${howMatch}", ask "what would a good solution look like?"`)
+  }
+
+  // Rule 2: 需要/應該/need/should → ideal properties
+  const needMatch = text.match(/(?:需要|應該|should|need to|must)(.{2,30}?)(?:[？?。]|$)/)?.[1]
+  if (needMatch) {
+    reframes.push(`Convergence reframe: instead of prescribing "${needMatch}", describe the ideal outcome properties.`)
+  }
+
+  // Rule 3: Always add opposing viewpoint for analytical questions
+  if (/分析|analyze|缺陷|問題|issue|problem|evaluate/i.test(text)) {
+    reframes.push(`Opposing viewpoint: what if the current approach is actually correct? What would need to be true?`)
+  }
+
+  return reframes.join('\n')
 }
