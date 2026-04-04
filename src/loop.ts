@@ -592,18 +592,49 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           }
           messages.push({ role: 'assistant', content: response.content })
 
-          const roundResults: string[] = []
-          for (const action of novelActions) {
+          // Execute actions — read-only actions run in parallel, write actions run sequentially.
+          // This is safe because read-only actions don't modify state.
+          const READ_ONLY_ACTION_TYPES = new Set(['search', 'read', 'explore', 'query-history', 'web_fetch'])
+          const readOnlyActions = novelActions.filter(a => READ_ONLY_ACTION_TYPES.has(a.type))
+          const writeActions = novelActions.filter(a => !READ_ONLY_ACTION_TYPES.has(a.type))
+
+          const roundResults: string[] = new Array(novelActions.length).fill('')
+
+          // Phase 1: parallel read-only actions
+          if (readOnlyActions.length > 0) {
+            const readPromises = readOnlyActions.map(async (action) => {
+              const idx = novelActions.indexOf(action)
+              config.onActionProgress?.({ phase: 'start', action })
+              try {
+                const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
+                roundResults[idx] = result
+                actionsExecuted++
+                actionHealth.record(action.type, true, tickCount)
+                config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err)
+                roundResults[idx] = `[action ${action.type} failed: ${msg}]`
+                actionsFailed++
+                actionHealth.record(action.type, false, tickCount, msg)
+                config.onActionProgress?.({ phase: 'error', action, error: msg })
+              }
+            })
+            await Promise.all(readPromises)
+          }
+
+          // Phase 2: sequential write actions (order matters)
+          for (const action of writeActions) {
+            const idx = novelActions.indexOf(action)
             config.onActionProgress?.({ phase: 'start', action })
             try {
               const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
-              roundResults.push(result)
+              roundResults[idx] = result
               actionsExecuted++
               actionHealth.record(action.type, true, tickCount)
               config.onActionProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err)
-              roundResults.push(`[action ${action.type} failed: ${msg}]`)
+              roundResults[idx] = `[action ${action.type} failed: ${msg}]`
               actionsFailed++
               actionHealth.record(action.type, false, tickCount, msg)
               config.onActionProgress?.({ phase: 'error', action, error: msg })
