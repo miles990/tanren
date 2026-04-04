@@ -565,18 +565,21 @@ if (mode === 'serve') {
       try {
         writeFileSync('./messages/to-user.md', '', 'utf-8')
         writeFileSync('./messages/from-user.md', \`# From \${parsed.from ?? 'user'}\\n\\n\${text}\\n\`, 'utf-8')
-        const result = await agent.tick()
+        const chatResult = await agent.chat(text, { from: parsed.from ?? 'user' })
         tickCount++
-        const response = existsSync('./messages/to-user.md')
-          ? readFileSync('./messages/to-user.md', 'utf-8').trim()
-          : ''
-        const finalResponse = response || (result.thought.length > 200 ? \`<!-- thought fallback -->\\n\${result.thought}\` : '')
+        let response = chatResult.response
+        if (!response && existsSync('./messages/to-user.md')) {
+          response = readFileSync('./messages/to-user.md', 'utf-8').trim()
+        }
+        if (!response && chatResult.thought.length > 200) {
+          response = \`<!-- thought fallback -->\\n\${chatResult.thought}\`
+        }
         json(200, {
-          response: finalResponse,
+          response,
           tick: tickCount,
-          duration: result.observation.duration,
-          actions: result.actions.map(a => a.type),
-          quality: result.observation.outputQuality ?? 0,
+          duration: chatResult.duration,
+          actions: chatResult.actions,
+          quality: chatResult.quality,
         })
       } catch (err) {
         json(500, { error: err instanceof Error ? err.message : String(err) })
