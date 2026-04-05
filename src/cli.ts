@@ -165,8 +165,9 @@ async function main(): Promise<void> {
           // Streaming mode — show thinking + tool calls in real-time
           try {
             const { query } = await import('@anthropic-ai/claude-agent-sdk')
-            process.stdout.write('\x1b[2m') // dim for thinking
+            process.stdout.write('\x1b[2m⏳ thinking...\x1b[0m')
             let result = ''
+            let toolCount = 0
 
             for await (const message of query({
               prompt: trimmed,
@@ -179,26 +180,29 @@ async function main(): Promise<void> {
               },
             })) {
               if ('result' in message) {
-                result = message.result
-              } else if (message.type === 'assistant') {
-                // Stream text as it comes
-                const content = (message as Record<string, unknown>).content
-                if (typeof content === 'string') {
-                  process.stdout.write(content)
+                result = (message as { result: string }).result
+              } else if (message.type === 'system') {
+                const sub = (message as Record<string, unknown>).subtype as string ?? ''
+                if (sub === 'tool_use' || sub === 'task_started') {
+                  toolCount++
+                  const name = (message as Record<string, unknown>).tool_name ?? (message as Record<string, unknown>).name ?? 'tool'
+                  process.stdout.write(`\r\x1b[2m⚡ ${name} \x1b[33m(${toolCount} tools)\x1b[0m   `)
+                } else if (sub === 'task_progress') {
+                  const summary = (message as Record<string, unknown>).summary as string ?? ''
+                  if (summary) process.stdout.write(`\r\x1b[2m📊 ${summary.slice(0, 60)}\x1b[0m   `)
                 }
-              } else if (message.type === 'system' && (message as Record<string, unknown>).subtype === 'tool_use') {
-                // Show tool calls
-                const name = (message as Record<string, unknown>).tool_name ?? 'tool'
-                process.stdout.write(`\x1b[33m⚡ ${name}\x1b[2m `)
               }
             }
 
-            process.stdout.write('\x1b[0m\n') // reset color
+            // Clear progress line
+            process.stdout.write('\r\x1b[K')
             const elapsed = ((Date.now() - start) / 1000).toFixed(1)
 
             if (result) {
-              console.log(`\n\x1b[32mAgent>\x1b[0m (${elapsed}s)\n`)
+              console.log(`\x1b[32mAgent>\x1b[0m (${elapsed}s, ${toolCount} tools)\n`)
               console.log(result)
+            } else {
+              console.log(`\x1b[33mAgent>\x1b[0m (${elapsed}s, no result)`)
             }
           } catch (err: unknown) {
             process.stdout.write('\x1b[0m\n')
