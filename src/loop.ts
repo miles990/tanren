@@ -418,9 +418,15 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     }
 
     const baseSystemPrompt = buildSystemPrompt(identity, actionRegistry)
-    const systemPrompt = cognitiveContext
-      ? buildCognitiveModePrompt(identity, cognitiveContext, baseSystemPrompt.split('\n\n## Available Actions')[1] || '')
+    // Inject mode-specific cognitive guidance — teaches HOW to think, not just WHAT tools to use.
+    // Three layers of forging: perception (what you see) → tools (what you can do) → guidance (how you think)
+    const modeGuidance = preMode?.cognitiveGuidance ?? ''
+    const promptWithGuidance = modeGuidance
+      ? `${baseSystemPrompt}\n\n${modeGuidance}`
       : baseSystemPrompt
+    const systemPrompt = cognitiveContext
+      ? buildCognitiveModePrompt(identity, cognitiveContext, promptWithGuidance.split('\n\n## Available Actions')[1] || '')
+      : promptWithGuidance
 
     let thought: string
     let structuredActions: Action[] | null = null

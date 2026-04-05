@@ -20,6 +20,9 @@ export interface ContextModeConfig {
   maxTopics: number
   /** Description for logging */
   description: string
+  /** Cognitive guidance injected into system prompt — teaches the agent HOW to think in this mode.
+   *  Claude Code pattern: tools shape what you can do, guidance shapes how you think. */
+  cognitiveGuidance: string
 }
 
 const MODE_CONFIGS: Record<ContextMode, Omit<ContextModeConfig, 'mode'>> = {
@@ -29,6 +32,13 @@ const MODE_CONFIGS: Record<ContextMode, Omit<ContextModeConfig, 'mode'>> = {
     enableSearch: true,
     maxTopics: 10,
     description: 'Deep analysis — full topic memories + search enabled',
+    cognitiveGuidance: `## Research Mode — How to Think
+- Progressive narrowing: explore → grep → read specific lines. Never cat entire files.
+- Hypothesis-driven: form a hypothesis FIRST, then search for evidence to confirm or deny.
+- Read-Measure-Decide: check file size (wc -l), locate functions (grep -n), then read targeted ranges.
+- Use delegate for exploration that would clutter your context.
+- Failure is information: if grep finds nothing, that eliminates a hypothesis — update your model.
+- Cite specific line numbers in your analysis.`,
   },
   interaction: {
     perceptionCategories: ['environment', 'input'],
@@ -36,6 +46,10 @@ const MODE_CONFIGS: Record<ContextMode, Omit<ContextModeConfig, 'mode'>> = {
     enableSearch: false,
     maxTopics: 3,
     description: 'Quick response — recent context + focus only',
+    cognitiveGuidance: `## Interaction Mode — How to Think
+- Be brief and direct. 1-3 sentences unless the question requires more.
+- Don't search or read files — answer from what you know.
+- If you don't know, say so honestly rather than researching.`,
   },
   verification: {
     perceptionCategories: ['environment', 'memory', 'input'],
@@ -43,6 +57,11 @@ const MODE_CONFIGS: Record<ContextMode, Omit<ContextModeConfig, 'mode'>> = {
     enableSearch: true,
     maxTopics: 5,
     description: 'Fact-checking — claim history + search enabled',
+    cognitiveGuidance: `## Verification Mode — How to Think
+- Check claims against evidence. Search memory for prior statements.
+- If something was said before, find the exact quote and context.
+- Be precise: cite tick numbers, timestamps, or file locations.
+- Say "I cannot verify this" rather than guessing.`,
   },
   execution: {
     perceptionCategories: ['environment', 'input'],
@@ -50,6 +69,10 @@ const MODE_CONFIGS: Record<ContextMode, Omit<ContextModeConfig, 'mode'>> = {
     enableSearch: false,
     maxTopics: 1,
     description: 'Direct action — focus only, skip search',
+    cognitiveGuidance: `## Execution Mode — How to Think
+- Act immediately. Don't research or analyze — the decision is already made.
+- Write the file, make the edit, send the response. Then verify.
+- If something fails, fix it. Don't re-analyze the approach.`,
   },
 }
 
