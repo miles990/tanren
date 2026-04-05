@@ -145,7 +145,14 @@ async function main(): Promise<void> {
   } else if (command === 'chat') {
     const { createInterface } = await import('node:readline')
     const rl = createInterface({ input: process.stdin, output: process.stdout })
-    console.log('[tanren] Chat mode — type your message, Enter to send, Ctrl+C to quit\n')
+    console.log('[tanren] Chat mode (streaming) — type your message, Enter to send, Ctrl+C to quit\n')
+
+    // Try Agent SDK streaming first, fallback to non-streaming agent.chat()
+    let useAgentSdk = false
+    try {
+      await import('@anthropic-ai/claude-agent-sdk')
+      useAgentSdk = true
+    } catch { /* Agent SDK not installed — fallback */ }
 
     const prompt = (): void => {
       rl.question('\x1b[36mYou>\x1b[0m ', async (input) => {
@@ -153,21 +160,69 @@ async function main(): Promise<void> {
         if (!trimmed) { prompt(); return }
 
         const start = Date.now()
-        try {
-          const result = await agent.chat(trimmed)
-          const elapsed = ((Date.now() - start) / 1000).toFixed(1)
-          const actionsStr = result.actions.join(', ') || 'none'
 
-          if (result.response) {
-            console.log(`\x1b[32mAgent>\x1b[0m (${elapsed}s, actions: ${actionsStr})\n`)
-            console.log(result.response)
-          } else {
-            console.log(`\x1b[33mAgent (thought only)>\x1b[0m (${elapsed}s)\n`)
-            console.log(result.thought.slice(0, 2000))
+        if (useAgentSdk) {
+          // Streaming mode — show thinking + tool calls in real-time
+          try {
+            const { query } = await import('@anthropic-ai/claude-agent-sdk')
+            process.stdout.write('\x1b[2m') // dim for thinking
+            let result = ''
+
+            for await (const message of query({
+              prompt: trimmed,
+              options: {
+                cwd: process.cwd(),
+                allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+                maxTurns: 15,
+                permissionMode: 'bypassPermissions',
+                allowDangerouslySkipPermissions: true,
+              },
+            })) {
+              if ('result' in message) {
+                result = message.result
+              } else if (message.type === 'assistant') {
+                // Stream text as it comes
+                const content = (message as Record<string, unknown>).content
+                if (typeof content === 'string') {
+                  process.stdout.write(content)
+                }
+              } else if (message.type === 'system' && message.subtype === 'tool_use') {
+                // Show tool calls
+                const name = (message as Record<string, unknown>).tool_name ?? 'tool'
+                process.stdout.write(`\x1b[33m⚡ ${name}\x1b[2m `)
+              }
+            }
+
+            process.stdout.write('\x1b[0m\n') // reset color
+            const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+
+            if (result) {
+              console.log(`\n\x1b[32mAgent>\x1b[0m (${elapsed}s)\n`)
+              console.log(result)
+            }
+          } catch (err: unknown) {
+            process.stdout.write('\x1b[0m\n')
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error(`\x1b[31m[error]\x1b[0m ${msg}`)
           }
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err)
-          console.error(`\x1b[31m[error]\x1b[0m ${msg}`)
+        } else {
+          // Non-streaming fallback
+          try {
+            const result = await agent.chat(trimmed)
+            const elapsed = ((Date.now() - start) / 1000).toFixed(1)
+            const actionsStr = result.actions.join(', ') || 'none'
+
+            if (result.response) {
+              console.log(`\x1b[32mAgent>\x1b[0m (${elapsed}s, actions: ${actionsStr})\n`)
+              console.log(result.response)
+            } else {
+              console.log(`\x1b[33mAgent (thought only)>\x1b[0m (${elapsed}s)\n`)
+              console.log(result.thought.slice(0, 2000))
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error(`\x1b[31m[error]\x1b[0m ${msg}`)
+          }
         }
         console.log()
         prompt()
