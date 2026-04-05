@@ -15,7 +15,7 @@ interface PluginState {
 
 export interface PerceptionSystem {
   register(plugin: PerceptionPlugin): void
-  perceive(): Promise<string>
+  perceive(options?: { categories?: string[] }): Promise<string>
   getPluginNames(): string[]
 }
 
@@ -37,9 +37,10 @@ export function createPerception(
       return states.map(s => s.plugin.name)
     },
 
-    async perceive() {
+    async perceive(options?: { categories?: string[] }) {
       const now = Date.now()
       const sections: string[] = []
+      const categoryFilter = options?.categories?.length ? new Set(options.categories) : null
 
       await Promise.all(
         states.map(async (state) => {
@@ -59,11 +60,13 @@ export function createPerception(
         }),
       )
 
-      // Assemble context grouped by category
+      // Assemble context grouped by category — filter by mode when specified
+      // Claude Code pattern: context is scarce, only load what the task needs
       const byCategory = new Map<string, string[]>()
       for (const state of states) {
         if (!state.cachedOutput) continue
         const cat = state.plugin.category ?? 'environment'
+        if (categoryFilter && !categoryFilter.has(cat)) continue
         if (!byCategory.has(cat)) byCategory.set(cat, [])
         byCategory.get(cat)!.push(
           `<${state.plugin.name}>\n${state.cachedOutput}\n</${state.plugin.name}>`,

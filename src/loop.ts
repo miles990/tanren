@@ -293,8 +293,23 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     workingMemory.load()
     workingMemory.decay(tickCount)
 
-    // 1. Perceive
-    const perceptionOutput = await perception.perceive()
+    // 1. Perceive — filtered by context mode (Claude Code pattern: context is scarce)
+    // Read pending message BEFORE perception consumes it (injected-message plugin sets pendingMessage = null).
+    // Detect mode from message text, filter perception categories accordingly.
+    const preMessage = pendingMessage?.text ?? ''
+    const preMode = preMessage
+      ? detectContextMode(preMessage, workingMemory.getState().currentFocus)
+      : null
+    // Mode determines structure (which categories), complexity adjusts scale — orthogonal.
+    // Use mode directly for category filtering. Mode already handles greetings (interaction mode).
+    const effectiveCategories = preMode?.perceptionCategories?.length
+      ? preMode.perceptionCategories
+      : undefined  // no message or research mode = load all
+    const preComplexity = classifyComplexity(preMessage)
+    const perceptionOutput = await perception.perceive(
+      effectiveCategories ? { categories: effectiveCategories } : undefined
+    )
+    console.error(`[tanren] PERCEPTION: ${perceptionOutput.length} chars, mode=${preMode?.mode ?? 'none'}, complexity=${preComplexity}, categories=${effectiveCategories?.join(',') ?? 'all'}`)
     writeCheckpoint(checkpointPath, { tickStarted: tickStart, perception: perceptionOutput })
 
     // Pre-route: classify message complexity (0ms)
