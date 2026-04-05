@@ -6,8 +6,9 @@
  * Decay mechanism prevents stale context accumulation.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { safeJsonLoad } from './safe-io.js'
 
 export interface WorkingMemoryState {
   currentFocus: string | null
@@ -73,15 +74,8 @@ export function createWorkingMemory(filePath: string) {
   let state: WorkingMemoryState = EMPTY_STATE
 
   function load(): WorkingMemoryState {
-    try {
-      if (existsSync(filePath)) {
-        const loaded = JSON.parse(readFileSync(filePath, 'utf-8'))
-        // Merge with EMPTY_STATE to handle new fields added after existing state was saved
-        state = { ...EMPTY_STATE, ...loaded }
-      }
-    } catch {
-      state = { ...EMPTY_STATE }
-    }
+    // safeJsonLoad: never crashes, auto-merges with EMPTY_STATE for schema evolution
+    state = safeJsonLoad(filePath, EMPTY_STATE)
     return state
   }
 

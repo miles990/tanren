@@ -178,6 +178,7 @@ export { createHookSystem, builtinHooks, createAutoVerifyHook, type Hook, type H
 export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorType } from './error-classification.js'
 export { writeHandoff, readPendingHandoffs, updateHandoffStatus, formatHandoffsForContext, type Handoff } from './handoff.js'
 export { serve, type ServeOptions } from './serve.js'
+export { safeJsonLoad, safeReadFile, safeJsonlLoad } from './safe-io.js'
 
 // Learning System
 export {
