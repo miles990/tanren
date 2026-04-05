@@ -54,7 +54,7 @@ async function writeToPath(rawPath: string, content: string, context: ActionCont
 // Risk tier classification for graduated feedback
 const ACTION_RISK_TIERS: Record<string, RiskTier> = {
   // Tier 1: Safe/read-only — skip feedback entirely
-  respond: 1, remember: 1, search: 1, read: 1, explore: 1, 'clear-inbox': 1,
+  respond: 1, remember: 1, search: 1, read: 1, explore: 1, grep: 1, 'clear-inbox': 1,
   // Tier 2: Moderate/additive — execute + log, no verification
   write: 2, append: 2, web_fetch: 2,
   // Tier 3: High-risk/destructive — full feedback loop
@@ -333,7 +333,7 @@ export const builtinActions: ActionHandler[] = [
           maxBuffer: 512 * 1024,
         })
         const output = (stdout + stderr).trim()
-        return output.slice(0, 2000) // cap output
+        return output.slice(0, 8000) // cap output (increased from 2K — code analysis needs room)
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return `[shell error: ${msg.slice(0, 500)}]`
@@ -433,7 +433,11 @@ export const builtinActions: ActionHandler[] = [
         const header = `${rawPath} (lines ${startLine}-${endLine} of ${allLines.length})`
 
         const result = `${header}\n${numbered}`
-        return result.slice(0, 10000) // cap output
+        // Claude Code pattern: guide progressive narrowing for large files
+        const hint = (allLines.length > 200 && endLine - startLine + 1 === allLines.length)
+          ? `\n\n[Hint: large file (${allLines.length} lines). Use grep to find specific functions/patterns, then read with start_line/end_line.]`
+          : ''
+        return result.slice(0, 10000) + hint
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return `[read error: ${msg.slice(0, 300)}]`
@@ -491,6 +495,59 @@ export const builtinActions: ActionHandler[] = [
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return `[explore error: ${msg.slice(0, 300)}]`
+      }
+    },
+  },
+  {
+    // Claude Code pattern: Grep enables progressive narrowing (search → locate → read).
+    // This is the bridge between explore (find files) and read (read content).
+    // Without grep, agents resort to shell grep with 2K output cap — crippling for code analysis.
+    type: 'grep',
+    description: 'Search file contents for a pattern. Returns matching lines with file paths and line numbers. Use this to locate specific code, functions, or patterns before reading.',
+    toolSchema: {
+      properties: {
+        pattern: { type: 'string', description: 'Search pattern (regex supported)' },
+        path: { type: 'string', description: 'File or directory to search in (default: working directory)' },
+        glob: { type: 'string', description: 'File pattern filter (e.g. "*.ts", "*.py")' },
+        context: { type: 'number', description: 'Lines of context around each match (default: 0)' },
+      },
+      required: ['pattern'],
+    },
+    async execute(action, context) {
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const { resolve } = await import('node:path')
+      const execFileAsync = promisify(execFile)
+
+      const pattern = (action.input?.pattern as string) ?? action.content.trim()
+      const rawPath = (action.input?.path as string) ?? '.'
+      const searchPath = rawPath.startsWith('/') ? rawPath : resolve(context.workDir, rawPath)
+      const glob = action.input?.glob as string | undefined
+      const ctxLines = (action.input?.context as number) ?? 0
+
+      const args = ['-rn', '--color=never']
+      if (ctxLines > 0) args.push(`-C${ctxLines}`)
+      if (glob) args.push(`--include=${glob}`)
+      args.push(pattern, searchPath)
+
+      try {
+        const { stdout } = await execFileAsync('grep', args, {
+          cwd: context.workDir,
+          timeout: 10_000,
+          maxBuffer: 512 * 1024,
+        })
+        const lines = stdout.trim().split('\n')
+        const capped = lines.slice(0, 50) // max 50 matches
+        const result = capped.join('\n')
+        if (lines.length > 50) {
+          return `${result}\n\n[... ${lines.length - 50} more matches — narrow your pattern]`
+        }
+        return result || 'No matches found.'
+      } catch (err: unknown) {
+        const exitCode = (err as { code?: number })?.code
+        if (exitCode === 1) return 'No matches found.'
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[grep error: ${msg.slice(0, 300)}]`
       }
     },
   },
