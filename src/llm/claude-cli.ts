@@ -7,7 +7,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import type { LLMProvider, ToolUseLLMProvider, ToolDefinition, ConversationMessage, ToolUseResponse, ContentBlock } from '../types.js'
+import type { LLMProvider } from '../types.js'
 
 export interface ClaudeCliOptions {
   model?: string
@@ -15,7 +15,9 @@ export interface ClaudeCliOptions {
   cwd?: string             // working directory for claude process
 }
 
-export function createClaudeCliProvider(opts?: ClaudeCliOptions): ToolUseLLMProvider {
+export function createClaudeCliProvider(opts?: ClaudeCliOptions): LLMProvider {
+  // CLI provider is text-only (no native tool_use without MCP server).
+  // Loop's text-based feedback path handles action parsing from <action:type> tags.
   const timeoutMs = opts?.timeoutMs ?? 1_500_000
 
   // Shared subprocess runner
@@ -77,91 +79,7 @@ export function createClaudeCliProvider(opts?: ClaudeCliOptions): ToolUseLLMProv
       return runClaude(prompt, args)
     },
 
-    // Native tool_use via stream-json — makes CLI behave identically to API
-    async thinkWithTools(
-      messages: ConversationMessage[],
-      systemPrompt: string,
-      tools: ToolDefinition[],
-    ): Promise<ToolUseResponse> {
-      // Build prompt: system + conversation history
-      // CLI doesn't have native multi-turn, so we flatten into a single prompt
-      const conversationParts: string[] = []
-      for (const msg of messages) {
-        if (typeof msg.content === 'string') {
-          conversationParts.push(msg.content)
-        } else {
-          // Flatten content blocks (tool_results from previous rounds)
-          for (const block of msg.content) {
-            if (block.type === 'text') {
-              conversationParts.push(block.text)
-            } else if (block.type === 'tool_result') {
-              conversationParts.push(`<tool-result tool_use_id="${block.tool_use_id}">\n${block.content}\n</tool-result>`)
-            }
-          }
-        }
-      }
-
-      // Inject tool definitions into system prompt (CLI doesn't have native tool schema)
-      const toolDescriptions = tools.map(t => {
-        const params = Object.entries(t.input_schema.properties || {})
-          .map(([k, v]) => `  - ${k}: ${(v as { description?: string }).description || ''}`)
-          .join('\n')
-        const required = t.input_schema.required?.join(', ') || ''
-        return `### ${t.name}\n${t.description}\nParameters:\n${params}${required ? `\nRequired: ${required}` : ''}`
-      }).join('\n\n')
-
-      const fullSystemPrompt = `${systemPrompt}\n\n## Available Tools\n\nCall tools using JSON: {"tool": "name", "input": {...}}\nYou may call multiple tools. Output each on its own line.\n\n${toolDescriptions}`
-      const prompt = `${fullSystemPrompt}\n\n---\n\n${conversationParts.join('\n\n')}`
-
-      const args = ['-p', '--output-format', 'stream-json', '--verbose']
-      if (opts?.model) args.push('--model', opts.model)
-
-      const raw = await runClaude(prompt, args)
-
-      // Parse stream-json events → extract text + tool_use blocks
-      const content: ContentBlock[] = []
-      const textParts: string[] = []
-
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const event = JSON.parse(line)
-          if (event.type === 'assistant' && event.message?.content) {
-            for (const block of event.message.content) {
-              if (block.type === 'text') {
-                textParts.push(block.text)
-              } else if (block.type === 'tool_use') {
-                content.push({
-                  type: 'tool_use',
-                  id: block.id,
-                  name: block.name,
-                  input: block.input,
-                })
-              }
-            }
-          }
-          // Also handle content_block_delta for streaming text
-          if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-            textParts.push(event.delta.text)
-          }
-        } catch {
-          // Non-JSON line — skip
-        }
-      }
-
-      // If no structured tool_use found, parse text for action tags (fallback)
-      if (content.length === 0 || textParts.length > 0) {
-        const fullText = textParts.join('')
-        if (fullText.trim()) {
-          content.unshift({ type: 'text', text: fullText })
-        }
-      }
-
-      return {
-        content,
-        usage: { input_tokens: 0, output_tokens: 0 }, // CLI doesn't report usage
-        stop_reason: content.some(b => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
-      }
-    },
+    // CLI is text-only — loop.ts handles action parsing via text-based feedback path.
+    // Native tool_use requires MCP server or Anthropic API, not available in bare CLI.
   }
 }
