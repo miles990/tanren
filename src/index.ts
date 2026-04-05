@@ -177,6 +177,7 @@ export { loadSkills, selectSkills, formatSkillsForPrompt, clearSkillCache, type 
 export { createHookSystem, builtinHooks, createAutoVerifyHook, type Hook, type HookPhase, type HookContext } from './hooks.js'
 export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorType } from './error-classification.js'
 export { writeHandoff, readPendingHandoffs, updateHandoffStatus, formatHandoffsForContext, type Handoff } from './handoff.js'
+export { serve, type ServeOptions } from './serve.js'
 
 // Learning System
 export {
