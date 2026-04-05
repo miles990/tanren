@@ -6,7 +6,7 @@
  */
 
 import { writeFileSync, appendFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, join } from 'node:path'
 import type { Action, ActionHandler, ActionContext, ToolDefinition, RiskTier } from './types.js'
 
 // Convergence condition: track which files have been read this tick.
@@ -677,6 +677,90 @@ export const builtinActions: ActionHandler[] = [
 
       writeHandoff(handoffDir, handoff)
       return `Handoff created: ${id} → ${to}\nTask: ${task}\nCriteria: ${handoff.acceptanceCriteria.join('; ')}`
+    },
+  },
+  {
+    // Session management — save/resume/fork cognitive state
+    type: 'session_save',
+    description: 'Save current cognitive state as a named session. Captures working memory, hypotheses, focus, and recent context. Use before switching tasks or ending a deep analysis.',
+    toolSchema: {
+      properties: {
+        label: { type: 'string', description: 'Human-readable session label (e.g., "TM pipeline analysis")' },
+      },
+      required: ['label'],
+    },
+    async execute(action, context) {
+      const { saveSession } = await import('./session.js')
+      const label = (action.input?.label as string) ?? action.content.trim()
+      const wm = context.workingMemory?.getState() ?? {}
+      const id = `session-${Date.now()}`
+      saveSession(join(context.workDir, "memory"), {
+        id, label, timestamp: new Date().toISOString(),
+        workingMemory: wm,
+        lastPerception: '', lastActions: [], lastResponse: '',
+        tickCount: context.tickCount ?? 0, mode: 'unknown',
+      })
+      return `Session saved: "${label}" (${id})`
+    },
+  },
+  {
+    type: 'session_resume',
+    description: 'Resume a previously saved session. Restores working memory (focus, hypotheses, insights) so you can continue where you left off.',
+    toolSchema: {
+      properties: {
+        id: { type: 'string', description: 'Session ID to resume (use session_list to find IDs)' },
+      },
+      required: ['id'],
+    },
+    async execute(action, context) {
+      const { loadSession } = await import('./session.js')
+      const id = (action.input?.id as string) ?? action.content.trim()
+      const session = loadSession(join(context.workDir, "memory"), id)
+      if (!session) return `[session_resume error: session "${id}" not found]`
+
+      // Restore working memory state
+      if (context.workingMemory && session.workingMemory) {
+        const state = context.workingMemory.getState()
+        const saved = session.workingMemory as typeof state
+        state.currentFocus = saved.currentFocus ?? state.currentFocus
+        state.recentInsights = saved.recentInsights ?? state.recentInsights
+        state.hypotheses = saved.hypotheses ?? state.hypotheses
+        state.tensions = saved.tensions ?? state.tensions
+        context.workingMemory.save()
+      }
+      return `Session resumed: "${session.label}" (tick ${session.tickCount}, ${session.timestamp}). Working memory restored.`
+    },
+  },
+  {
+    type: 'session_list',
+    description: 'List saved sessions. Shows recent sessions with labels and tick counts.',
+    toolSchema: { properties: {} },
+    async execute(_action, context) {
+      const { listSessions } = await import('./session.js')
+      const sessions = listSessions(join(context.workDir, "memory"))
+      if (sessions.length === 0) return 'No saved sessions.'
+      return sessions.slice(0, 10).map(s =>
+        `${s.id}${s.label ? ` "${s.label}"` : ''} (tick ${s.tickCount}, ${s.timestamp.split('T')[0]})`
+      ).join('\n')
+    },
+  },
+  {
+    type: 'session_fork',
+    description: 'Fork a saved session — creates a copy so you can explore a different direction without losing the original.',
+    toolSchema: {
+      properties: {
+        id: { type: 'string', description: 'Session ID to fork' },
+        label: { type: 'string', description: 'Label for the forked session' },
+      },
+      required: ['id'],
+    },
+    async execute(action, context) {
+      const { forkSession } = await import('./session.js')
+      const id = (action.input?.id as string) ?? ''
+      const label = action.input?.label as string | undefined
+      const forked = forkSession(join(context.workDir, "memory"), id, label)
+      if (!forked) return `[session_fork error: session "${id}" not found]`
+      return `Session forked: "${forked.label}" (${forked.id})`
     },
   },
   {

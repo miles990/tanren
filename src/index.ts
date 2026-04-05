@@ -179,6 +179,7 @@ export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorTyp
 export { writeHandoff, readPendingHandoffs, updateHandoffStatus, formatHandoffsForContext, type Handoff } from './handoff.js'
 export { serve, type ServeOptions } from './serve.js'
 export { safeJsonLoad, safeReadFile, safeJsonlLoad } from './safe-io.js'
+export { saveSession, loadSession, listSessions, forkSession, formatSessionsForContext, type SessionSnapshot } from './session.js'
 
 // Learning System
 export {

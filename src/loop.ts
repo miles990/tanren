@@ -133,29 +133,43 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   // Key: delegate's internal reasoning doesn't pollute the main conversation.
   actionRegistry.register({
     type: 'delegate',
-    description: 'Delegate a focused sub-task to a separate LLM call. The sub-task runs with clean context (identity + your prompt only). Use for: exploring code, summarizing files, or analysis that would clutter your main context. Returns a concise result.',
+    description: 'Delegate a focused sub-task to a separate LLM call with timeout and stall detection. The sub-task runs with clean context (identity + your prompt only). Returns a concise result or timeout notice.',
     toolSchema: {
       properties: {
         task: { type: 'string', description: 'Clear, focused task description. Include file paths if needed.' },
+        timeout_seconds: { type: 'number', description: 'Max seconds to wait (default: 60). Prevents stalled delegates from blocking the tick.' },
       },
       required: ['task'],
     },
     async execute(action, context) {
       const task = (action.input?.task as string) ?? action.content.trim()
       if (!task) return '[delegate error: empty task]'
+      const timeoutSec = (action.input?.timeout_seconds as number) ?? 60
+
+      const startTime = Date.now()
+      console.error(`[delegate] Starting: "${task.slice(0, 80)}..." (timeout: ${timeoutSec}s)`)
 
       try {
         const identity = await loadIdentity(config.identity, context.memory)
         const subPrompt = `You are a focused research assistant. Complete this task concisely (max 500 words):\n\n${task}`
         const subSystem = `${identity}\n\nYou have access to the filesystem. Be precise and cite line numbers when referencing code.`
 
-        // Use the same LLM but with clean context (no perception, no conversation history)
-        const result = await llm.think(subPrompt, subSystem)
-        // Cap result to prevent context explosion in main tick
+        // Race: LLM call vs timeout — stalled delegates never block the parent
+        const result = await Promise.race([
+          llm.think(subPrompt, subSystem),
+          new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error(`Delegate stalled: no response after ${timeoutSec}s`)), timeoutSec * 1000)
+          ),
+        ])
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+        console.error(`[delegate] Completed in ${elapsed}s (${result.length} chars)`)
         return result.slice(0, 4000)
       } catch (err: unknown) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
         const msg = err instanceof Error ? err.message : String(err)
-        return `[delegate error: ${msg.slice(0, 300)}]`
+        console.error(`[delegate] Failed after ${elapsed}s: ${msg.slice(0, 100)}`)
+        return `[delegate ${elapsed}s: ${msg.slice(0, 300)}]`
       }
     },
   })
