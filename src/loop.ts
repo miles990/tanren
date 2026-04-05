@@ -38,7 +38,7 @@ import { createMPL } from './metacognitive.js'
 import { createContinuationSystem } from './continuation.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
 import { createGateSystem, type GateSystem } from './gates.js'
-import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
+import { createActionRegistry, builtinActions, getRoundRiskTier, resetFilesRead, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createEvolutionEngine } from './evolution.js'
 import { executeBatch } from './action-batch.js'
@@ -320,6 +320,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   async function tick(mode: TickMode = 'scheduled', triggerEvent?: TriggerEvent): Promise<TickResult> {
     const tickStart = Date.now()
     tickCount++
+    resetFilesRead()  // convergence condition: each tick starts fresh file tracking
     lastResponse = ''  // reset per tick
     hadMessageThisTick = pendingMessage !== null
     mpl.setRecentTicks(recentTicks)  // inject history for cognitive state perception
@@ -1369,7 +1370,16 @@ OUTPUT EFFICIENCY: Go straight to the point. Do the work, don't describe the wor
 
 DIRECT ACTION: If you know a file path, read it directly — don't explore/search for it. If you know what to write, write it — don't plan it first. If the answer is short, respond immediately — don't research first. The simplest approach first.
 
-TOOL EFFICIENCY: Call multiple tools in one response when they're independent. Don't call one tool, wait for results, call the next — batch them. Read + grep in parallel. Write + respond together.`
+TOOL EFFICIENCY: Call multiple tools in one response when they're independent. Don't call one tool, wait for results, call the next — batch them. Read + grep in parallel. Write + respond together.
+
+CODE QUALITY — Senior Engineer Standard (non-negotiable):
+- Read existing code BEFORE writing. Understand the patterns, naming conventions, and architecture already in place. Match them.
+- Every new field added to an interface MUST be handled everywhere that interface is used — check constructors, factories, serialization, and display functions. Incomplete integration = broken feature.
+- State migration: when adding fields to persisted state (JSON files), ALWAYS handle loading old state that lacks the new fields. Use spread operator: { ...DEFAULTS, ...loaded }.
+- Functions should be small, focused, and named for what they DO, not what they ARE. One function, one responsibility.
+- Error handling: catch at boundaries, not everywhere. Let errors propagate until they reach a handler that can do something useful.
+- No dead code: if you write a field/function, wire it end-to-end in the same edit. A feature that exists in types but not in actions = dead code = not done.
+- Test your assumptions: after writing, verify by reading back what you wrote. Don't assume the edit landed correctly.`
 }
 
 function extractMessageContent(perception: string): string {

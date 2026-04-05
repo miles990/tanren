@@ -5,9 +5,17 @@
  * Actions are tags in the LLM response: <action:type>content</action:type>
  */
 
-import { writeFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { writeFileSync, appendFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import type { Action, ActionHandler, ActionContext, ToolDefinition, RiskTier } from './types.js'
+
+// Convergence condition: track which files have been read this tick.
+// edit action uses this to enforce "read before edit" — not a prompt suggestion,
+// a structural constraint. Claude Code pattern: tools enforce discipline.
+const _filesReadThisTick = new Set<string>()
+export function markFileRead(path: string): void { _filesReadThisTick.add(path) }
+export function resetFilesRead(): void { _filesReadThisTick.clear() }
+export function hasFileBeenRead(path: string): boolean { return _filesReadThisTick.has(path) }
 
 /**
  * Extract path from structured input — handles model merging path+content into one field.
@@ -496,6 +504,8 @@ export const builtinActions: ActionHandler[] = [
 
       try {
         const content = readFileSync(filePath, 'utf-8')
+        // Track file reads — convergence condition for edit action
+        markFileRead(filePath)
         const allLines = content.split('\n')
         const startLine = Math.max(1, startLineOverride ?? (action.input?.start_line as number) ?? 1)
         const endLine = Math.min(allLines.length, endLineOverride ?? (action.input?.end_line as number) ?? allLines.length)
@@ -793,7 +803,7 @@ export const builtinActions: ActionHandler[] = [
   },
   {
     type: 'edit',
-    description: 'Make a precise edit to an existing file. Replaces old_string with new_string. The old_string must match exactly (including whitespace).',
+    description: 'Make a precise edit to an existing file. Replaces old_string with new_string. The old_string must match exactly (including whitespace). IMPORTANT: You must read the file first before editing — the tool will warn if you haven\'t.',
     toolSchema: {
       properties: {
         path: { type: 'string', description: 'File path (absolute, or relative to working directory)' },
@@ -834,6 +844,11 @@ export const builtinActions: ActionHandler[] = [
       const filePath = rawPath.startsWith('/') ? rawPath : resolve(context.workDir, rawPath)
       if (!existsSync(filePath)) return `[edit error: file not found: ${rawPath}]`
 
+      // Convergence condition: read before edit.
+      // If file wasn't read this tick, warn and show surrounding context.
+      // Claude Code enforces this structurally — blind edits miss context.
+      const wasRead = hasFileBeenRead(filePath)
+
       try {
         const content = readFileSync(filePath, 'utf-8')
         const idx = content.indexOf(oldStr)
@@ -843,7 +858,20 @@ export const builtinActions: ActionHandler[] = [
 
         const updated = content.slice(0, idx) + newStr + content.slice(idx + oldStr.length)
         writeFileSync(filePath, updated, 'utf-8')
-        return `Edited ${rawPath}: replaced ${oldStr.length} chars with ${newStr.length} chars`
+        markFileRead(filePath) // mark as read after successful edit
+
+        // Build result with context awareness
+        let result = `Edited ${rawPath}: replaced ${oldStr.length} chars with ${newStr.length} chars`
+        if (!wasRead) {
+          // Show surrounding context so agent sees what's around the edit
+          const lines = updated.split('\n')
+          const editLine = content.slice(0, idx).split('\n').length
+          const ctxStart = Math.max(0, editLine - 3)
+          const ctxEnd = Math.min(lines.length, editLine + newStr.split('\n').length + 3)
+          const context_lines = lines.slice(ctxStart, ctxEnd).map((l, i) => `${ctxStart + i + 1}\t${l}`).join('\n')
+          result += `\n⚠️ File was not read before editing. Context around edit:\n${context_lines}`
+        }
+        return result
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return `[edit error: ${msg.slice(0, 300)}]`
