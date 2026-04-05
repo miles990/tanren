@@ -15,6 +15,7 @@ export interface WorkingMemoryState {
     content: string
     tick: number
     relevance: number  // 0-1, decays each tick
+    anchor?: boolean   // anchored insights decay at 0.95 instead of 0.85
   }>
   activeThreads: Array<{
     id: string
@@ -32,8 +33,9 @@ const EMPTY_STATE: WorkingMemoryState = {
   lastUpdated: 0,
 }
 
-// Decay constants
-const INSIGHT_DECAY_RATE = 0.85      // multiply relevance each tick
+// Decay constants — anchored insights decay slower (Akari's design: research chains survive)
+const INSIGHT_DECAY_RATE = 0.85      // normal insights
+const ANCHOR_DECAY_RATE = 0.95       // anchored insights — survive ~3x longer
 const INSIGHT_MIN_RELEVANCE = 0.2    // remove below this
 const MAX_INSIGHTS = 15              // cap total insights
 const THREAD_DORMANT_TICKS = 5       // archive after N ticks inactive
@@ -64,7 +66,10 @@ export function createWorkingMemory(filePath: string) {
   function decay(currentTick: number): void {
     // Decay insight relevance
     state.recentInsights = state.recentInsights
-      .map(i => ({ ...i, relevance: i.relevance * INSIGHT_DECAY_RATE }))
+      .map(i => ({
+        ...i,
+        relevance: i.relevance * (i.anchor ? ANCHOR_DECAY_RATE : INSIGHT_DECAY_RATE),
+      }))
       .filter(i => i.relevance >= INSIGHT_MIN_RELEVANCE)
       .slice(0, MAX_INSIGHTS)
 
