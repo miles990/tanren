@@ -121,6 +121,39 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       },
     })
   }
+  // Built-in delegate action — sub-agent pattern from Claude Code.
+  // Spawns a focused LLM call with minimal context (identity + task only).
+  // Result returns to main tick as tool_result — main context stays clean.
+  // Key: delegate's internal reasoning doesn't pollute the main conversation.
+  actionRegistry.register({
+    type: 'delegate',
+    description: 'Delegate a focused sub-task to a separate LLM call. The sub-task runs with clean context (identity + your prompt only). Use for: exploring code, summarizing files, or analysis that would clutter your main context. Returns a concise result.',
+    toolSchema: {
+      properties: {
+        task: { type: 'string', description: 'Clear, focused task description. Include file paths if needed.' },
+      },
+      required: ['task'],
+    },
+    async execute(action, context) {
+      const task = (action.input?.task as string) ?? action.content.trim()
+      if (!task) return '[delegate error: empty task]'
+
+      try {
+        const identity = await loadIdentity(config.identity, context.memory)
+        const subPrompt = `You are a focused research assistant. Complete this task concisely (max 500 words):\n\n${task}`
+        const subSystem = `${identity}\n\nYou have access to the filesystem. Be precise and cite line numbers when referencing code.`
+
+        // Use the same LLM but with clean context (no perception, no conversation history)
+        const result = await llm.think(subPrompt, subSystem)
+        // Cap result to prevent context explosion in main tick
+        return result.slice(0, 4000)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[delegate error: ${msg.slice(0, 300)}]`
+      }
+    },
+  })
+
   if (config.actions) {
     for (const handler of config.actions) {
       actionRegistry.register(handler)
