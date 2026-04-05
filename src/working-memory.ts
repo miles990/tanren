@@ -16,6 +16,8 @@ export interface WorkingMemoryState {
     tick: number
     relevance: number  // 0-1, decays each tick
     anchor?: boolean   // anchored insights decay at 0.95 instead of 0.85
+    reasoning?: string // WHY this insight was reached — preserves causal chain across ticks
+    evidence?: string  // key evidence that supports this insight
   }>
   activeThreads: Array<{
     id: string
@@ -122,7 +124,13 @@ export function createWorkingMemory(filePath: string) {
     if (state.recentInsights.length > 0) {
       const insights = state.recentInsights
         .slice(0, 8)
-        .map(i => `- ${i.content} (tick ${i.tick}, relevance ${i.relevance.toFixed(2)})`)
+        .map(i => {
+          let line = `- ${i.content} (tick ${i.tick}, rel ${i.relevance.toFixed(2)}${i.anchor ? ' ⚓' : ''})`
+          // Semantic compression: show reasoning chain, not just conclusion
+          if (i.reasoning) line += `\n  ∵ ${i.reasoning}`
+          if (i.evidence) line += `\n  evidence: ${i.evidence}`
+          return line
+        })
       parts.push(`Recent insights:\n${insights.join('\n')}`)
     }
     if (state.activeThreads.length > 0) {
