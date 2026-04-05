@@ -13,7 +13,7 @@ import { createThreadContext, type ThreadContext } from './thread-context.js'
 import type { Action, ActionContext } from './types.js'
 
 // Read-only actions that can safely run in parallel
-const READ_ONLY = new Set(['search', 'read', 'explore', 'query-history', 'web_fetch'])
+const READ_ONLY = new Set(['search', 'read', 'explore', 'grep', 'query-history', 'web_fetch', 'web_search', 'delegate'])
 
 export interface BatchResult {
   results: string[]                    // action results in original order

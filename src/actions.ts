@@ -54,7 +54,7 @@ async function writeToPath(rawPath: string, content: string, context: ActionCont
 // Risk tier classification for graduated feedback
 const ACTION_RISK_TIERS: Record<string, RiskTier> = {
   // Tier 1: Safe/read-only — skip feedback entirely
-  respond: 1, remember: 1, search: 1, read: 1, explore: 1, grep: 1, 'clear-inbox': 1, web_search: 1,
+  respond: 1, remember: 1, search: 1, read: 1, explore: 1, grep: 1, 'clear-inbox': 1, web_search: 1, read_document: 1, worktree: 2,
   // Tier 2: Moderate/additive — execute + log, no verification
   write: 2, append: 2, web_fetch: 2, plan: 2,
   // Tier 3: High-risk/destructive — full feedback loop
@@ -551,6 +551,98 @@ export const builtinActions: ActionHandler[] = [
   {
     // Claude Code pattern: Plan mode — design before implementing.
     // Write a structured plan to a file, then execute step by step.
+    // Claude Code pattern: worktree isolation for safe experimentation
+    // Read PDF/image files — extract text from PDFs, metadata from images
+    type: 'read_document',
+    description: 'Read a PDF or image file. PDFs: extracts text content. Images: returns dimensions and metadata. Use for analyzing documents and screenshots.',
+    toolSchema: {
+      properties: {
+        path: { type: 'string', description: 'File path to read' },
+      },
+      required: ['path'],
+    },
+    async execute(action, context) {
+      const { resolve } = await import('node:path')
+      const { existsSync, readFileSync, statSync } = await import('node:fs')
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const execFileAsync = promisify(execFile)
+
+      const rawPath = (action.input?.path as string) ?? action.content.trim()
+      const filePath = rawPath.startsWith('/') ? rawPath : resolve(context.workDir, rawPath)
+
+      if (!existsSync(filePath)) return `[read_document error: file not found: ${rawPath}]`
+
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+      const stats = statSync(filePath)
+
+      if (ext === 'pdf') {
+        // Extract text from PDF using pdftotext (poppler-utils)
+        try {
+          const { stdout } = await execFileAsync('pdftotext', ['-layout', filePath, '-'], {
+            timeout: 15_000, maxBuffer: 2 * 1024 * 1024,
+          })
+          const text = stdout.trim()
+          if (!text) return `[PDF: ${rawPath} (${(stats.size / 1024).toFixed(0)}KB) — no extractable text (possibly scanned/image PDF)]`
+          return `PDF: ${rawPath} (${(stats.size / 1024).toFixed(0)}KB)\n\n${text.slice(0, 10000)}`
+        } catch {
+          return `[PDF: pdftotext not available. Install: brew install poppler]`
+        }
+      }
+
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) {
+        // Image: return metadata (vision requires provider support — noted in output)
+        try {
+          const { stdout } = await execFileAsync('file', ['--brief', filePath], { timeout: 5000 })
+          return `Image: ${rawPath} (${(stats.size / 1024).toFixed(0)}KB)\nType: ${stdout.trim()}\n[Note: image content analysis requires vision-capable LLM provider]`
+        } catch {
+          return `Image: ${rawPath} (${(stats.size / 1024).toFixed(0)}KB, ${ext})`
+        }
+      }
+
+      return `[read_document: unsupported format '${ext}'. Supported: pdf, png, jpg, gif, webp, svg]`
+    },
+  },
+  {
+    type: 'worktree',
+    description: 'Create an isolated git worktree for experimental changes. Changes in the worktree do not affect the main working directory. Use for risky modifications you want to test before committing.',
+    toolSchema: {
+      properties: {
+        name: { type: 'string', description: 'Worktree name (creates branch worktree-{name})' },
+        action: { type: 'string', description: '"create" to create, "list" to list, "remove" to remove a worktree' },
+      },
+      required: ['name'],
+    },
+    async execute(action, context) {
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const { resolve } = await import('node:path')
+      const execFileAsync = promisify(execFile)
+
+      const name = (action.input?.name as string) ?? 'experiment'
+      const op = (action.input?.action as string) ?? 'create'
+      const worktreePath = resolve(context.workDir, '..', `.worktree-${name}`)
+      const branch = `worktree-${name}`
+
+      try {
+        if (op === 'list') {
+          const { stdout } = await execFileAsync('git', ['worktree', 'list'], { cwd: context.workDir, timeout: 5000 })
+          return stdout.trim() || 'No worktrees.'
+        }
+        if (op === 'remove') {
+          await execFileAsync('git', ['worktree', 'remove', worktreePath, '--force'], { cwd: context.workDir, timeout: 10000 })
+          return `Worktree ${name} removed.`
+        }
+        // Create
+        await execFileAsync('git', ['worktree', 'add', '-b', branch, worktreePath], { cwd: context.workDir, timeout: 10000 })
+        return `Worktree created: ${worktreePath} (branch: ${branch})`
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[worktree error: ${msg.slice(0, 300)}]`
+      }
+    },
+  },
+  {
     type: 'plan',
     description: 'Create or update a structured plan. Write before you build — design the approach, list steps, identify risks. Plans are saved to memory/plans/ for reference across ticks.',
     toolSchema: {
