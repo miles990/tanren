@@ -36,6 +36,36 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   const memoryDir = options.memoryDir ?? './memory'
   let ticking = false
   let tickCount = 0
+  let errorCount = 0
+  const startTime = Date.now()
+
+  // Production-grade: structured tick telemetry
+  const recentTicks: Array<{
+    tick: number
+    timestamp: string
+    duration: number
+    actions: string[]
+    mode: string
+    error?: string
+  }> = []
+  const MAX_RECENT = 50
+
+  function recordTick(tick: number, duration: number, actions: string[], mode: string, error?: string) {
+    recentTicks.push({ tick, timestamp: new Date().toISOString(), duration, actions, mode, error })
+    if (recentTicks.length > MAX_RECENT) recentTicks.shift()
+    if (error) errorCount++
+  }
+
+  // Production-grade: process-level resilience
+  process.on('uncaughtException', (err) => {
+    console.error(`[${serviceName}] UNCAUGHT: ${err.message}`)
+    errorCount++
+    // Don't exit — keep serving
+  })
+  process.on('unhandledRejection', (reason) => {
+    console.error(`[${serviceName}] UNHANDLED: ${reason}`)
+    errorCount++
+  })
 
   async function handleChat(from: string, text: string): Promise<ChatResult & { tick: number }> {
     if (options.onBeforeChat) await options.onBeforeChat(from, text)
@@ -63,7 +93,22 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
     if (url.pathname === '/health' && req.method === 'GET') {
-      json(res, 200, { status: 'ok', service: serviceName, ticking, tickCount })
+      const uptime = Math.round((Date.now() - startTime) / 1000)
+      const avgDuration = recentTicks.length > 0
+        ? Math.round(recentTicks.reduce((s, t) => s + t.duration, 0) / recentTicks.length)
+        : 0
+      const errorRate = tickCount > 0 ? Math.round((errorCount / tickCount) * 100) : 0
+      json(res, 200, {
+        status: errorRate > 50 ? 'degraded' : 'ok',
+        service: serviceName,
+        ticking,
+        tickCount,
+        uptime,
+        errors: errorCount,
+        errorRate: `${errorRate}%`,
+        avgTickDuration: `${avgDuration}ms`,
+        recentTicks: recentTicks.slice(-5),
+      })
 
     } else if (url.pathname === '/status' && req.method === 'GET') {
       try {
@@ -84,11 +129,15 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       if (ticking) { json(res, 429, { error: `${serviceName} is thinking, try again later` }); return }
 
       ticking = true
+      const tickStart = Date.now()
       try {
         const result = await handleChat(from, text)
+        recordTick(tickCount, Date.now() - tickStart, result.actions ?? [], result.meta?.mode ?? 'unknown')
         json(res, 200, result)
       } catch (err) {
-        json(res, 500, { error: err instanceof Error ? err.message : String(err) })
+        const msg = err instanceof Error ? err.message : String(err)
+        recordTick(tickCount, Date.now() - tickStart, [], 'error', msg)
+        json(res, 500, { error: msg })
       } finally {
         ticking = false
       }
