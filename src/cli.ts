@@ -36,15 +36,20 @@ Commands:
   run     Self-paced chain — agent decides when to stop
   chat    Interactive conversation with the agent
   start   Start the autonomous loop
+  serve   Start HTTP server (POST /chat, GET /health, GET /status)
+  health  Check a running agent's health
+  status  Get a running agent's status
 
 Options:
   --config <path>    Path to config file (default: ./tanren.config.ts)
   --interval <ms>    Tick interval in ms (default: 60000)
+  --port <port>      HTTP port for serve/health/status (default: 3000)
 
 Examples:
   npx tanren tick
-  npx tanren start --interval 120000
-  npx tanren tick --config ./my-agent/config.ts
+  npx tanren serve --port 3002
+  npx tanren health --port 3002
+  npx tanren start --config ./my-agent/config.ts
 `.trim())
   process.exit(0)
 }
@@ -172,6 +177,26 @@ async function main(): Promise<void> {
 
     const shutdown = () => { rl.close(); console.log('\n[tanren] Bye'); process.exit(0) }
     process.on('SIGINT', shutdown)
+  } else if (command === 'serve') {
+    const port = interval ? parseInt(interval, 10) : (getFlag('port') ? parseInt(getFlag('port')!, 10) : 3000)
+    const { serve } = await import('./serve.js')
+    const name = config.identity?.toString().split('/').pop()?.replace('.md', '') ?? 'tanren-agent'
+    serve(agent, { port, serviceName: name, memoryDir: config.memoryDir })
+
+  } else if (command === 'health') {
+    const port = getFlag('port') ?? '3000'
+    try {
+      const res = await fetch(`http://localhost:${port}/health`)
+      console.log(JSON.stringify(await res.json(), null, 2))
+    } catch { console.error(`No agent on port ${port}`); process.exit(1) }
+
+  } else if (command === 'status') {
+    const port = getFlag('port') ?? '3000'
+    try {
+      const res = await fetch(`http://localhost:${port}/status`)
+      console.log(JSON.stringify(await res.json(), null, 2))
+    } catch { console.error(`No agent on port ${port}`); process.exit(1) }
+
   } else if (command === 'start') {
     const ms = interval ? parseInt(interval, 10) : (config.tickInterval ?? 60_000)
     console.log(`[tanren] Starting loop (interval: ${ms}ms)`)
