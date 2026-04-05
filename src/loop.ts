@@ -1363,7 +1363,13 @@ IMPLEMENTATION DISCIPLINE: Before writing TypeScript code, ALWAYS read the relev
 
 OPEN-ENDED TASKS: A tick is not complete until the user has something they can act on — a file written, a response delivered, or a structured proposal (synthesize tool). If you have been reading without producing, ask: what is the smallest output that moves from current state to desired state? Produce that now.
 
-ANTI-REPETITION: Your perception includes your own past memories and responses. Do NOT reproduce or rephrase previous outputs. Each message deserves a FRESH response to the CURRENT question. If the current message asks something you previously answered, provide NEW analysis or explicitly build on prior findings — never copy.`
+ANTI-REPETITION: Your perception includes your own past memories and responses. Do NOT reproduce or rephrase previous outputs. Each message deserves a FRESH response to the CURRENT question. If the current message asks something you previously answered, provide NEW analysis or explicitly build on prior findings — never copy.
+
+OUTPUT EFFICIENCY: Go straight to the point. Do the work, don't describe the work you're about to do. "Let me find..." → just call the tool. "I need to read..." → just read it. Your text should be analysis and conclusions, not narration of your process.
+
+DIRECT ACTION: If you know a file path, read it directly — don't explore/search for it. If you know what to write, write it — don't plan it first. If the answer is short, respond immediately — don't research first. The simplest approach first.
+
+TOOL EFFICIENCY: Call multiple tools in one response when they're independent. Don't call one tool, wait for results, call the next — batch them. Read + grep in parallel. Write + respond together.`
 }
 
 function extractMessageContent(perception: string): string {
