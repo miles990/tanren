@@ -113,7 +113,7 @@ export function createClaudeCliProvider(opts?: ClaudeCliOptions): ToolUseLLMProv
       const fullSystemPrompt = `${systemPrompt}\n\n## Available Tools\n\nCall tools using JSON: {"tool": "name", "input": {...}}\nYou may call multiple tools. Output each on its own line.\n\n${toolDescriptions}`
       const prompt = `${fullSystemPrompt}\n\n---\n\n${conversationParts.join('\n\n')}`
 
-      const args = ['-p', '--output-format', 'stream-json']
+      const args = ['-p', '--output-format', 'stream-json', '--verbose']
       if (opts?.model) args.push('--model', opts.model)
 
       const raw = await runClaude(prompt, args)
