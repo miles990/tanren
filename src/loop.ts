@@ -828,11 +828,34 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Agent gets autonomy above the floor, not below it.
 
       // Floor 1: If there's a pending message, must have respond action.
-      // If LLM didn't call respond, extract a response from thought.
+      // If LLM didn't call respond, synthesize from thought + tool results.
       const hasRespond = allActions.some(a => a.type === 'respond')
-      if (hasIncomingMessage && !hasRespond && thought.length > 50) {
-        // Auto-extract: use thought as response (code guarantee, not prompt hope)
-        const autoResponse = thought.replace(/<action:\w+>[\s\S]*?<\/action:\w+>/g, '').trim()
+      if (hasIncomingMessage && !hasRespond) {
+        // Gather tool results for synthesis context
+        const toolResultsSummary = actionResults
+          .map((r, i) => `[${allActions[i]?.type ?? 'action'}]: ${r.slice(0, 1000)}`)
+          .filter(r => r.length > 20)
+          .join('\n\n')
+
+        let autoResponse = ''
+
+        // If we have tool results, do a focused synthesis call (last-chance LLM call)
+        if (toolResultsSummary.length > 100) {
+          try {
+            const synthPrompt = `You gathered these results:\n\n${toolResultsSummary.slice(0, 4000)}\n\nOriginal question: ${messageContent.slice(0, 500)}\n\nSynthesize a complete, helpful response. Be thorough.`
+            const synthResult = await llm.think(synthPrompt, 'You are a research assistant. Respond directly and completely.')
+            autoResponse = synthResult.trim()
+            console.error(`[floor] Synthesis respond: ${autoResponse.length} chars from ${toolResultsSummary.length} chars of tool results`)
+          } catch {
+            // Synthesis failed — fall back to thought extraction
+            autoResponse = thought.replace(/<action:\w+>[\s\S]*?<\/action:\w+>/g, '').trim()
+          }
+        } else if (thought.length > 50) {
+          // No tool results — extract from thought
+          autoResponse = thought.replace(/<action:\w+>[\s\S]*?<\/action:\w+>/g, '').trim()
+          console.error(`[floor] Auto-respond from thought: ${autoResponse.length} chars`)
+        }
+
         if (autoResponse.length > 20) {
           try {
             const result = await actionRegistry.execute(
@@ -842,8 +865,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
             allActions.push({ type: 'respond', content: autoResponse, raw: autoResponse })
             actionResults.push(result)
             actionsExecuted++
-            console.error(`[floor] Auto-respond: LLM thought but did not call respond (${autoResponse.length} chars)`)
-          } catch { /* floor best-effort, don't break tick */ }
+          } catch { /* floor best-effort */ }
         }
       }
 
