@@ -386,7 +386,71 @@ ENV
   echo "AGENT_PORT=$PORT" >> "$ENV_FILE"
 fi
 
-# run.ts
+# tanren.config.mjs — new-style config (framework handles server/CLI)
+cat > "$TARGET/tanren.config.mjs" << 'CONFIGMJS'
+/**
+ * Tanren Agent Config
+ *
+ * Usage:
+ *   npx tanren tick   --config ./tanren.config.mjs       # single tick
+ *   npx tanren chat   --config ./tanren.config.mjs       # interactive
+ *   npx tanren serve  --config ./tanren.config.mjs       # HTTP server
+ */
+
+import { readFileSync, existsSync } from 'node:fs'
+
+// Load .env
+if (existsSync('.env')) {
+  for (const line of readFileSync('.env', 'utf-8').split('\n')) {
+    const match = line.match(/^\s*([^#=]+?)\s*=\s*(.+?)\s*$/)
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2].replace(/^["']|["']$/g, '')
+    }
+  }
+}
+
+// Auto-detect LLM provider from environment
+const TANREN = process.env.TANREN_DIR || '../../'
+const { createAnthropicProvider, createOpenAIProvider, createClaudeCliProvider, createFallbackProvider,
+        createOutputGate, createAnalysisWithoutActionGate, createProductivityGate, createSymptomFixGate,
+        createAutoVerifyHook,
+} = await import(`${TANREN}/dist/index.js`)
+
+let llm = undefined
+const apiKey = process.env.ANTHROPIC_API_KEY
+
+if (apiKey) {
+  llm = createAnthropicProvider({ apiKey, model: 'claude-sonnet-4-6', maxTokens: 32768 })
+} else if (process.env.LLM_PROVIDER === 'omlx') {
+  const omlxProvider = createOpenAIProvider({
+    apiKey: process.env.LOCAL_LLM_KEY || 'local',
+    baseUrl: `${process.env.LOCAL_LLM_URL || 'http://localhost:8000'}/v1`,
+    model: process.env.LOCAL_LLM_MODEL || 'Qwen3.5-4B-MLX-4bit',
+    maxTokens: 4096,
+  })
+  llm = createFallbackProvider(omlxProvider, createClaudeCliProvider(), 'omlx→cli')
+}
+
+export default {
+  identity: './soul.md',
+  memoryDir: './memory',
+  llm,
+  gates: [
+    createOutputGate(3),
+    createAnalysisWithoutActionGate(2),
+    createProductivityGate(3),
+    createSymptomFixGate(5),
+  ],
+  hooks: [
+    createAutoVerifyHook(),
+  ],
+  feedbackRounds: apiKey ? 15 : 3,
+  toolDegradation: false,
+  learning: { enabled: true, selfPerception: true, crystallization: true, antiGoodhart: true },
+}
+CONFIGMJS
+
+# run.ts (legacy — for agents that need custom server/actions)
 cat > "$TARGET/run.ts" << RUNTS
 /**
  * $NAME — Tanren Agent
@@ -687,6 +751,12 @@ echo -e "Next steps:"
 [ "$LLM" = "omlx" ] && echo -e "  ${Y}1. Edit .env — verify LOCAL_LLM_URL${R}"
 [ "$LLM" = "claude-cli" ] && echo -e "  1. Ensure 'claude' CLI is installed"
 echo -e "  2. Edit soul.md — define who ${NAME} is"
-echo -e "  3. ./manage.sh up — start the agent"
-echo -e "  4. ./live.sh — watch live tick status"
+echo -e ""
+echo -e "  ${B}Quick start (config-based):${R}"
+echo -e "  npx tanren chat  --config tanren.config.mjs     ${D}# interactive${R}"
+echo -e "  npx tanren serve --config tanren.config.mjs     ${D}# HTTP server${R}"
+echo -e ""
+echo -e "  ${B}Classic start (manage.sh):${R}"
+echo -e "  ./manage.sh up   ${D}# start${R}"
+echo -e "  ./manage.sh logs ${D}# watch logs${R}"
 echo ""
