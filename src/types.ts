@@ -21,6 +21,15 @@ export interface ChatResult {
   actions: string[]           // action types executed
   duration: number            // ms
   quality: number             // observation quality 1-5
+  // Structured metadata — any agent or human can programmatically understand what happened
+  meta?: {
+    mode: string              // context mode (research/interaction/execution/verification)
+    filesRead: string[]       // files the agent read this tick
+    filesWritten: string[]    // files the agent wrote/edited this tick
+    toolsUsed: string[]       // unique tool types called
+    hypotheses: number        // active hypotheses in working memory
+    contextChars: number      // total context size used
+  }
 }
 
 /** Risk tier for graduated action handling.

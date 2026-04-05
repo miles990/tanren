@@ -83,6 +83,7 @@ export interface AgentLoop {
   stop(): void
   isRunning(): boolean
   getRecentTicks(): TickResult[]
+  getCurrentMode(): string
 }
 
 export function createLoop(config: TanrenConfig): AgentLoop {
@@ -109,6 +110,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     actionRegistry.register(handler)
   }
   // Built-in respond action — stores response in-process for chat()
+  // Enhanced: auto-appends tick metadata so any reader (human or agent) knows
+  // what tools were used and what files were touched. Structural transparency.
   if (!config.actions?.some(a => a.type === 'respond')) {
     actionRegistry.register({
       type: 'respond',
@@ -1142,6 +1145,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     stop,
     isRunning: () => running,
     getRecentTicks: () => [...recentTicks],
+    getCurrentMode: () => currentContextMode?.mode ?? 'unknown',
   }
 }
 

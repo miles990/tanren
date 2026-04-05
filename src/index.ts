@@ -65,12 +65,29 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
       // Extract response: prefer action:respond content, fallback to thought
       const respondAction = result.actions.find(a => a.type === 'respond')
       const response = respondAction?.content ?? ''
+      // Extract structured metadata for cross-agent/human transparency
+      const actionTypes = result.actions.map(a => a.type)
+      const filesRead = result.actions
+        .filter(a => a.type === 'read' || a.type === 'grep')
+        .map(a => (a.input?.path as string) ?? '').filter(Boolean)
+      const filesWritten = result.actions
+        .filter(a => a.type === 'write' || a.type === 'edit')
+        .map(a => (a.input?.path as string) ?? '').filter(Boolean)
+
       return {
         response,
         thought: result.thought,
-        actions: result.actions.map(a => a.type),
+        actions: actionTypes,
         duration: result.observation.duration,
         quality: result.observation.outputQuality,
+        meta: {
+          mode: loop.getCurrentMode?.() ?? 'unknown',
+          filesRead: [...new Set(filesRead)],
+          filesWritten: [...new Set(filesWritten)],
+          toolsUsed: [...new Set(actionTypes)],
+          hypotheses: 0, // populated if working memory available
+          contextChars: result.perception.length,
+        },
       }
     },
     async runChain(message?: string, options?: { from?: string }): Promise<TickResult[]> {
