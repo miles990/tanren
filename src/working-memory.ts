@@ -25,6 +25,30 @@ export interface WorkingMemoryState {
     lastActive: number  // tick number
     context: string[]   // key points
   }>
+  hypotheses: Array<{
+    id: string
+    statement: string
+    confidence: number  // 0-1, agent's belief in this hypothesis
+    evidence: string[]  // supporting evidence
+    counter: string[]   // contradicting evidence
+    createdTick: number
+    lastUpdated: number
+    status: 'active' | 'validated' | 'refuted' | 'merged' | 'suspended'
+    relatedHypotheses?: string[]  // IDs of competing or complementary hypotheses
+  }>
+  tensions: Array<{
+    id: string
+    description: string
+    hypothesesIds: string[]  // conflicting hypotheses
+    tensionType: 'contradiction' | 'competition' | 'complementary' | 'unknown'
+    createdTick: number
+    lastActive: number
+    resolution?: {
+      method: 'evidence' | 'synthesis' | 'external_feedback' | 'time_based'
+      outcome: string
+      resolvedTick: number
+    }
+  }>
   lastUpdated: number  // tick number
 }
 
@@ -32,6 +56,8 @@ const EMPTY_STATE: WorkingMemoryState = {
   currentFocus: null,
   recentInsights: [],
   activeThreads: [],
+  hypotheses: [],
+  tensions: [],
   lastUpdated: 0,
 }
 
@@ -83,6 +109,33 @@ export function createWorkingMemory(filePath: string) {
     if (state.currentFocus && currentTick - state.lastUpdated >= FOCUS_CLEAR_TICKS) {
       state.currentFocus = null
     }
+
+    // Process stale hypotheses and tensions
+    const HYPOTHESIS_STALE_TICKS = 10
+    const TENSION_STALE_TICKS = 15
+    
+    // Mark old unvalidated hypotheses as suspended
+    state.hypotheses = state.hypotheses.map(h => {
+      if (h.status === 'active' && currentTick - h.lastUpdated > HYPOTHESIS_STALE_TICKS) {
+        return { ...h, status: 'suspended' as const, lastUpdated: currentTick }
+      }
+      return h
+    })
+
+    // Resolve stale tensions without evidence updates
+    state.tensions = state.tensions.map(t => {
+      if (!t.resolution && currentTick - t.lastActive > TENSION_STALE_TICKS) {
+        return {
+          ...t,
+          resolution: {
+            method: 'time_based' as const,
+            outcome: 'Tension auto-resolved due to lack of evidence updates',
+            resolvedTick: currentTick
+          }
+        }
+      }
+      return t
+    })
   }
 
   function update(currentTick: number, updates: {
@@ -138,6 +191,24 @@ export function createWorkingMemory(filePath: string) {
         `- [${t.id}] ${t.title} (last active tick ${t.lastActive}): ${t.context.slice(-2).join('; ')}`
       )
       parts.push(`Active threads:\n${threads.join('\n')}`)
+    }
+    // Hypothesis tracking — productive confusion: show competing interpretations
+    const activeHypotheses = state.hypotheses.filter(h => h.status === 'active' || h.status === 'validated')
+    if (activeHypotheses.length > 0) {
+      const hyps = activeHypotheses.map(h => {
+        const conf = `${Math.round(h.confidence * 100)}%`
+        const ev = h.evidence.length > 0 ? ` [+${h.evidence.length}]` : ''
+        const ctr = h.counter.length > 0 ? ` [-${h.counter.length}]` : ''
+        return `- [${conf}${ev}${ctr}] ${h.statement} (${h.status})`
+      })
+      parts.push(`Hypotheses:\n${hyps.join('\n')}`)
+    }
+    const activeTensions = state.tensions.filter(t => !t.resolution)
+    if (activeTensions.length > 0) {
+      const tens = activeTensions.map(t =>
+        `- ⚡ ${t.description} (${t.tensionType}, ${t.hypothesesIds.length} hypotheses)`
+      )
+      parts.push(`Tensions:\n${tens.join('\n')}`)
     }
     return parts.length > 0 ? parts.join('\n\n') : ''
   }

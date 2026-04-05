@@ -574,6 +574,55 @@ export const builtinActions: ActionHandler[] = [
     // Claude Code pattern: Plan mode — design before implementing.
     // Write a structured plan to a file, then execute step by step.
     // Claude Code pattern: worktree isolation for safe experimentation
+    // Productive confusion: create/update hypotheses in working memory
+    type: 'hypothesize',
+    description: 'Create or update a hypothesis. Maintains competing interpretations until evidence resolves them. Use for deep analysis where premature certainty is harmful.',
+    toolSchema: {
+      properties: {
+        id: { type: 'string', description: 'Hypothesis ID (new or existing)' },
+        statement: { type: 'string', description: 'The hypothesis being tested' },
+        confidence: { type: 'number', description: 'Confidence 0-1 (how likely you think this is true)' },
+        evidence: { type: 'string', description: 'New supporting evidence to add' },
+        counter: { type: 'string', description: 'New contradicting evidence to add' },
+        status: { type: 'string', description: 'Status: active, validated, refuted, merged, suspended' },
+      },
+      required: ['id', 'statement'],
+    },
+    async execute(action, context) {
+      if (!context.workingMemory) return '[hypothesize: no working memory available]'
+      const state = context.workingMemory.getState()
+      const id = action.input?.id as string
+      const statement = action.input?.statement as string
+      const confidence = (action.input?.confidence as number) ?? 0.5
+      const newEvidence = action.input?.evidence as string | undefined
+      const newCounter = action.input?.counter as string | undefined
+      const status = (action.input?.status as string) ?? 'active'
+      const tick = context.tickCount ?? 0
+
+      const existing = state.hypotheses.find(h => h.id === id)
+      if (existing) {
+        existing.statement = statement
+        existing.confidence = confidence
+        if (newEvidence) existing.evidence.push(newEvidence)
+        if (newCounter) existing.counter.push(newCounter)
+        existing.status = status as typeof existing.status
+        existing.lastUpdated = tick
+        context.workingMemory.save()
+        return `Hypothesis ${id} updated (${Math.round(confidence * 100)}% confidence, +${existing.evidence.length}/-${existing.counter.length} evidence)`
+      }
+
+      state.hypotheses.push({
+        id, statement, confidence,
+        evidence: newEvidence ? [newEvidence] : [],
+        counter: newCounter ? [newCounter] : [],
+        createdTick: tick, lastUpdated: tick,
+        status: status as 'active',
+      })
+      context.workingMemory.save()
+      return `Hypothesis ${id} created (${Math.round(confidence * 100)}% confidence)`
+    },
+  },
+  {
     // Read PDF/image files — extract text from PDFs, metadata from images
     type: 'read_document',
     description: 'Read a PDF or image file. PDFs: extracts text content. Images: returns dimensions and metadata. Use for analyzing documents and screenshots.',
