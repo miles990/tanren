@@ -196,11 +196,14 @@ function buildAction(type: string, rawAttrs: string, content: string, raw: strin
 export const builtinActions: ActionHandler[] = [
   {
     type: 'remember',
-    description: 'Store a memory. Optionally specify a topic for categorization.',
+    description: 'Store a memory with optional reasoning chain. Use anchor=true for important insights that should persist longer. Include reasoning (WHY) and evidence (WHAT supports it) for deep research chains.',
     toolSchema: {
       properties: {
-        content: { type: 'string', description: 'What to remember' },
+        content: { type: 'string', description: 'What to remember (the conclusion/insight)' },
         topic: { type: 'string', description: 'Optional topic category (e.g. "design", "debugging")' },
+        anchor: { type: 'boolean', description: 'Mark as important — decays 3x slower (0.95 vs 0.85)' },
+        reasoning: { type: 'string', description: 'WHY you reached this conclusion — preserves causal chain' },
+        evidence: { type: 'string', description: 'Key evidence supporting this insight' },
       },
       required: ['content'],
     },
@@ -210,8 +213,27 @@ export const builtinActions: ActionHandler[] = [
       if (action.input) {
         const topic = action.input.topic as string | undefined
         const content = action.input.content as string
+        const anchor = action.input.anchor as boolean | undefined
+        const reasoning = action.input.reasoning as string | undefined
+        const evidence = action.input.evidence as string | undefined
         await context.memory.remember(content, { topic, tickCount: tick })
-        return topic ? `Remembered to topic: ${topic}` : 'Remembered.'
+        // Write anchored insight to working memory if anchor/reasoning/evidence provided
+        if ((anchor || reasoning || evidence) && context.workingMemory) {
+          const state = context.workingMemory.getState()
+          state.recentInsights.unshift({
+            content,
+            tick: tick ?? 0,
+            relevance: 1.0,
+            anchor: anchor ?? false,
+            reasoning,
+            evidence,
+          })
+          context.workingMemory.save()
+        }
+        const extras = [anchor && '⚓anchored', reasoning && 'with reasoning', evidence && 'with evidence'].filter(Boolean)
+        return topic
+          ? `Remembered to topic: ${topic}${extras.length ? ` (${extras.join(', ')})` : ''}`
+          : `Remembered.${extras.length ? ` (${extras.join(', ')})` : ''}`
       }
       // Legacy text path (from regex parsing)
       const topicMatch = action.content.match(/^#([a-zA-Z][\w-]*)\s+/)
