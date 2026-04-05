@@ -773,6 +773,22 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           allActions.push(...novelActions)
           actionResults.push(...batchResult.results)
 
+          // Fire postAction hooks for feedback round actions
+          for (let hi = 0; hi < novelActions.length; hi++) {
+            const hookActions = hookSystem.run('postAction', {
+              tickCount, action: novelActions[hi], result: batchResult.results[hi], allActions,
+            }, novelActions[hi].type)
+            for (const ha of hookActions) {
+              if (actionRegistry.has(ha.type)) {
+                try {
+                  await actionRegistry.execute(ha, { memory, workDir, tickCount, workingMemory })
+                  allActions.push(ha)
+                  actionsExecuted++
+                } catch { /* hook actions best-effort */ }
+              }
+            }
+          }
+
           // Exit on substantial respond (>300 chars). Short responds may be
           // preliminary — allow feedback rounds to deepen.
           const feedbackRespond = novelActions.find(a => a.type === 'respond')
