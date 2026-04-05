@@ -75,7 +75,9 @@ export function createWorkingMemory(filePath: string) {
   function load(): WorkingMemoryState {
     try {
       if (existsSync(filePath)) {
-        state = JSON.parse(readFileSync(filePath, 'utf-8'))
+        const loaded = JSON.parse(readFileSync(filePath, 'utf-8'))
+        // Merge with EMPTY_STATE to handle new fields added after existing state was saved
+        state = { ...EMPTY_STATE, ...loaded }
       }
     } catch {
       state = { ...EMPTY_STATE }
