@@ -19,21 +19,37 @@ Tanren was forged from running real autonomous agents (5000+ cycles). Every modu
 
 ## Quickstart
 
+### One-command setup (interactive wizard)
+
 ```bash
-# Minimal: just soul.md + memory/
-echo "I am a research assistant." > soul.md
-mkdir memory
-npx tanren tick                    # single tick
-npx tanren chat                    # interactive REPL
-npx tanren serve --port 3002       # HTTP server
+bash scripts/create-agent.sh
 ```
 
-Or with a config file:
+Wizard asks 6 questions → generates everything:
+- `soul.md` (identity, in your language — EN/中文/日本語/한국어)
+- `tanren.config.mjs` (LLM, gates, hooks, learning)
+- `.env` (API keys)
+- `manage.sh` (start/stop/status/logs)
+- `memory/` + `messages/` (ready to use)
+
+Then:
+```bash
+npx tanren chat  --config tanren.config.mjs       # interactive
+npx tanren serve --config tanren.config.mjs       # HTTP server
+```
+
+### Manual setup (3 lines)
+
+```bash
+echo "I am a research assistant." > soul.md
+mkdir memory
+npx tanren chat                                    # works immediately
+```
+
+### Production config
 
 ```typescript
 // tanren.config.mjs
-import { createAnthropicProvider } from 'tanren'
-
 export default {
   identity: './soul.md',
   memoryDir: './memory',
@@ -41,11 +57,9 @@ export default {
   llm: createAnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY }),
   feedbackRounds: 25,
   toolDegradation: false,
+  hooks: [createAutoVerifyHook()],
+  learning: { enabled: true, selfPerception: true, crystallization: true },
 }
-```
-
-```bash
-npx tanren serve --config ./tanren.config.mjs --port 3002
 ```
 
 ## CLI
