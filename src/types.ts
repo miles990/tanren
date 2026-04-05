@@ -214,6 +214,12 @@ export interface TanrenConfig {
   gatesDir?: string
   actions?: ActionHandler[]
   eventTriggers?: EventTrigger[] // event detection plugins
+  /** Directory containing skill .md files — loaded dynamically based on context mode + keywords.
+   *  Claude Code pattern: specialized cognitive modules injected per task type. */
+  skillsDir?: string
+  /** Lifecycle hooks — automate mechanical patterns (e.g., auto-clear-inbox after respond).
+   *  Claude Code pattern: cognitive budget goes to thinking, not bookkeeping. */
+  hooks?: import('./hooks.js').Hook[]
 
   /** Callback when an action starts/completes — for live progress display */
   onActionProgress?: (event: { phase: 'start' | 'done' | 'error'; action: Action; result?: string; error?: string }) => void

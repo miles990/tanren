@@ -47,6 +47,8 @@ import { groundQuestion } from './socratic.js'
 import { createCognitiveModeDetector, buildCognitiveModePrompt, COGNITIVE_MODE_MODELS, type CognitiveModeDetector } from './cognitive-modes.js'
 import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
 import { detectContextMode, type ContextModeConfig } from './context-modes.js'
+import { loadSkills, selectSkills, formatSkillsForPrompt } from './skills.js'
+import { createHookSystem } from './hooks.js'
 
 // === Context Mode (module-level, readable by perception plugins) ===
 
@@ -218,6 +220,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   // Action health tracker — deterministic success/failure data for agent perception
   const actionHealth = createActionHealthTracker(join(config.memoryDir, 'state'))
   perception.register(actionHealth.getPerceptionPlugin())
+  const hookSystem = createHookSystem(config.hooks ?? [])
 
   let running = false
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -421,9 +424,16 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Inject mode-specific cognitive guidance — teaches HOW to think, not just WHAT tools to use.
     // Three layers of forging: perception (what you see) → tools (what you can do) → guidance (how you think)
     const modeGuidance = preMode?.cognitiveGuidance ?? ''
-    const promptWithGuidance = modeGuidance
-      ? `${baseSystemPrompt}\n\n${modeGuidance}`
-      : baseSystemPrompt
+    // Skill loading — dynamic cognitive modules matched by mode + keywords (Claude Code pattern)
+    const allSkills = config.skillsDir ? loadSkills(config.skillsDir) : []
+    const activeSkills = allSkills.length > 0 && preMode
+      ? selectSkills(allSkills, preMode.mode, preMessage)
+      : []
+    const skillsPrompt = formatSkillsForPrompt(activeSkills)
+    if (activeSkills.length > 0) {
+      console.error(`[tanren] SKILLS: loaded ${activeSkills.map(s => s.name).join(', ')} for mode=${preMode?.mode}`)
+    }
+    const promptWithGuidance = `${baseSystemPrompt}${modeGuidance ? `\n\n${modeGuidance}` : ''}${skillsPrompt}`
     const systemPrompt = cognitiveContext
       ? buildCognitiveModePrompt(identity, cognitiveContext, promptWithGuidance.split('\n\n## Available Actions')[1] || '')
       : promptWithGuidance
@@ -546,6 +556,22 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       actionsExecuted += initialBatch.executed
       actionsFailed += initialBatch.failed
       actionResults.push(...initialBatch.results)
+
+      // Fire postAction hooks — auto-execute follow-up actions (e.g., auto-clear-inbox)
+      for (let i = 0; i < actions.length; i++) {
+        const hookActions = hookSystem.run('postAction', {
+          tickCount, action: actions[i], result: initialBatch.results[i], allActions,
+        }, actions[i].type)
+        for (const ha of hookActions) {
+          if (actionRegistry.has(ha.type)) {
+            try {
+              await actionRegistry.execute(ha, { memory, workDir, tickCount, workingMemory })
+              allActions.push(ha)
+              actionsExecuted++
+            } catch { /* hook actions are best-effort */ }
+          }
+        }
+      }
 
       // Convergence Condition: feedback needed if model hasn't produced useful output yet.
       // Behavior-driven, not keyword-driven — look at what the model DID, not what the user SAID.
