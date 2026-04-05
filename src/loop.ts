@@ -682,13 +682,21 @@ export function createLoop(config: TanrenConfig): AgentLoop {
               // Model hasn't called ANY tools yet — must force at least one attempt
               messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed. Use the respond tool to deliver your answer.' }] })
             } else if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
-              messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed in feedback rounds.' }] })
+              const needsRespond = hasIncomingMessage && !allActions.some(a => a.type === 'respond')
+              messages.push({ role: 'user', content: [{ type: 'text', text: needsRespond
+                ? 'You MUST call the respond tool NOW to answer the pending message. Include your complete analysis in the respond content.'
+                : 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed in feedback rounds.'
+              }] })
             } else {
               break
             }
           } else {
-            // Append action guidance alongside tool results to prevent model from going text-only
-            const actionHint: ContentBlock = { type: 'text', text: 'Tool results above. Now: call write/edit to create files, or call respond when done. Do NOT return text without a tool call.' }
+            // Append action guidance — if there's an unanswered message, explicitly require respond
+            const needsRespond = hasIncomingMessage && !allActions.some(a => a.type === 'respond')
+            const actionHint: ContentBlock = { type: 'text', text: needsRespond
+              ? 'Tool results above. You have an unanswered message. Call the respond tool NOW with your complete analysis. Do NOT return text without calling respond.'
+              : 'Tool results above. Now: call write/edit to create files, or call respond when done. Do NOT return text without a tool call.'
+            }
             messages.push({ role: 'user', content: [...toolResults, actionHint] })
           }
 
