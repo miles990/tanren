@@ -186,7 +186,7 @@ async function main(): Promise<void> {
                 if (typeof content === 'string') {
                   process.stdout.write(content)
                 }
-              } else if (message.type === 'system' && message.subtype === 'tool_use') {
+              } else if (message.type === 'system' && (message as Record<string, unknown>).subtype === 'tool_use') {
                 // Show tool calls
                 const name = (message as Record<string, unknown>).tool_name ?? 'tool'
                 process.stdout.write(`\x1b[33m⚡ ${name}\x1b[2m `)
