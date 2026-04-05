@@ -633,6 +633,53 @@ export const builtinActions: ActionHandler[] = [
     },
   },
   {
+    // Structured handoff — reliable multi-agent collaboration
+    type: 'handoff',
+    description: 'Create a structured handoff for another agent. Includes task, context, files changed, key findings, and acceptance criteria. The receiving agent gets everything needed to continue without re-doing work.',
+    toolSchema: {
+      properties: {
+        to: { type: 'string', description: 'Target agent name (e.g. "kuro", "claude-code")' },
+        task: { type: 'string', description: 'What the receiving agent should do' },
+        context: { type: 'string', description: 'Relevant background and findings' },
+        files_changed: { type: 'string', description: 'Comma-separated list of files you modified' },
+        key_findings: { type: 'string', description: 'Important discoveries, separated by |' },
+        acceptance_criteria: { type: 'string', description: 'How to verify completion, separated by |' },
+      },
+      required: ['to', 'task'],
+    },
+    async execute(action, context) {
+      const { writeHandoff } = await import('./handoff.js')
+      const { resolve } = await import('node:path')
+
+      const to = action.input?.to as string
+      const task = action.input?.task as string
+      const ctx = (action.input?.context as string) ?? ''
+      const filesStr = (action.input?.files_changed as string) ?? ''
+      const findingsStr = (action.input?.key_findings as string) ?? ''
+      const criteriaStr = (action.input?.acceptance_criteria as string) ?? ''
+
+      const handoffDir = resolve(context.workDir, 'memory', 'handoffs')
+      const id = `${Date.now()}-${to}`
+
+      const handoff = {
+        id,
+        from: 'tanren-agent',
+        to,
+        timestamp: new Date().toISOString(),
+        status: 'pending' as const,
+        task,
+        context: ctx,
+        filesChanged: filesStr ? filesStr.split(',').map(s => s.trim()) : [],
+        keyFindings: findingsStr ? findingsStr.split('|').map(s => s.trim()) : [],
+        blockers: [],
+        acceptanceCriteria: criteriaStr ? criteriaStr.split('|').map(s => s.trim()) : ['Task completed as described'],
+      }
+
+      writeHandoff(handoffDir, handoff)
+      return `Handoff created: ${id} → ${to}\nTask: ${task}\nCriteria: ${handoff.acceptanceCriteria.join('; ')}`
+    },
+  },
+  {
     // Read PDF/image files — extract text from PDFs, metadata from images
     type: 'read_document',
     description: 'Read a PDF or image file. PDFs: extracts text content. Images: returns dimensions and metadata. Use for analyzing documents and screenshots.',

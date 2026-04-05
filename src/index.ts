@@ -159,6 +159,7 @@ export { detectContextMode, getModeConfig, type ContextMode, type ContextModeCon
 export { loadSkills, selectSkills, formatSkillsForPrompt, clearSkillCache, type Skill } from './skills.js'
 export { createHookSystem, builtinHooks, createAutoVerifyHook, type Hook, type HookPhase, type HookContext } from './hooks.js'
 export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorType } from './error-classification.js'
+export { writeHandoff, readPendingHandoffs, updateHandoffStatus, formatHandoffsForContext, type Handoff } from './handoff.js'
 
 // Learning System
 export {
