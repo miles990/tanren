@@ -790,10 +790,18 @@ export function createLoop(config: TanrenConfig): AgentLoop {
             }
           }
 
-          // Exit on substantial respond (>300 chars). Short responds may be
-          // preliminary — allow feedback rounds to deepen.
+          // Exit on substantial respond — threshold varies by mode.
+          // Research/verification need thorough answers. Interaction can be brief.
+          // Convergence condition: response must be COMPLETE for the mode, not just present.
+          const RESPOND_THRESHOLD: Record<string, number> = {
+            research: 500,      // deep analysis needs substance
+            verification: 400,  // fact-checking needs detail
+            execution: 100,     // action confirmation can be brief
+            interaction: 50,    // greetings/chat can be short
+          }
+          const minRespond = RESPOND_THRESHOLD[preMode?.mode ?? 'research'] ?? 300
           const feedbackRespond = novelActions.find(a => a.type === 'respond')
-          if (feedbackRespond && feedbackRespond.content.length > 300) break
+          if (feedbackRespond && feedbackRespond.content.length > minRespond) break
         }
       } else {
         // Text-based feedback mini-loop (legacy)
