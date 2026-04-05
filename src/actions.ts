@@ -54,9 +54,9 @@ async function writeToPath(rawPath: string, content: string, context: ActionCont
 // Risk tier classification for graduated feedback
 const ACTION_RISK_TIERS: Record<string, RiskTier> = {
   // Tier 1: Safe/read-only — skip feedback entirely
-  respond: 1, remember: 1, search: 1, read: 1, explore: 1, grep: 1, 'clear-inbox': 1,
+  respond: 1, remember: 1, search: 1, read: 1, explore: 1, grep: 1, 'clear-inbox': 1, web_search: 1,
   // Tier 2: Moderate/additive — execute + log, no verification
-  write: 2, append: 2, web_fetch: 2,
+  write: 2, append: 2, web_fetch: 2, plan: 2,
   // Tier 3: High-risk/destructive — full feedback loop
   shell: 3, edit: 3, git: 3,
 }
@@ -390,6 +390,56 @@ export const builtinActions: ActionHandler[] = [
     },
   },
   {
+    type: 'web_search',
+    description: 'Search the web and return results. Use for finding documentation, current information, or answers to questions.',
+    toolSchema: {
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        max_results: { type: 'number', description: 'Max results to return (default: 5)' },
+      },
+      required: ['query'],
+    },
+    async execute(action) {
+      const query = (action.input?.query as string) ?? action.content.trim()
+      const maxResults = (action.input?.max_results as number) ?? 5
+
+      try {
+        // Use DuckDuckGo HTML search (no API key needed)
+        const encoded = encodeURIComponent(query)
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 10_000)
+
+        const response = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Tanren/1.0' },
+        })
+        clearTimeout(timer)
+
+        if (!response.ok) return `[web_search error: HTTP ${response.status}]`
+
+        const html = await response.text()
+        // Extract result snippets from DuckDuckGo HTML
+        const results: string[] = []
+        const resultPattern = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
+        let match
+        while ((match = resultPattern.exec(html)) !== null && results.length < maxResults) {
+          const url = match[1].replace(/\/\/duckduckgo\.com\/l\/\?uddg=/, '').split('&')[0]
+          const title = match[2].replace(/<[^>]+>/g, '').trim()
+          const snippet = match[3].replace(/<[^>]+>/g, '').trim()
+          if (title && snippet) {
+            results.push(`${decodeURIComponent(url)}\n  ${title}\n  ${snippet}`)
+          }
+        }
+
+        if (results.length === 0) return `No results found for "${query}".`
+        return `Search results for "${query}":\n\n${results.join('\n\n')}`
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[web_search error: ${msg.slice(0, 300)}]`
+      }
+    },
+  },
+  {
     type: 'read',
     description: 'Read a file and return its content with line numbers. Can read specific line ranges.',
     toolSchema: {
@@ -496,6 +546,33 @@ export const builtinActions: ActionHandler[] = [
         const msg = err instanceof Error ? err.message : String(err)
         return `[explore error: ${msg.slice(0, 300)}]`
       }
+    },
+  },
+  {
+    // Claude Code pattern: Plan mode — design before implementing.
+    // Write a structured plan to a file, then execute step by step.
+    type: 'plan',
+    description: 'Create or update a structured plan. Write before you build — design the approach, list steps, identify risks. Plans are saved to memory/plans/ for reference across ticks.',
+    toolSchema: {
+      properties: {
+        name: { type: 'string', description: 'Plan name (used as filename)' },
+        content: { type: 'string', description: 'Plan content in markdown (goals, steps, risks, acceptance criteria)' },
+      },
+      required: ['name', 'content'],
+    },
+    async execute(action, context) {
+      const { resolve } = await import('node:path')
+      const { writeFileSync, mkdirSync, existsSync } = await import('node:fs')
+
+      const name = (action.input?.name as string) ?? 'plan'
+      const content = (action.input?.content as string) ?? action.content
+      const plansDir = resolve(context.workDir, 'memory', 'plans')
+      if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true })
+
+      const filename = `${name.replace(/[^a-zA-Z0-9-_]/g, '-')}.md`
+      const filePath = resolve(plansDir, filename)
+      writeFileSync(filePath, content)
+      return `Plan saved: ${filename}`
     },
   },
   {

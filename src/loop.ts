@@ -49,6 +49,7 @@ import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.
 import { detectContextMode, type ContextModeConfig } from './context-modes.js'
 import { loadSkills, selectSkills, formatSkillsForPrompt } from './skills.js'
 import { createHookSystem } from './hooks.js'
+import { formatErrorForAgent } from './error-classification.js'
 
 // === Context Mode (module-level, readable by perception plugins) ===
 
@@ -635,6 +636,30 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         const SYNTHESIZE_THRESHOLD = 2  // force synthesize after N unproductive rounds (lowered: model typically does 1 read round then goes idle)
 
         for (let round = 0; round < maxFeedbackRounds; round++) {
+          // Conversation compression: when accumulated context exceeds threshold,
+          // compress older tool_results to summaries. Keeps recent results verbatim.
+          // Claude Code pattern: auto-compress when context fills up.
+          const COMPRESS_THRESHOLD = 60_000 // chars
+          const totalMsgSize = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)
+          if (totalMsgSize > COMPRESS_THRESHOLD && messages.length > 3) {
+            // Compress all tool_result messages except the last 2 rounds
+            const keepVerbatim = 4 // keep last N messages verbatim (2 assistant + 2 user/results)
+            for (let mi = 1; mi < messages.length - keepVerbatim; mi++) {
+              const msg = messages[mi]
+              if (msg.role === 'user' && Array.isArray(msg.content)) {
+                const compressed = msg.content.map(block => {
+                  if (block.type === 'tool_result' && block.content.length > 500) {
+                    return { ...block, content: block.content.slice(0, 200) + '\n[... compressed]' }
+                  }
+                  return block
+                })
+                messages[mi] = { ...msg, content: compressed }
+              }
+            }
+            const newSize = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)
+            console.error(`[tanren] COMPRESS: ${totalMsgSize} → ${newSize} chars (round ${round})`)
+          }
+
           // Build tool_result messages for all actions in this round
           const toolResults: ContentBlock[] = []
           const roundStartIdx = allActions.length - actionResults.slice(-actions.length).length
@@ -778,7 +803,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
               actionHealth.record(action.type, true, tickCount)
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err)
-              roundResults.push(`[action ${action.type} failed: ${msg}]`)
+              roundResults.push(formatErrorForAgent(err, action.type))
               actionsFailed++
               actionHealth.record(action.type, false, tickCount, msg)
             }
