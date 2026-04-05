@@ -65,10 +65,37 @@ export const builtinHooks: Hook[] = [
     phase: 'postAction',
     actionType: 'respond',
     handler: (ctx) => {
-      // Auto-clear inbox after responding (if inbox action exists and hasn't been called yet)
       const alreadyCleared = ctx.allActions.some(a => a.type === 'clear-inbox')
       if (alreadyCleared) return
       return [{ type: 'clear-inbox', content: '', raw: '', input: {} }]
     },
   },
 ]
+
+/**
+ * Auto-verify hook for TypeScript files.
+ * Claude Code pattern: don't ASK the model to verify, MAKE the framework verify.
+ * After edit/write on .ts files, auto-run build and return errors as tool result.
+ */
+export function createAutoVerifyHook(buildCommand = 'npx tsc --noEmit'): Hook {
+  return {
+    name: 'auto-verify-ts',
+    phase: 'postAction',
+    handler: (ctx) => {
+      const action = ctx.action
+      if (!action) return
+      // Only fire for edit/write actions on .ts files
+      if (action.type !== 'edit' && action.type !== 'write') return
+      const path = (action.input?.path as string) ?? ''
+      if (!path.endsWith('.ts') && !path.endsWith('.tsx')) return
+
+      // Inject a shell action to run build verification
+      return [{
+        type: 'shell',
+        content: buildCommand,
+        raw: buildCommand,
+        input: { command: buildCommand },
+      }]
+    },
+  }
+}
