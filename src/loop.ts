@@ -432,14 +432,27 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     const hasIncomingMessage = hadMessageThisTick || messageContent.length > 0
 
     if (useToolUse) {
-      // Research-first: initial round excludes respond when there's a message.
-      // Forces LLM to gather information before answering. Respond unlocked in
-      // feedback rounds. Simple questions: 1 research round + 1 respond round (~6s).
-      // Complex questions: multiple research rounds + 1 deep respond.
+      // Mode-aware tool selection — different modes get different tools.
+      // Claude Code pattern: tools shape cognition. Giving all tools = no guidance.
+      // interaction: respond-focused (skip heavy research tools)
+      // execution: action-focused (respond, write, edit, shell)
+      // research: full toolset (grep, read, explore, delegate, search)
+      // verification: read + search focused
+      const MODE_TOOLS: Record<string, Set<string> | null> = {
+        interaction: new Set(['respond', 'remember', 'clear-inbox', 'search']),
+        execution: new Set(['respond', 'remember', 'write', 'edit', 'shell', 'clear-inbox']),
+        research: null,    // all tools
+        verification: null, // all tools
+      }
+      const modeToolFilter = preMode ? MODE_TOOLS[preMode.mode] ?? null : null
       const allToolDefs = actionRegistry.toToolDefinitions()
-      const toolDefs = hasIncomingMessage
-        ? allToolDefs.filter(t => t.name !== 'respond')
+      let toolDefs = modeToolFilter
+        ? allToolDefs.filter(t => modeToolFilter.has(t.name))
         : allToolDefs
+      // Research-first: exclude respond from initial round when there's a message
+      if (hasIncomingMessage && !modeToolFilter) {
+        toolDefs = toolDefs.filter(t => t.name !== 'respond')
+      }
 
       const baseToolSystemPrompt = buildToolUseSystemPrompt(identity)
       const toolSystemPrompt = cognitiveContext
