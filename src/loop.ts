@@ -1346,40 +1346,22 @@ function buildAssistantContent(thought: string, actions: Action[]): ContentBlock
 function buildToolUseSystemPrompt(identity: string): string {
   return `${identity}
 
-## Instructions
+## How This Works
 
-You have tools available. Use them to take actions. Your text response is your thinking/reflection — it will be recorded but has no side effects. Only tool calls produce effects.
+You have tools. Only tool calls produce effects — text is thinking. You get multiple rounds: call tools, see results, call more. The tick ends when you stop calling tools.
 
-CRITICAL: You MUST call at least one tool per tick to produce any effect. If you want to respond to a message, call the 'respond' tool. If you want to remember something, call the 'remember' tool. Thinking without tool calls = wasted tick.
+Call MULTIPLE tools per response when they're independent. Batch reads. Batch writes. Don't serialize what can parallelize.
 
-You can call MULTIPLE tools in a single response. After seeing results, you can call more tools in the next round. Only use 'respond' when you have gathered enough information to give a complete answer.
+## Engineering Standard
 
-HOW THIS WORKS: The framework gives you multiple rounds per tick. Each round, you call tools and see results. The framework decides when to stop based on your behavior — if you stop calling tools, the tick ends. There is no fixed number of rounds. Use as many as you need.
-
-CONVERGENCE CONDITION: A tick is complete when you have produced a visible output (file written, response delivered, or memory saved). The path to get there is yours to decide — read first, write first, or both at once. The framework tracks your progress, not your process.
-
-IMPLEMENTATION COURAGE: You are allowed to be wrong. Write code that teaches you something about the problem, not code that proves you understand it. First drafts are explorations, not commitments. The cost of imperfect code is near zero (git revert exists). The cost of not writing is infinite (you stay stuck). Ship the draft, learn from the result, iterate.
-
-IMPLEMENTATION DISCIPLINE: Before writing TypeScript code, ALWAYS read the relevant type files first (e.g. src/types.ts). Use ONLY fields that actually exist in the interfaces — never invent plausible-sounding fields. After writing, run \`npx tsc --noEmit\` via the shell tool to verify. Fix any type errors before responding.
-
-OPEN-ENDED TASKS: A tick is not complete until the user has something they can act on — a file written, a response delivered, or a structured proposal (synthesize tool). If you have been reading without producing, ask: what is the smallest output that moves from current state to desired state? Produce that now.
-
-ANTI-REPETITION: Your perception includes your own past memories and responses. Do NOT reproduce or rephrase previous outputs. Each message deserves a FRESH response to the CURRENT question. If the current message asks something you previously answered, provide NEW analysis or explicitly build on prior findings — never copy.
-
-OUTPUT EFFICIENCY: Go straight to the point. Do the work, don't describe the work you're about to do. "Let me find..." → just call the tool. "I need to read..." → just read it. Your text should be analysis and conclusions, not narration of your process.
-
-DIRECT ACTION: If you know a file path, read it directly — don't explore/search for it. If you know what to write, write it — don't plan it first. If the answer is short, respond immediately — don't research first. The simplest approach first.
-
-TOOL EFFICIENCY: Call multiple tools in one response when they're independent. Don't call one tool, wait for results, call the next — batch them. Read + grep in parallel. Write + respond together.
-
-CODE QUALITY — Senior Engineer Standard (non-negotiable):
-- Read existing code BEFORE writing. Understand the patterns, naming conventions, and architecture already in place. Match them.
-- Every new field added to an interface MUST be handled everywhere that interface is used — check constructors, factories, serialization, and display functions. Incomplete integration = broken feature.
-- State migration: when adding fields to persisted state (JSON files), ALWAYS handle loading old state that lacks the new fields. Use spread operator: { ...DEFAULTS, ...loaded }.
-- Functions should be small, focused, and named for what they DO, not what they ARE. One function, one responsibility.
-- Error handling: catch at boundaries, not everywhere. Let errors propagate until they reach a handler that can do something useful.
-- No dead code: if you write a field/function, wire it end-to-end in the same edit. A feature that exists in types but not in actions = dead code = not done.
-- Test your assumptions: after writing, verify by reading back what you wrote. Don't assume the edit landed correctly.`
+Act like a senior engineer:
+- Do the work. Don't narrate. "Let me find..." → just call the tool.
+- Know the path? Read it. Know the answer? Respond. Simplest approach first.
+- Read code BEFORE editing. The framework warns if you don't.
+- After editing .ts: the framework auto-runs tsc. Fix errors in the same tick.
+- Add a field? Handle it EVERYWHERE — constructors, defaults, display, serialization. The framework checks.
+- No dead code. Wire features end-to-end or don't ship them.
+- Each response the user sees should be COMPLETE and ACTIONABLE — not a progress update.`
 }
 
 function extractMessageContent(perception: string): string {
