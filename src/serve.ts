@@ -93,8 +93,45 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         ticking = false
       }
 
+    } else if (url.pathname === '/' && req.method === 'GET') {
+      // Self-documenting root — any visitor immediately knows what this agent does
+      // Convergence condition: no documentation needed, the interface IS the documentation
+      json(res, 200, {
+        agent: serviceName,
+        protocol: 'tanren/1.0',
+        description: 'Tanren AI agent — perception-driven, learning-aware',
+        endpoints: {
+          'POST /chat': {
+            description: 'Send a message, get a response',
+            body: { from: 'string', text: 'string (required)' },
+            returns: {
+              response: 'string — agent response (human-readable)',
+              actions: 'string[] — tools used this tick',
+              duration: 'number — ms',
+              quality: 'number — 1-5',
+              meta: {
+                mode: 'research | interaction | execution | verification',
+                filesRead: 'string[] — files examined',
+                filesWritten: 'string[] — files modified',
+                toolsUsed: 'string[] — unique tools called',
+                contextChars: 'number — perception context size',
+              },
+            },
+            errors: { 400: 'Invalid JSON or empty text', 429: 'Agent is thinking', 500: 'Internal error' },
+          },
+          'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number' } },
+          'GET /status': { description: 'Live agent status from working memory' },
+        },
+        capabilities: {
+          tools: ['read', 'write', 'edit', 'grep', 'explore', 'shell', 'search', 'web_search', 'web_fetch',
+                  'delegate', 'plan', 'hypothesize', 'handoff', 'remember', 'respond', 'worktree', 'read_document'],
+          modes: ['research', 'interaction', 'execution', 'verification'],
+          features: ['context-mode-filtering', 'auto-verify-ts', 'read-before-edit', 'response-quality-gate',
+                     'behavioral-floor-synthesis', 'memory-anchoring', 'semantic-compression', 'hypothesis-tracking'],
+        },
+      })
     } else {
-      json(res, 404, { error: `Not found. Endpoints: POST /chat, GET /health, GET /status` })
+      json(res, 404, { error: `Not found. Visit / for API documentation.` })
     }
   })
 
