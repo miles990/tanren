@@ -157,7 +157,7 @@ export { createContinuationSystem, type ChainState } from './continuation.js'
 // Context Modes
 export { detectContextMode, getModeConfig, type ContextMode, type ContextModeConfig } from './context-modes.js'
 export { loadSkills, selectSkills, formatSkillsForPrompt, clearSkillCache, type Skill } from './skills.js'
-export { createHookSystem, builtinHooks, type Hook, type HookPhase, type HookContext } from './hooks.js'
+export { createHookSystem, builtinHooks, createAutoVerifyHook, type Hook, type HookPhase, type HookContext } from './hooks.js'
 export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorType } from './error-classification.js'
 
 // Learning System
