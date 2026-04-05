@@ -339,8 +339,38 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         : baseContext
     }
 
+    // ── Context Budget Tracking (Claude Code pattern: context is scarce) ──
+    // Measure each component's contribution to total context.
+    // Auto-trim if exceeding budget. Surface metrics for agent self-awareness.
+    const contextBudget = {
+      perception: perceptionOutput.length,
+      identity: (await loadIdentity(config.identity, memory)).length,
+      workingMemory: wmContext?.length ?? 0,
+      learning: learningContext.length + (evolutionContext?.length ?? 0),
+      gates: gateWarnings.join('\n').length,
+      total: context.length,
+    }
+    const CONTEXT_BUDGET_WARN = 80_000   // chars — warn agent
+    const CONTEXT_BUDGET_TRIM = 120_000  // chars — auto-trim perception
+
+    if (contextBudget.total > CONTEXT_BUDGET_TRIM && effectiveCategories === undefined) {
+      // Over hard budget with full perception — re-perceive with focused categories
+      const trimmedPerception = await perception.perceive({ categories: ['environment', 'input'] })
+      const trimmedBase = buildContext(identity, trimmedPerception, gateWarnings, memory, learningContext + (evolutionContext ? '\n' + evolutionContext : ''))
+      context = wmContext
+        ? `<working-memory>\n${wmContext}\n</working-memory>\n\n${trimmedBase}`
+        : trimmedBase
+      contextBudget.perception = trimmedPerception.length
+      contextBudget.total = context.length
+      console.error(`[tanren] BUDGET: auto-trimmed perception ${perceptionOutput.length} → ${trimmedPerception.length} chars (total: ${contextBudget.total})`)
+    } else if (contextBudget.total > CONTEXT_BUDGET_WARN) {
+      console.error(`[tanren] BUDGET: warning — ${contextBudget.total} chars approaching limit (perception: ${contextBudget.perception})`)
+    }
+
+    console.error(`[tanren] CONTEXT: ${contextBudget.total} chars — perception:${contextBudget.perception} identity:${contextBudget.identity} wm:${contextBudget.workingMemory} learning:${contextBudget.learning}`)
+
     // 3. Think (LLM call) with cognitive mode detection
-    writeLiveStatus({ phase: 'think', tickStart, tickNumber: tickCount, running, perceptionBytes: perceptionOutput.length })
+    writeLiveStatus({ phase: 'think', tickStart, tickNumber: tickCount, running, perceptionBytes: contextBudget.perception })
 
     // Detect cognitive mode if enabled
     let cognitiveContext: CognitiveContext | null = null
