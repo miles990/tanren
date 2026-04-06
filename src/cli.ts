@@ -147,10 +147,13 @@ async function main(): Promise<void> {
     const rl = createInterface({ input: process.stdin, output: process.stdout })
     console.log('[tanren] Chat mode (streaming) — type your message, Enter to send, Ctrl+C to quit\n')
 
-    // Try Agent SDK streaming first, fallback to non-streaming agent.chat()
+    // Agent SDK with persistent session — query() + resume for multi-turn memory
     let useAgentSdk = false
+    let agentSdkQuery: typeof import('@anthropic-ai/claude-agent-sdk')['query'] | null = null
+    let sessionId: string | undefined  // set after first query, reused for resume
     try {
-      await import('@anthropic-ai/claude-agent-sdk')
+      const sdk = await import('@anthropic-ai/claude-agent-sdk')
+      agentSdkQuery = sdk.query
       useAgentSdk = true
     } catch { /* Agent SDK not installed — fallback */ }
 
@@ -162,48 +165,119 @@ async function main(): Promise<void> {
         const start = Date.now()
 
         if (useAgentSdk) {
-          // Streaming mode — show thinking + tool calls in real-time
+          // includePartialMessages: true → SDK emits stream_event (SDKPartialAssistantMessage)
+          // with real-time text deltas, tool_use starts, and thinking content.
+          // Like Claude Code's own TUI — see every character as it's generated.
           try {
-            const { query } = await import('@anthropic-ai/claude-agent-sdk')
             process.stdout.write('\x1b[2m⏳ thinking...\x1b[0m')
             let result = ''
             let toolCount = 0
+            let isStreamingText = false
+            let hasStatusLine = true
+            let currentToolName = ''   // track tool_use block being streamed
+            let toolInputBuf = ''      // accumulate input_json_delta partials
 
-            for await (const message of query({
+            const clearStatus = () => {
+              if (hasStatusLine) { process.stdout.write('\r\x1b[K'); hasStatusLine = false }
+            }
+            const endText = () => {
+              if (isStreamingText) { process.stdout.write('\x1b[0m\n'); isStreamingText = false }
+            }
+            // Extract the most informative parameter from a tool's input
+            const toolSummary = (name: string, input: Record<string, unknown>): string => {
+              const val = input.command ?? input.file_path ?? input.pattern ?? input.prompt ?? input.query ?? ''
+              const s = String(val).replace(/\n/g, ' ')
+              return s.length > 120 ? s.slice(0, 117) + '...' : s
+            }
+
+            for await (const message of agentSdkQuery!({
               prompt: trimmed,
               options: {
                 cwd: process.cwd(),
                 allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
-                maxTurns: 15,
+                maxBudgetUsd: 5,
                 permissionMode: 'bypassPermissions',
                 allowDangerouslySkipPermissions: true,
+                includePartialMessages: true,
+                ...(sessionId ? { resume: sessionId } : {}),
               },
             })) {
-              if ('result' in message) {
-                result = (message as { result: string }).result
-              } else if (message.type === 'system') {
-                const sub = (message as Record<string, unknown>).subtype as string ?? ''
-                if (sub === 'tool_use' || sub === 'task_started') {
-                  toolCount++
-                  const name = (message as Record<string, unknown>).tool_name ?? (message as Record<string, unknown>).name ?? 'tool'
-                  process.stdout.write(`\r\x1b[2m⚡ ${name} \x1b[33m(${toolCount} tools)\x1b[0m   `)
-                } else if (sub === 'task_progress') {
-                  const summary = (message as Record<string, unknown>).summary as string ?? ''
-                  if (summary) process.stdout.write(`\r\x1b[2m📊 ${summary.slice(0, 60)}\x1b[0m   `)
+              // Capture sessionId from first message for subsequent resumes
+              if (!sessionId && 'session_id' in message) {
+                sessionId = (message as { session_id: string }).session_id
+              }
+              // Real-time streaming deltas
+              if (message.type === 'stream_event') {
+                const ev = (message as unknown as { event: Record<string, unknown> }).event
+                const evType = ev.type as string
+
+                if (evType === 'content_block_start') {
+                  const block = ev.content_block as Record<string, unknown> | undefined
+                  if (block?.type === 'text') {
+                    endText(); clearStatus()
+                    isStreamingText = true
+                    process.stdout.write('\x1b[2m')  // start dim text
+                  } else if (block?.type === 'tool_use') {
+                    endText(); clearStatus()
+                    toolCount++
+                    currentToolName = (block.name as string) || 'tool'
+                    toolInputBuf = ''
+                  } else if (block?.type === 'thinking') {
+                    endText(); clearStatus()
+                    process.stdout.write('\x1b[2m🧠 thinking...\x1b[0m\n')
+                  }
+                } else if (evType === 'content_block_delta') {
+                  const delta = ev.delta as Record<string, unknown> | undefined
+                  if (delta?.type === 'text_delta' && delta?.text) {
+                    clearStatus()
+                    process.stdout.write(delta.text as string)
+                  } else if (delta?.type === 'thinking_delta' && delta?.thinking) {
+                    clearStatus()
+                    process.stdout.write(`\x1b[35;2m${delta.thinking as string}\x1b[0m`)
+                  } else if (delta?.type === 'input_json_delta' && delta?.partial_json) {
+                    toolInputBuf += delta.partial_json as string
+                  }
+                } else if (evType === 'content_block_stop') {
+                  if (currentToolName) {
+                    // Tool block finished — show name + key parameter
+                    let summary = ''
+                    try {
+                      const parsed = JSON.parse(toolInputBuf) as Record<string, unknown>
+                      summary = toolSummary(currentToolName, parsed)
+                    } catch { /* partial JSON — skip */ }
+                    if (summary) {
+                      process.stdout.write(`\x1b[33m⚡ ${currentToolName}\x1b[2m(${summary})\x1b[0m\n`)
+                    } else {
+                      process.stdout.write(`\x1b[33m⚡ ${currentToolName}\x1b[0m\n`)
+                    }
+                    currentToolName = ''
+                    toolInputBuf = ''
+                  }
+                  endText()
+                }
+
+              // Tool execution progress
+              } else if (message.type === 'tool_progress') {
+                endText()
+                const tp = message as unknown as { tool_name: string; elapsed_time_seconds: number }
+                const elapsed = Math.round(tp.elapsed_time_seconds)
+                process.stdout.write(`\r\x1b[K\x1b[2m  ⏳ ${tp.tool_name} (${elapsed}s)\x1b[0m`)
+                hasStatusLine = true
+
+              // Final result
+              } else if (message.type === 'result') {
+                endText(); clearStatus()
+                if ('result' in message) {
+                  result = (message as { result: string }).result
                 }
               }
+              // assistant (complete turns), system, user, rate_limit_event — skip
             }
 
-            // Clear progress line
-            process.stdout.write('\r\x1b[K')
+            clearStatus()
             const elapsed = ((Date.now() - start) / 1000).toFixed(1)
-
-            if (result) {
-              console.log(`\x1b[32mAgent>\x1b[0m (${elapsed}s, ${toolCount} tools)\n`)
-              console.log(result)
-            } else {
-              console.log(`\x1b[33mAgent>\x1b[0m (${elapsed}s, no result)`)
-            }
+            // Streaming already displayed the content — just show the summary line
+            console.log(`\x1b[32mAgent>\x1b[0m (${elapsed}s, ${toolCount} tools)`)
           } catch (err: unknown) {
             process.stdout.write('\x1b[0m\n')
             const msg = err instanceof Error ? err.message : String(err)
