@@ -24,6 +24,8 @@ export interface ServeOptions {
   port?: number
   serviceName?: string
   memoryDir?: string
+  /** Identity file path (soul.md) — used as system prompt for SDK chat */
+  identityPath?: string
   /** Called before each tick — agent-specific setup (e.g., clear inbox files) */
   onBeforeChat?: (from: string, text: string) => void | Promise<void>
   /** Called after each tick — agent-specific cleanup */
@@ -67,12 +69,78 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     errorCount++
   })
 
+  // Try to load Agent SDK for direct chat (same path as tanren chat CLI)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let sdkQuery: any = null
+  let sdkSessionId: string | undefined
+  let identity = ''
+  void (async () => {
+    try {
+      const sdk = await import('@anthropic-ai/claude-agent-sdk')
+      sdkQuery = sdk.query
+      if (options.identityPath && existsSync(options.identityPath)) {
+        identity = readFileSync(options.identityPath, 'utf-8')
+      }
+      console.log(`[${serviceName}] Agent SDK available — /chat uses direct SDK query`)
+    } catch {
+      console.log(`[${serviceName}] Agent SDK not available — /chat uses Tanren loop`)
+    }
+  })()
+
   async function handleChat(from: string, text: string): Promise<ChatResult & { tick: number }> {
     if (options.onBeforeChat) await options.onBeforeChat(from, text)
 
-    const chatResult = await agent.chat(text, { from })
-    tickCount++
+    let chatResult: ChatResult
 
+    if (sdkQuery) {
+      // Direct SDK path — same as tanren chat CLI
+      const prompt = identity
+        ? `${identity}\n\n---\nMessage from ${from}:\n${text}`
+        : `Message from ${from}:\n${text}`
+      let result = ''
+      const actions: string[] = []
+      const start = Date.now()
+
+      for await (const message of sdkQuery({
+        prompt,
+        options: {
+          cwd: options.memoryDir ? join(options.memoryDir, '..') : process.cwd(),
+          additionalDirectories: ['/Users'],
+          allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
+          maxBudgetUsd: 5,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          ...(sdkSessionId ? { resume: sdkSessionId } : {}),
+        },
+      })) {
+        if (!sdkSessionId && 'session_id' in message) {
+          sdkSessionId = message.session_id as string
+        }
+        if (message.type === 'assistant') {
+          const m = message as { message: { content: Array<{ type: string; name?: string }> } }
+          for (const block of m.message.content) {
+            if (block.type === 'tool_use' && block.name) actions.push(block.name)
+          }
+        }
+        if ('result' in message) {
+          result = (message as { result: string }).result
+        }
+      }
+
+      chatResult = {
+        response: result,
+        thought: '',
+        actions,
+        duration: Date.now() - start,
+        quality: 4,
+        meta: { mode: 'interaction', filesRead: [], filesWritten: [], toolsUsed: actions, hypotheses: 0, contextChars: 0 },
+      } as ChatResult
+    } else {
+      // Fallback: Tanren loop path
+      chatResult = await agent.chat(text, { from })
+    }
+
+    tickCount++
     if (options.onAfterChat) await options.onAfterChat(chatResult)
 
     return { ...chatResult, tick: tickCount } as ChatResult & { tick: number }

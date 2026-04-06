@@ -335,7 +335,8 @@ async function main(): Promise<void> {
     const port = interval ? parseInt(interval, 10) : (getFlag('port') ? parseInt(getFlag('port')!, 10) : 3000)
     const { serve } = await import('./serve.js')
     const name = config.identity?.toString().split('/').pop()?.replace('.md', '') ?? 'tanren-agent'
-    serve(agent, { port, serviceName: name, memoryDir: config.memoryDir })
+    const identityPath = typeof config.identity === 'string' ? resolve(config.identity) : undefined
+    serve(agent, { port, serviceName: name, memoryDir: config.memoryDir, identityPath })
 
   } else if (command === 'health') {
     const port = getFlag('port') ?? '3000'
