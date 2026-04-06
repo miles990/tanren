@@ -15,12 +15,14 @@ import type { LLMProvider } from '../types.js'
 export interface AgentSdkOptions {
   /** Model override (default: determined by Claude Code) */
   model?: string
-  /** Maximum agent turns (default: 10) */
-  maxTurns?: number
+  /** Budget in USD (default: 5) — replaces maxTurns */
+  maxBudgetUsd?: number
   /** Working directory for file operations */
   cwd?: string
-  /** Allowed tools (default: ['Read', 'Grep', 'Glob']) */
+  /** Allowed tools (default: all standard tools) */
   allowedTools?: string[]
+  /** Additional directories to access beyond cwd */
+  additionalDirectories?: string[]
 }
 
 export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
@@ -38,8 +40,9 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
         prompt,
         options: {
           cwd: opts?.cwd ?? process.cwd(),
-          allowedTools: opts?.allowedTools ?? ['Read', 'Grep', 'Glob', 'Bash'],
-          maxTurns: opts?.maxTurns ?? 10,
+          additionalDirectories: opts?.additionalDirectories ?? ['/Users'],
+          allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
+          maxBudgetUsd: opts?.maxBudgetUsd ?? 5,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           ...(opts?.model ? { model: opts.model } : {}),
