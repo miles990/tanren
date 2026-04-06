@@ -157,6 +157,20 @@ async function main(): Promise<void> {
       useAgentSdk = true
     } catch { /* Agent SDK not installed — fallback */ }
 
+    // Escape/Ctrl+C cancels active query, returns to prompt. Session preserved via resume.
+    let activeAbort: AbortController | null = null
+    process.on('SIGINT', () => {
+      if (activeAbort) {
+        activeAbort.abort()
+        activeAbort = null
+        process.stdout.write('\x1b[0m\n\x1b[33m[cancelled]\x1b[0m\n\n')
+      } else {
+        rl.close()
+        console.log('\n[tanren] Bye')
+        process.exit(0)
+      }
+    })
+
     const prompt = (): void => {
       rl.question('\x1b[36mYou>\x1b[0m ', async (input) => {
         const trimmed = input.trim()
@@ -169,6 +183,7 @@ async function main(): Promise<void> {
           // with real-time text deltas, tool_use starts, and thinking content.
           // Like Claude Code's own TUI — see every character as it's generated.
           try {
+            activeAbort = new AbortController()
             process.stdout.write('\x1b[2m⏳ thinking...\x1b[0m')
             let result = ''
             let toolCount = 0
@@ -194,6 +209,7 @@ async function main(): Promise<void> {
               prompt: trimmed,
               options: {
                 cwd: process.cwd(),
+                abortController: activeAbort!,
                 allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
                 maxBudgetUsd: 5,
                 permissionMode: 'bypassPermissions',
@@ -280,8 +296,14 @@ async function main(): Promise<void> {
             console.log(`\x1b[32mAgent>\x1b[0m (${elapsed}s, ${toolCount} tools)`)
           } catch (err: unknown) {
             process.stdout.write('\x1b[0m\n')
-            const msg = err instanceof Error ? err.message : String(err)
-            console.error(`\x1b[31m[error]\x1b[0m ${msg}`)
+            // Abort is not an error — user cancelled intentionally
+            if (activeAbort?.signal.aborted) { /* already printed [cancelled] in SIGINT handler */ }
+            else {
+              const msg = err instanceof Error ? err.message : String(err)
+              console.error(`\x1b[31m[error]\x1b[0m ${msg}`)
+            }
+          } finally {
+            activeAbort = null
           }
         } else {
           // Non-streaming fallback
@@ -307,9 +329,6 @@ async function main(): Promise<void> {
       })
     }
     prompt()
-
-    const shutdown = () => { rl.close(); console.log('\n[tanren] Bye'); process.exit(0) }
-    process.on('SIGINT', shutdown)
   } else if (command === 'serve') {
     const port = interval ? parseInt(interval, 10) : (getFlag('port') ? parseInt(getFlag('port')!, 10) : 3000)
     const { serve } = await import('./serve.js')
