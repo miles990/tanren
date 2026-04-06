@@ -209,8 +209,10 @@ async function main(): Promise<void> {
               prompt: trimmed,
               options: {
                 cwd: process.cwd(),
+                // Full workspace access — like Claude Code, no sandbox per directory
+                additionalDirectories: ['/Users'],
                 abortController: activeAbort!,
-                allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+                allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
                 maxBudgetUsd: 5,
                 permissionMode: 'bypassPermissions',
                 allowDangerouslySkipPermissions: true,
