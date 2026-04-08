@@ -425,5 +425,21 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
 
-  return server
+  return {
+    server,
+    /** Is a tick/chat currently in progress? */
+    isTicking: () => ticking,
+    /**
+     * Run a function with exclusive access to the ticking mutex.
+     * Returns null if already ticking (non-blocking). Use this for
+     * autonomous loops that share the mutex with /chat endpoints.
+     */
+    async runExclusive<T>(fn: () => Promise<T>): Promise<T | null> {
+      if (ticking) return null
+      ticking = true
+      try { return await fn() } finally { ticking = false }
+    },
+  }
 }
+
+export type ServeHandle = ReturnType<typeof serve>

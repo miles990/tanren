@@ -177,7 +177,7 @@ export { loadSkills, selectSkills, formatSkillsForPrompt, clearSkillCache, type 
 export { createHookSystem, builtinHooks, createAutoVerifyHook, type Hook, type HookPhase, type HookContext } from './hooks.js'
 export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorType } from './error-classification.js'
 export { writeHandoff, readPendingHandoffs, updateHandoffStatus, formatHandoffsForContext, type Handoff } from './handoff.js'
-export { serve, type ServeOptions } from './serve.js'
+export { serve, type ServeOptions, type ServeHandle } from './serve.js'
 export { createAgentSdkProvider, type AgentSdkOptions } from './llm/agent-sdk.js'
 export { safeJsonLoad, safeReadFile, safeJsonlLoad } from './safe-io.js'
 export { saveSession, loadSession, listSessions, forkSession, formatSessionsForContext, type SessionSnapshot } from './session.js'
