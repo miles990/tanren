@@ -103,6 +103,40 @@ export interface SearchResult {
 // === LLM ===
 
 export interface LLMProvider {
+  /**
+   * Generate a response from the LLM.
+   *
+   * **Semantic contract — MUST be honored by every provider:**
+   *
+   * - `context` → the **user message layer**. What the agent is seeing right
+   *   now: perception output, working memory digest, task description, incoming
+   *   messages. Goes to the `user` role / stdin / prompt body.
+   *
+   * - `systemPrompt` → the **identity layer**. Who the agent IS: its soul,
+   *   cognitive framework, behavioral constraints, hard limits. MUST be routed
+   *   to the backend's native system-prompt mechanism:
+   *     • Anthropic API:  `system` field on messages.create
+   *     • OpenAI API:     `role: 'system'` message
+   *     • Claude CLI:     `--system-prompt` (override) or `--append-system-prompt` (inherit)
+   *     • Agent SDK:      `options.systemPrompt` as plain string (override) or
+   *                       `{type:'preset', preset:'claude_code', append}` (inherit)
+   *     • Local models:   the model's equivalent system role
+   *
+   * **DO NOT concatenate `systemPrompt` into `context`.** That demotes the
+   * agent's identity to user input — the model's attention treats it as data
+   * instead of framing. This was the root cause of the "agent wearing Claude
+   * Code's skin" bug and led to identity-layer pollution across the
+   * harness-wrapping providers (claude-cli, agent-sdk) while the pure-API
+   * providers (anthropic, openai) happened to get it right.
+   *
+   * **Tanren's philosophy on identity (for harness-wrapping providers):** by
+   * default the agent's identity should OVERRIDE Claude Code's preset, not
+   * append to it. Tanren's mission is for its agents to surpass Claude Code,
+   * not wear its skin. Providers that wrap a Claude Code harness (claude-cli,
+   * agent-sdk) expose an `identityMode` option — default is `'override'`;
+   * `'inherit-claude-code'` is an explicit opt-in for agents that want to
+   * inherit Claude Code's persona and tool-use tuning.
+   */
   think(context: string, systemPrompt: string): Promise<string>
 }
 
@@ -262,4 +296,21 @@ export interface TanrenConfig {
     crystallization?: boolean   // default: true
     antiGoodhart?: boolean      // default: true
   }
+
+  /**
+   * Default objective injected into scheduled autonomous ticks when there is
+   * no pendingMessage. Without this, the model gets full perception + all
+   * tools but NO "what to do this tick" signal, and defaults to safe low-effort
+   * actions like `remember` (empirically observed: 10+ consecutive remember-only
+   * ticks in Akari's production run at 2026-04-08). Claude Code does not have
+   * this problem because every interaction has an explicit user objective.
+   *
+   * When set, scheduled ticks with no message use this string as a synthetic
+   * message, routing through the normal message path (mode classification,
+   * tool filter, cognitive guidance). When unset, the framework injects a
+   * reasonable default (see DEFAULT_AUTONOMOUS_OBJECTIVE in loop.ts).
+   *
+   * Override this to tailor the objective to your agent's specific domain.
+   */
+  autonomousObjective?: string
 }

@@ -8,6 +8,10 @@
 
 export type ContextMode = 'research' | 'interaction' | 'verification' | 'execution'
 
+/** Runtime enumeration of all ContextMode values — for protocol-level exposure (AEP §3.1 Unit.available_modes).
+ *  Type annotation forces this to stay in sync with the union: if ContextMode changes, this line type-errors. */
+export const CONTEXT_MODES: readonly ContextMode[] = ['research', 'interaction', 'verification', 'execution'] as const
+
 export interface ContextModeConfig {
   mode: ContextMode
   /** Which perception plugin categories to load. Empty = load all. */

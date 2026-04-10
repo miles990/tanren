@@ -9,7 +9,7 @@
  * state. If killed mid-cycle, the next start picks up where it left off.
  */
 
-import { writeFileSync, readFileSync, appendFileSync, existsSync, unlinkSync, mkdirSync, readdirSync } from 'node:fs'
+import { writeFileSync, readFileSync, appendFileSync, existsSync, unlinkSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   TanrenConfig,
@@ -77,6 +77,8 @@ export interface AgentLoop {
   tick(mode?: TickMode, triggerEvent?: TriggerEvent): Promise<TickResult>
   /** Inject a message for the next tick — perception will include it */
   injectMessage(from: string, text: string): void
+  /** Set/clear LLM streaming callback — streams text chunks during think phase */
+  setStreamCallback(fn: ((text: string) => void) | null): void
   /** Run a self-paced chain — agent decides when to stop */
   runChain(): Promise<TickResult[]>
   start(interval?: number): void
@@ -86,12 +88,106 @@ export interface AgentLoop {
   getCurrentMode(): string
 }
 
+/**
+ * Default objective injected into scheduled autonomous ticks that arrive
+ * without a pendingMessage. This is the framework's answer to the "agent
+ * without goal" failure mode: when there's no user/system caller, the model
+ * has full perception + all tools but no "what to do" signal, and defaults
+ * to safe low-effort actions (empirically: 10+ consecutive remember-only
+ * ticks observed in Akari production at 2026-04-08).
+ *
+ * Claude Code doesn't have this problem because every interaction has an
+ * explicit user objective. Tanren synthesizes the user role here for
+ * autonomous ticks so the same mode classification + tool filter + cognitive
+ * guidance machinery that makes /chat work also makes autonomous work.
+ *
+ * Agents can override via `config.autonomousObjective` to tailor the
+ * objective to their specific domain.
+ */
+export const DEFAULT_AUTONOMOUS_OBJECTIVE = `[autonomous-tick]
+This is a scheduled autonomous tick (no human caller). Your job is to make CONCRETE PROGRESS, not to remember or reflect on what you've seen.
+
+Action priority (do the FIRST one that applies — only ONE concrete action per tick):
+
+1. **memory/inbox/ has *.md files?** → Read the highest-priority one (P0 > P1 > P2). Process it to completion: do the RCA, write the decision, ship a brief to memory/outbox/ with a meaningful filename. Then move the inbox file to memory/inbox/processed/.
+
+2. **memory/outbox/ has a recent brief that needs cross-agent discussion?** → Use whatever cross-agent tools you have available (mcp__agent__agent_ask for sync quick questions, mcp__agent__agent_discuss for deeper discussion, or file-based messages/to-*.md). Don't write another brief on the same topic — have the discussion directly.
+
+3. **NEXT.md or an active topic in memory/topics/ has stale or in-progress work?** → Pick ONE item and advance it concretely: write code via shell action, edit a file, run a verification, draft a commit, anything that produces visible output.
+
+4. **Genuinely nothing pending?** → Check the state of your collaborators (via whatever tools you have). If a collaborator is stuck or has open issues you can help with, reach out.
+
+FORBIDDEN this tick (these mark the tick as FAILED):
+- ❌ Standalone remember action (only OK when attached to a concrete output from items 1-4)
+- ❌ Standalone reflect action (only OK AFTER producing a concrete output)
+- ❌ "I'll continue next tick" — do it THIS tick, that's why the autonomous loop exists
+- ❌ Reading perception or memory without then acting on it
+
+If your output for this tick is just remember/reflect with no inbox processed / outbox written / MCP call / file or code change, the tick has wasted the cycle. Pick ONE concrete action from the priority list and finish it.`
+
 export function createLoop(config: TanrenConfig): AgentLoop {
   const memory = createMemorySystem(config.memoryDir, config.searchPaths)
   const llm: LLMProvider = config.llm ?? createClaudeCliProvider()
   const perception = createPerception(config.perceptionPlugins ?? [])
   const gateSystem = createGateSystem(config.gates ?? [])
   const actionRegistry = createActionRegistry()
+
+  // Built-in: recent memory perception — tail of memory.md (constant size).
+  const memoryMdPath = join(config.memoryDir, 'memory.md')
+  if (existsSync(memoryMdPath) || existsSync(config.memoryDir)) {
+    perception.register({
+      name: 'recent-memory',
+      category: 'memory',
+      fn: () => {
+        if (!existsSync(memoryMdPath)) return ''
+        const raw = readFileSync(memoryMdPath, 'utf-8')
+        return raw.slice(-2000)
+      },
+    })
+  }
+
+  // Built-in: topic memory perception — loads recent topics, respects maxTopics from context mode.
+  // Replaces user-land topic plugins that loaded ALL topics regardless of mode.
+  // Pull-based: only loads what the mode needs, sorted by recency (mtime).
+  const topicsDir = join(config.memoryDir, 'topics')
+  if (existsSync(topicsDir)) {
+    perception.register({
+      name: 'topic-memories',
+      category: 'memory',
+      fn: () => {
+        const files = readdirSync(topicsDir).filter(f => f.endsWith('.md'))
+        if (files.length === 0) return ''
+
+        // Sort by modification time (most recent first)
+        const withMtime = files.map(f => {
+          try {
+            return { name: f, mtime: statSync(join(topicsDir, f)).mtimeMs }
+          } catch {
+            return { name: f, mtime: 0 }
+          }
+        }).sort((a, b) => b.mtime - a.mtime)
+
+        // Respect maxTopics from current context mode (ghost feature → real feature)
+        const mode = getCurrentContextMode()
+        const limit = mode?.maxTopics ?? 10  // default 10 if no mode detected yet
+        const selected = withMtime.slice(0, limit)
+
+        const sections = selected.map(({ name }) => {
+          try {
+            const content = readFileSync(join(topicsDir, name), 'utf-8')
+            return `--- ${name} ---\n${content.slice(-1000)}`
+          } catch {
+            return ''
+          }
+        }).filter(Boolean)
+
+        if (sections.length === 0) return ''
+        const skipped = files.length - selected.length
+        const suffix = skipped > 0 ? `\n\n(${skipped} older topics available via search)` : ''
+        return sections.join('\n\n') + suffix
+      },
+    })
+  }
 
   // In-process message queue for chat() — consumed once per tick
   let pendingMessage: { from: string; text: string } | null = null
@@ -339,6 +435,19 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     tickCount++
     resetFilesRead()  // convergence condition: each tick starts fresh file tracking
     lastResponse = ''  // reset per tick
+
+    // Autonomous objective injection: scheduled ticks without a pendingMessage
+    // get a synthetic "what to do this tick" objective so the model has a clear
+    // signal to act on. Without this, perception + full tool surface + zero
+    // goal → model defaults to safe remember/reflect actions and stalls.
+    // See DEFAULT_AUTONOMOUS_OBJECTIVE JSDoc for the failure mode this fixes.
+    // Agents can override via config.autonomousObjective. Reactive ticks keep
+    // their triggerEvent-based path untouched.
+    if (mode === 'scheduled' && pendingMessage === null) {
+      const objective = config.autonomousObjective ?? DEFAULT_AUTONOMOUS_OBJECTIVE
+      pendingMessage = { from: 'autonomous-loop', text: objective }
+    }
+
     hadMessageThisTick = pendingMessage !== null
     mpl.setRecentTicks(recentTicks)  // inject history for cognitive state perception
     mpl.preTick()  // snapshot state for diff
@@ -422,7 +531,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       console.error(`[tanren] BUDGET: warning — ${contextBudget.total} chars approaching limit (perception: ${contextBudget.perception})`)
     }
 
-    console.error(`[tanren] CONTEXT: ${contextBudget.total} chars — perception:${contextBudget.perception} identity:${contextBudget.identity} wm:${contextBudget.workingMemory} learning:${contextBudget.learning}`)
+    const prepTime = Date.now() - tickStart
+    console.error(`[tanren] CONTEXT: ${contextBudget.total} chars — perception:${contextBudget.perception} identity:${contextBudget.identity} wm:${contextBudget.workingMemory} learning:${contextBudget.learning} | prep:${prepTime}ms`)
 
     // 3. Think (LLM call) with cognitive mode detection
     writeLiveStatus({ phase: 'think', tickStart, tickNumber: tickCount, running, perceptionBytes: contextBudget.perception })
@@ -496,7 +606,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       const messages: ConversationMessage[] = [{ role: 'user', content: context }]
 
       try {
+        const llmStart = Date.now()
         const response = await llm.thinkWithTools(messages, toolSystemPrompt, toolDefs)
+        console.error(`[tanren] LLM: ${Date.now() - llmStart}ms (tool-use, ${contextBudget.total} chars context)`)
         const parsed = parseToolUseResponse(response, actionRegistry)
         thought = parsed.thought
         structuredActions = parsed.actions
@@ -509,7 +621,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     } else {
       // Text-based path (CLI provider) — LLM uses <action:type> tags
       try {
+        const llmStart = Date.now()
         thought = await llm.think(context, systemPrompt)
+        console.error(`[tanren] LLM: ${Date.now() - llmStart}ms (text, ${contextBudget.total} chars context)`)
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         thought = `[LLM error: ${msg}]`
@@ -1138,6 +1252,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     injectMessage(from: string, text: string) {
       pendingMessage = { from, text }
     },
+    setStreamCallback(fn: ((text: string) => void) | null) {
+      if ('onStreamText' in llm) {
+        (llm as { onStreamText?: ((text: string) => void) | undefined }).onStreamText = fn ?? undefined
+      }
+    },
     async runChain(): Promise<TickResult[]> {
       const results: TickResult[] = []
       continuation.startChain()
@@ -1395,7 +1514,7 @@ function extractMessageContent(perception: string): string {
   const patterns = [
     /<kuro-message>([\s\S]*?)<\/kuro-message>/i,
     /<inbox>([\s\S]*?)<\/inbox>/i,
-    /<message>([\s\S]*?)<\/message>/i,
+    /<message[^>]*>([\s\S]*?)<\/message>/i,
     /<from-[\w-]+>([\s\S]*?)<\/from-[\w-]+>/i,
   ]
 

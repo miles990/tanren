@@ -18,8 +18,9 @@ import type { TanrenConfig, TickResult, ChatResult } from './types.js'
 export interface TanrenAgent {
   /** Run one perceive→think→act cycle */
   tick(): Promise<TickResult>
-  /** Send a message and get a response — injects message, runs tick, extracts response */
-  chat(message: string, options?: { from?: string }): Promise<ChatResult>
+  /** Send a message and get a response — injects message, runs tick, extracts response.
+   *  Optional onStream callback receives text chunks during LLM think phase. */
+  chat(message: string, options?: { from?: string; onStream?: (text: string) => void }): Promise<ChatResult>
   /** Run a self-paced chain — agent decides when to stop */
   runChain(message?: string, options?: { from?: string }): Promise<TickResult[]>
   /** Start the autonomous loop */
@@ -58,10 +59,17 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
 
   return {
     tick: () => loop.tick(),
-    async chat(message: string, options?: { from?: string }): Promise<ChatResult> {
+    async chat(message: string, options?: { from?: string; onStream?: (text: string) => void }): Promise<ChatResult> {
       const from = options?.from ?? 'user'
       loop.injectMessage(from, message)
-      const result = await loop.tick()
+      // Wire streaming callback for this chat — cleared after tick completes
+      if (options?.onStream) loop.setStreamCallback(options.onStream)
+      let result: TickResult
+      try {
+        result = await loop.tick()
+      } finally {
+        if (options?.onStream) loop.setStreamCallback(null)
+      }
       // Extract response: prefer action:respond content, fallback to thought
       const respondAction = result.actions.find(a => a.type === 'respond')
       const response = respondAction?.content ?? ''

@@ -11,13 +11,13 @@
  */
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChatResult } from './types.js'
 import { CONTEXT_MODES } from './context-modes.js'
 
 export interface TanrenAgent {
-  chat(message: string, options?: { from?: string }): Promise<ChatResult>
+  chat(message: string, options?: { from?: string; onStream?: (text: string) => void }): Promise<ChatResult>
   isRunning(): boolean
 }
 
@@ -25,35 +25,21 @@ export interface ServeOptions {
   port?: number
   serviceName?: string
   memoryDir?: string
-  /** Identity file path (soul.md) — used as system prompt for SDK chat */
+  /** @deprecated No longer used — all chat goes through tick pipeline */
   identityPath?: string
   /** Called before each tick — agent-specific setup (e.g., clear inbox files) */
   onBeforeChat?: (from: string, text: string) => void | Promise<void>
   /** Called after each tick — agent-specific cleanup */
   onAfterChat?: (result: ChatResult) => void | Promise<void>
-  /** AEP §3.1 Unit declaration — exposed under /health.unit namespace when provided.
-   *  current_mode is derived from recentTicks[-1].mode at request time; the invariant
-   *  current_mode ∈ available_modes is maintained by construction when available_modes
-   *  matches the actual mode vocabulary driving recentTicks (e.g., CONTEXT_MODES). */
+  /** AEP §3.1 Unit declaration — exposed under /health.unit namespace when provided. */
   unit?: {
     unit_id: string
     available_modes: readonly string[]
   }
-  /**
-   * MCP servers to expose to the /chat Agent SDK subprocess. Format matches
-   * Claude Agent SDK's `options.mcpServers` field — an object mapping server
-   * name to McpStdioServerConfig / McpSSEServerConfig / McpHttpServerConfig.
-   * Use this to give the agent cross-agent communication tools (e.g. pointing
-   * at mini-agent's `mcp-agent.json` lets the agent call `agent_chat` /
-   * `agent_ask` / `agent_discuss` to talk to Kuro).
-   */
+  /** @deprecated No longer used — all chat goes through tick pipeline */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mcpServers?: Record<string, any>
-  /**
-   * Additional allowed tool names beyond the default set. Useful for adding
-   * MCP tool permissions like `mcp__agent__agent_chat` alongside the default
-   * Read/Write/Edit/Bash/Grep/Glob/Agent tools.
-   */
+  /** @deprecated No longer used — all chat goes through tick pipeline */
   additionalAllowedTools?: string[]
 }
 
@@ -94,86 +80,14 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     errorCount++
   })
 
-  // Try to load Agent SDK for direct chat (same path as tanren chat CLI)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let sdkQuery: any = null
-  let sdkSessionId: string | undefined
-  let identity = ''
-  void (async () => {
-    try {
-      const sdk = await import('@anthropic-ai/claude-agent-sdk')
-      sdkQuery = sdk.query
-      if (options.identityPath && existsSync(options.identityPath)) {
-        identity = readFileSync(options.identityPath, 'utf-8')
-      }
-      console.log(`[${serviceName}] Agent SDK available — /chat uses direct SDK query`)
-    } catch {
-      console.log(`[${serviceName}] Agent SDK not available — /chat uses Tanren loop`)
-    }
-  })()
-
-  function buildSdkOptions() {
-    const baseAllowedTools = ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent']
-    const allowedTools = options.additionalAllowedTools
-      ? [...baseAllowedTools, ...options.additionalAllowedTools]
-      : baseAllowedTools
-    return {
-      cwd: options.memoryDir ? join(options.memoryDir, '..') : process.cwd(),
-      additionalDirectories: ['/Users'],
-      allowedTools,
-      maxBudgetUsd: 30,
-      permissionMode: 'bypassPermissions' as const,
-      allowDangerouslySkipPermissions: true,
-      ...(sdkSessionId ? { resume: sdkSessionId } : {}),
-      ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
-    }
-  }
-
-  function buildPrompt(from: string, text: string): string {
-    return identity
-      ? `${identity}\n\n---\nMessage from ${from}:\n${text}`
-      : `Message from ${from}:\n${text}`
-  }
+  // All paths (/chat, /chat/stream, autonomous) go through agent.chat() → tick pipeline.
+  // Streaming is handled via onStream callback, not a separate SDK path.
 
   async function handleChat(from: string, text: string): Promise<ChatResult & { tick: number }> {
     if (options.onBeforeChat) await options.onBeforeChat(from, text)
 
-    let chatResult: ChatResult
-
-    if (sdkQuery) {
-      // Direct SDK path — same as tanren chat CLI
-      const prompt = buildPrompt(from, text)
-      let result = ''
-      const actions: string[] = []
-      const start = Date.now()
-
-      for await (const message of sdkQuery({ prompt, options: buildSdkOptions() })) {
-        if (!sdkSessionId && 'session_id' in message) {
-          sdkSessionId = message.session_id as string
-        }
-        if (message.type === 'assistant') {
-          const m = message as { message: { content: Array<{ type: string; name?: string }> } }
-          for (const block of m.message.content) {
-            if (block.type === 'tool_use' && block.name) actions.push(block.name)
-          }
-        }
-        if ('result' in message) {
-          result = (message as { result: string }).result
-        }
-      }
-
-      chatResult = {
-        response: result,
-        thought: '',
-        actions,
-        duration: Date.now() - start,
-        quality: 4,
-        meta: { mode: 'interaction', filesRead: [], filesWritten: [], toolsUsed: actions, hypotheses: 0, contextChars: 0 },
-      } as ChatResult
-    } else {
-      // Fallback: Tanren loop path
-      chatResult = await agent.chat(text, { from })
-    }
+    // Always use tick pipeline — consistent perception, context modes, gates, learning.
+    const chatResult = await agent.chat(text, { from })
 
     tickCount++
     if (options.onAfterChat) await options.onAfterChat(chatResult)
@@ -182,9 +96,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   }
 
   /**
-   * Streaming chat via SSE — sends events as the SDK processes.
-   * Events: action (tool use), text (partial response), result (final), done (stream end).
-   * Fallback: if SDK unavailable, sends single result event from Tanren loop.
+   * Streaming chat via SSE — same tick pipeline as /chat, with real-time text chunks.
+   * Events: text (LLM streaming chunk), result (final response), done (stream end).
    */
   async function handleChatStream(from: string, text: string, res: ServerResponse): Promise<void> {
     res.writeHead(200, {
@@ -202,62 +115,22 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
     const start = Date.now()
 
-    if (sdkQuery) {
-      const prompt = buildPrompt(from, text)
-      let result = ''
-      const actions: string[] = []
+    try {
+      // Same pipeline as /chat — only difference is the onStream callback for SSE
+      const chatResult = await agent.chat(text, {
+        from,
+        onStream: (chunk) => sse('text', { text: chunk }),
+      })
 
-      try {
-        for await (const message of sdkQuery({ prompt, options: buildSdkOptions() })) {
-          if (!sdkSessionId && 'session_id' in message) {
-            sdkSessionId = message.session_id as string
-          }
-          if (message.type === 'assistant') {
-            const m = message as { message: { content: Array<{ type: string; name?: string; text?: string }> } }
-            for (const block of m.message.content) {
-              if (block.type === 'tool_use' && block.name) {
-                actions.push(block.name)
-                sse('action', { tool: block.name })
-              }
-              if (block.type === 'text' && block.text) {
-                sse('text', { text: block.text })
-              }
-            }
-          }
-          if ('result' in message) {
-            result = (message as { result: string }).result
-            sse('result', { response: result })
-          }
-        }
-
-        const duration = Date.now() - start
-        tickCount++
-        const chatResult: ChatResult = {
-          response: result, thought: '', actions, duration, quality: 4,
-          meta: { mode: 'interaction', filesRead: [], filesWritten: [], toolsUsed: actions, hypotheses: 0, contextChars: 0 },
-        }
-        if (options.onAfterChat) await options.onAfterChat(chatResult)
-        recordTick(tickCount, duration, actions, 'interaction')
-        sse('done', { tick: tickCount, duration, actions })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        recordTick(tickCount, Date.now() - start, actions, 'error', msg)
-        sse('error', { error: msg })
-      }
-    } else {
-      // Fallback: Tanren loop — not streamable, send single result
-      try {
-        const chatResult = await agent.chat(text, { from })
-        tickCount++
-        if (options.onAfterChat) await options.onAfterChat(chatResult)
-        recordTick(tickCount, Date.now() - start, chatResult.actions ?? [], chatResult.meta?.mode ?? 'unknown')
-        sse('result', { response: chatResult.response })
-        sse('done', { tick: tickCount, duration: Date.now() - start, actions: chatResult.actions })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        recordTick(tickCount, Date.now() - start, [], 'error', msg)
-        sse('error', { error: msg })
-      }
+      tickCount++
+      if (options.onAfterChat) await options.onAfterChat(chatResult)
+      recordTick(tickCount, Date.now() - start, chatResult.actions ?? [], chatResult.meta?.mode ?? 'unknown')
+      sse('result', { response: chatResult.response })
+      sse('done', { tick: tickCount, duration: Date.now() - start, actions: chatResult.actions })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      recordTick(tickCount, Date.now() - start, [], 'error', msg)
+      sse('error', { error: msg })
     }
 
     res.end()

@@ -213,7 +213,7 @@ async function main(): Promise<void> {
                 additionalDirectories: ['/Users'],
                 abortController: activeAbort!,
                 allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
-                maxBudgetUsd: 5,
+                maxBudgetUsd: 30,
                 permissionMode: 'bypassPermissions',
                 allowDangerouslySkipPermissions: true,
                 includePartialMessages: true,

@@ -13,12 +13,28 @@ export interface ClaudeCliOptions {
   model?: string
   timeoutMs?: number       // default: 1_500_000 (25 min)
   cwd?: string             // working directory for claude process
+  /**
+   * How the agent's `systemPrompt` (soul) maps onto Claude CLI's flags.
+   *
+   * - `'override'` (default): use `--system-prompt` to fully replace Claude Code's
+   *   default persona. The agent's soul IS the system prompt. Use this when your
+   *   agent has its own identity (research, creative, perception-driven, etc.).
+   *   Recommended for most tanren agents — aligns with tanren's mission that
+   *   agents should surpass Claude Code, not wear its skin.
+   *
+   * - `'inherit-claude-code'`: use `--append-system-prompt` to preserve Claude
+   *   Code's persona and tool-use tuning, with the agent's soul appended. Use
+   *   this only when your agent explicitly wants to inherit Claude Code's
+   *   "interactive CLI tool for software engineering" framing.
+   */
+  identityMode?: 'override' | 'inherit-claude-code'
 }
 
 export function createClaudeCliProvider(opts?: ClaudeCliOptions): LLMProvider {
   // CLI provider is text-only (no native tool_use without MCP server).
   // Loop's text-based feedback path handles action parsing from <action:type> tags.
   const timeoutMs = opts?.timeoutMs ?? 1_500_000
+  const identityMode = opts?.identityMode ?? 'override'
 
   // Shared subprocess runner
   function runClaude(prompt: string, args: string[]): Promise<string> {
@@ -73,10 +89,18 @@ export function createClaudeCliProvider(opts?: ClaudeCliOptions): LLMProvider {
   return {
     // Legacy text-only interface
     async think(context: string, systemPrompt: string): Promise<string> {
-      const prompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${context}` : context
+      // Identity layer → --system-prompt (override) or --append-system-prompt (inherit).
+      // NEVER concatenated into the prompt/stdin body — that would demote identity
+      // to user input. See LLMProvider JSDoc in types.ts for the semantic contract.
       const args = ['-p', '--output-format', 'text']
+      if (systemPrompt) {
+        const flag = identityMode === 'inherit-claude-code'
+          ? '--append-system-prompt'
+          : '--system-prompt'
+        args.push(flag, systemPrompt)
+      }
       if (opts?.model) args.push('--model', opts.model)
-      return runClaude(prompt, args)
+      return runClaude(context, args)
     },
 
     // CLI is text-only — loop.ts handles action parsing via text-based feedback path.
