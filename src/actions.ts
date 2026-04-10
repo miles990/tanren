@@ -371,6 +371,63 @@ export const builtinActions: ActionHandler[] = [
     },
   },
   {
+    type: 'http_request',
+    description: 'Make an HTTP request (GET/POST/PUT/DELETE) with optional JSON body. Use for API calls that need POST or structured data — avoids shell escaping issues with curl.',
+    toolSchema: {
+      properties: {
+        url: { type: 'string', description: 'URL to request' },
+        method: { type: 'string', description: 'HTTP method: GET, POST, PUT, DELETE (default: GET)' },
+        body: { type: 'string', description: 'JSON body string (for POST/PUT)' },
+        headers: { type: 'string', description: 'JSON object of extra headers' },
+      },
+      required: ['url'],
+    },
+    async execute(action) {
+      const url = (action.input?.url as string) ?? ''
+      const method = ((action.input?.method as string) ?? 'GET').toUpperCase()
+      const bodyRaw = (action.input?.body as string) ?? action.content?.trim() ?? ''
+      const headersRaw = (action.input?.headers as string) ?? ''
+
+      if (!url) return '[http_request error: url is required]'
+
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 30_000)
+
+        const reqHeaders: Record<string, string> = { 'User-Agent': 'Tanren/1.0' }
+        if (headersRaw) {
+          try { Object.assign(reqHeaders, JSON.parse(headersRaw)) } catch { /* ignore bad headers */ }
+        }
+
+        const fetchOpts: RequestInit = {
+          method,
+          signal: controller.signal,
+          headers: reqHeaders,
+        }
+
+        if (bodyRaw && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+          reqHeaders['Content-Type'] = 'application/json'
+          fetchOpts.body = bodyRaw
+        }
+
+        const response = await fetch(url, fetchOpts)
+        clearTimeout(timer)
+
+        const text = await response.text()
+        const status = `HTTP ${response.status} ${response.statusText}`
+
+        if (!response.ok) {
+          return `[${status}] ${text.slice(0, 4000)}`
+        }
+
+        return `[${status}]\n${text.slice(0, 8000)}`
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[http_request error: ${msg.slice(0, 500)}]`
+      }
+    },
+  },
+  {
     type: 'web_fetch',
     description: 'Fetch a URL and return its text content. Useful for reading web pages, APIs, or documentation.',
     toolSchema: {
