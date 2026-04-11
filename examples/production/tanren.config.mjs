@@ -25,7 +25,7 @@ if (existsSync(envPath)) {
 
 // LLM Provider — auto-detect from environment
 const { createAnthropicProvider, createClaudeCliProvider, createOpenAIProvider, createFallbackProvider,
-        createOutputGate, createAnalysisWithoutActionGate, createProductivityGate, createSymptomFixGate,
+        defaultGates,
         createAutoVerifyHook,
 } = await import('../../dist/index.js')
 
@@ -52,12 +52,7 @@ export default {
   skillsDir: './skills',
   llm,
 
-  gates: [
-    createOutputGate(3),
-    createAnalysisWithoutActionGate(2),
-    createProductivityGate(3),
-    createSymptomFixGate(5),
-  ],
+  gates: defaultGates(),
 
   hooks: [
     // Auto-verify TypeScript after edits
