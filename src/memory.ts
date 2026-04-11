@@ -273,9 +273,53 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
     async autoCommit(): Promise<boolean> {
       return autoCommitMemory()
     },
+
+    async rotate(maxBytes: number = 100_000): Promise<boolean> {
+      return rotateMemoryFile(memoryDir, maxBytes)
+    },
   }
 
   return self
+}
+
+// === Memory Rotation ===
+// Prevents unbounded growth of memory.md. When the file exceeds maxBytes,
+// older entries are archived to daily/<date>.md and memory.md keeps only
+// the most recent portion. grep search covers daily/ too, so nothing is lost.
+
+const DEFAULT_ROTATE_MAX = 100_000  // ~100KB
+
+async function rotateMemoryFile(memoryDir: string, maxBytes: number = DEFAULT_ROTATE_MAX): Promise<boolean> {
+  const memPath = join(memoryDir, 'memory.md')
+  try {
+    const s = await stat(memPath)
+    if (s.size <= maxBytes) return false
+
+    const content = await readFile(memPath, 'utf-8')
+    const lines = content.split('\n')
+
+    // Keep the most recent ~40% of lines, archive the rest
+    const keepCount = Math.max(Math.floor(lines.length * 0.4), 50)
+    const archiveLines = lines.slice(0, lines.length - keepCount)
+    const keepLines = lines.slice(lines.length - keepCount)
+
+    // Archive to daily/<date>.md
+    const date = new Date().toISOString().slice(0, 10)
+    const dailyDir = join(memoryDir, 'daily')
+    ensureDir(dailyDir)
+    const archivePath = join(dailyDir, `${date}-rotated.md`)
+
+    // Append to existing archive if rotating multiple times on same day
+    await appendFile(archivePath, archiveLines.join('\n') + '\n')
+
+    // Rewrite memory.md with kept lines + rotation notice
+    const notice = `- [${date}] [rotation] Older entries archived to daily/${date}-rotated.md (${archiveLines.length} lines)\n`
+    await writeFile(memPath, notice + keepLines.join('\n'), 'utf-8')
+
+    return true
+  } catch {
+    return false
+  }
 }
 
 // === Internal Helpers ===

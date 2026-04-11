@@ -14,12 +14,8 @@ import { createServer as createHttpServer, type IncomingMessage, type ServerResp
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChatResult } from './types.js'
+import type { TanrenAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
-
-export interface TanrenAgent {
-  chat(message: string, options?: { from?: string; onStream?: (text: string) => void }): Promise<ChatResult>
-  isRunning(): boolean
-}
 
 export interface ServeOptions {
   port?: number

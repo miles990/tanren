@@ -919,10 +919,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
     // Auto-commit memory changes
     await memory.autoCommit().catch((err: unknown) => {
-      // Don't swallow silently — record as health data so agent can see it
       const msg = err instanceof Error ? err.message : String(err)
       actionHealth.record('memory-commit', false, tickCount, msg)
     })
+
+    // Rotate memory.md if it exceeds size threshold (prevents unbounded growth)
+    await memory.rotate().catch(() => { /* best effort */ })
 
     // Clear gate results for next tick
     gateSystem.clearResults()

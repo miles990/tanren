@@ -92,6 +92,9 @@ export interface MemorySystem extends MemoryReader {
   remember(content: string, opts?: { topic?: string; tickCount?: number }): Promise<void>
   recall(query: string): Promise<string[]>
   autoCommit(): Promise<boolean>
+  /** Rotate memory.md when it exceeds maxBytes — moves old entries to daily/ archive.
+   *  Called automatically at tick end. Returns true if rotation occurred. */
+  rotate(maxBytes?: number): Promise<boolean>
 }
 
 export interface SearchResult {

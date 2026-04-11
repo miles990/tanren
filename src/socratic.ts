@@ -147,13 +147,14 @@ export function groundQuestion(text: string, memoryDir: string): string {
   // convergence conditions, add experience grounding + opposing viewpoint.
   const ctReframe = reframeToCT(text)
 
+  // Framework provides data, not instructions. The agent's identity (soul.md)
+  // determines how to use this context. No language-specific prompts here.
   return `${text}
 
 ---
-[Context from your memory]
+<grounding>
 ${context}
-${ctReframe ? `\n[CT Reframe]\n${ctReframe}\n` : ''}
-Reframe this as personal experience: list 3 specific moments from your ticks where you encountered this topic. For each moment, describe what happened, what you noticed, and what you learned. Use your actual tick history and memories as evidence.`
+${ctReframe ? `${ctReframe}\n` : ''}</grounding>`
 }
 
 /**
@@ -166,25 +167,20 @@ Reframe this as personal experience: list 3 specific moments from your ticks whe
  * 3. Add opposing viewpoint: "什麼情況下這個假設會錯？"
  */
 function reframeToCT(text: string): string {
-  const reframes: string[] = []
+  const signals: string[] = []
 
-  // Rule 1: 如何/how → 什麼樣的/what kind of
-  const howMatch = text.match(/如何(.{2,20}?)(?:[？?。]|$)/)?.[1]
-    ?? text.match(/how (?:to |should I |can I )(.{5,40}?)(?:[?.!]|$)/i)?.[1]
-  if (howMatch) {
-    reframes.push(`Convergence reframe: instead of "how to ${howMatch}", ask "what would a good solution look like?"`)
+  // Signal prescription-style framing (how-to / should / need-to)
+  if (/如何|how (?:to|should|can)/i.test(text)) {
+    signals.push('prescription-detected: question asks HOW (prescription) rather than WHAT GOOD LOOKS LIKE (convergence)')
+  }
+  if (/需要|應該|should|need to|must/i.test(text)) {
+    signals.push('prescription-detected: question prescribes a solution rather than describing desired properties')
   }
 
-  // Rule 2: 需要/應該/need/should → ideal properties
-  const needMatch = text.match(/(?:需要|應該|should|need to|must)(.{2,30}?)(?:[？?。]|$)/)?.[1]
-  if (needMatch) {
-    reframes.push(`Convergence reframe: instead of prescribing "${needMatch}", describe the ideal outcome properties.`)
-  }
-
-  // Rule 3: Always add opposing viewpoint for analytical questions
+  // Signal analytical questions that benefit from opposing viewpoint
   if (/分析|analyze|缺陷|問題|issue|problem|evaluate/i.test(text)) {
-    reframes.push(`Opposing viewpoint: what if the current approach is actually correct? What would need to be true?`)
+    signals.push('analytical-question: consider opposing viewpoint')
   }
 
-  return reframes.join('\n')
+  return signals.join('\n')
 }
