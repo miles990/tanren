@@ -74,9 +74,9 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
         : {}
 
       let result = ''
+      const maxTurns = opts?.maxTurns ?? 20
 
       // Wall-clock timeout: hard stop regardless of what Agent SDK is doing.
-      // maxTurns controls scope (how much work), timeout prevents stuck ticks.
       const abortController = new AbortController()
       const timer = setTimeout(() => {
         console.error(`[agent-sdk] TIMEOUT: ${timeoutMs}ms exceeded — aborting query`)
@@ -84,13 +84,16 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
       }, timeoutMs)
 
       try {
+        let turns = 0
+        const start = Date.now()
+
         for await (const message of query({
           prompt: context,
           options: {
             cwd: opts?.cwd ?? process.cwd(),
             additionalDirectories: opts?.additionalDirectories ?? ['/Users'],
             allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
-            maxTurns: opts?.maxTurns ?? 20,
+            maxTurns,
             maxBudgetUsd: opts?.maxBudgetUsd ?? 5,
             permissionMode: 'bypassPermissions',
             allowDangerouslySkipPermissions: true,
@@ -102,8 +105,19 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
         })) {
           if ('result' in message) {
             result = message.result
+          } else {
+            // Observe black box: count turns, log progress
+            turns++
+            const elapsed = Math.round((Date.now() - start) / 1000)
+            const msgType = typeof message === 'object' && message !== null
+              ? ('type' in message ? (message as Record<string, unknown>).type : Object.keys(message)[0])
+              : 'unknown'
+            console.error(`[agent-sdk] turn ${turns}/${maxTurns} (${elapsed}s) — ${msgType}`)
           }
         }
+
+        const totalMs = Date.now() - start
+        console.error(`[agent-sdk] completed: ${turns} turns in ${Math.round(totalMs / 1000)}s`)
       } finally {
         clearTimeout(timer)
       }
