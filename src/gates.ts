@@ -27,7 +27,7 @@ export interface GateSystem {
   runAll(context: GateContext): GateResult[]
   createGate(spec: GateSpec): Gate
   installGate(gate: Gate, gatesDir: string): void
-  loadGatesFromDir(dir: string): void
+  loadGatesFromDir(dir: string): Promise<void>
   getWarnings(): string[]
   getBlocks(): string[]
   getGateNames(): string[]
@@ -89,12 +89,20 @@ export function createGateSystem(initialGates: Gate[] = []): GateSystem {
       this.register(gate)
     },
 
-    loadGatesFromDir(dir) {
+    async loadGatesFromDir(dir) {
       if (!existsSync(dir)) return
-      const files = readdirSync(dir).filter((f: string) => f.endsWith('.js'))
-      // Dynamic gate loading from .js files
-      // Each file should export a default Gate object
-      // For now, this is a placeholder — dynamic import needs async
+      const files = readdirSync(dir).filter((f: string) => f.endsWith('.js') || f.endsWith('.mjs'))
+      for (const file of files) {
+        try {
+          const mod = await import(join(dir, file))
+          const gate = mod.default ?? mod.gate ?? mod
+          if (gate && typeof gate.name === 'string' && typeof gate.check === 'function') {
+            this.register(gate)
+          }
+        } catch (err) {
+          console.error(`[gates] Failed to load ${file}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
     },
 
     getWarnings() {
@@ -131,6 +139,21 @@ export function defineGate(spec: GateSpec): Gate {
     description: spec.description,
     check: spec.check,
   }
+}
+
+// === Default Gates ===
+// All recommended gates with sensible defaults. Use this in config for full protection.
+
+export function defaultGates(): Gate[] {
+  return [
+    createOutputGate(3),
+    createAnalysisWithoutActionGate(2),
+    createProductivityGate(3),
+    createSymptomFixGate(5),
+    createGroundBeforeOpineGate(),
+    createWriteThroughGate(3),
+    createCommitmentGate(),
+  ]
 }
 
 // === Built-in Gate: Output Gate ===
@@ -252,6 +275,108 @@ export function createSymptomFixGate(threshold: number = 5): Gate {
         }
       }
       return { action: 'pass' }
+    },
+  }
+}
+
+// === Agent Integrity Gate: Ground Before Opine ===
+// If agent responds about a URL/resource without having read/fetched it first,
+// warn. Prevents hallucinated opinions on unread sources.
+// Crystallized from repeated agent failure: opining on projects/articles without reading them.
+
+export function createGroundBeforeOpineGate(): Gate {
+  return {
+    name: 'ground-before-opine',
+    description: 'Warn when agent responds about external resources without reading them first',
+    check(ctx) {
+      const actions = ctx.tick.actions
+      const respondActions = actions.filter(a => a.type === 'respond')
+      if (respondActions.length === 0) return { action: 'pass' }
+
+      // Check if response references URLs or external resources
+      const responseText = respondActions.map(a => a.content).join(' ')
+      const mentionsUrl = /https?:\/\/|\.com|\.io|\.org|\.dev|github|npm|pypi/i.test(responseText)
+      if (!mentionsUrl) return { action: 'pass' }
+
+      // Check if agent read/fetched anything this tick
+      const READ_ACTIONS = new Set(['read', 'web_fetch', 'search', 'explore', 'shell'])
+      const hasGrounding = actions.some(a => READ_ACTIONS.has(a.type))
+      if (hasGrounding) return { action: 'pass' }
+
+      return {
+        action: 'warn',
+        message: `Response references external resources but no read/fetch/search action was taken this tick. Ground your claims in actual source material — don't opine on what you haven't read.`,
+      }
+    },
+  }
+}
+
+// === Agent Integrity Gate: Write-Through ===
+// If agent claims completion but has no write/edit/shell in recent ticks,
+// warn. Prevents "done" without persistent state change.
+// Crystallized from repeated agent failure: claiming tasks complete without verification.
+
+export function createWriteThroughGate(lookback: number = 3): Gate {
+  const COMPLETION_WORDS = /done|fixed|completed|finished|已完成|完成|修好|搞定|解決/i
+  const PERSISTENT_ACTIONS = new Set(['write', 'edit', 'shell', 'git'])
+
+  return {
+    name: 'write-through',
+    description: 'Warn when agent claims completion without persistent state change',
+    check(ctx) {
+      const respondActions = ctx.tick.actions.filter(a => a.type === 'respond')
+      if (respondActions.length === 0) return { action: 'pass' }
+
+      const responseText = respondActions.map(a => a.content).join(' ')
+      if (!COMPLETION_WORDS.test(responseText)) return { action: 'pass' }
+
+      // Check recent ticks (including current) for persistent actions
+      const recentWindow = [...ctx.recentTicks.slice(-lookback), ctx.tick]
+      const hasPersistentAction = recentWindow.some(tick =>
+        tick.actions.some(a => PERSISTENT_ACTIONS.has(a.type)),
+      )
+
+      if (hasPersistentAction) return { action: 'pass' }
+
+      return {
+        action: 'warn',
+        message: `Claiming completion ("${responseText.slice(0, 60)}...") but no write/edit/shell action in the last ${lookback} ticks. An action that doesn't change persistent state is noise — verify the state actually changed.`,
+      }
+    },
+  }
+}
+
+// === Agent Integrity Gate: Commitment ===
+// If agent promises future action ("let me", "I'll", "讓我") but doesn't
+// act on it within the same tick, warn. Prevents unfulfilled promises.
+// Crystallized from repeated agent failure: ACK-only replies without follow-through.
+
+export function createCommitmentGate(): Gate {
+  const COMMITMENT_WORDS = /let me|i'll|i will|going to|讓我|我來|我去|馬上|等下|稍後|先去/i
+
+  return {
+    name: 'commitment',
+    description: 'Warn when agent promises action but does not follow through in the same tick',
+    check(ctx) {
+      const respondActions = ctx.tick.actions.filter(a => a.type === 'respond')
+      if (respondActions.length === 0) return { action: 'pass' }
+
+      const responseText = respondActions.map(a => a.content).join(' ')
+      if (!COMMITMENT_WORDS.test(responseText)) return { action: 'pass' }
+
+      // Short responses with commitment words + no substantive action = unfulfilled promise
+      const SUBSTANTIVE_ACTIONS = new Set(['write', 'edit', 'shell', 'web_fetch', 'read', 'search', 'explore'])
+      const hasSubstantiveAction = ctx.tick.actions.some(a => SUBSTANTIVE_ACTIONS.has(a.type))
+
+      if (hasSubstantiveAction) return { action: 'pass' }
+
+      // Only warn on short responses (likely ACK-only, not detailed explanation with future plans)
+      if (responseText.length > 200) return { action: 'pass' }
+
+      return {
+        action: 'warn',
+        message: `Response contains commitment ("${responseText.slice(0, 60)}...") but no substantive action was taken. Promises without follow-through are write-through failures — either act now or explicitly track the pending task.`,
+      }
     },
   }
 }

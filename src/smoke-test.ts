@@ -108,7 +108,7 @@ async function testActions() {
   const memory = createMemorySystem(dir)
   const result = await registry.execute(
     { type: 'remember', content: 'smoke test', raw: '' },
-    { memory, workDir: dir },
+    { memory, workDir: dir, filesRead: new Set<string>() },
   )
   assert(result === 'Remembered.', 'remember action executes')
 

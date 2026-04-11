@@ -206,6 +206,9 @@ export interface ActionContext {
   workDir: string
   tickCount?: number  // current tick number for temporal tagging
   workingMemory?: import('./working-memory.js').WorkingMemorySystem
+  /** Tracks files read this tick — used by edit action to enforce read-before-edit.
+   *  Created fresh each tick. Per-instance (not module-level) for multi-agent safety. */
+  filesRead: Set<string>
 }
 
 // === Event-Driven System ===

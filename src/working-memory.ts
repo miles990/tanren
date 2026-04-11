@@ -19,6 +19,7 @@ export interface WorkingMemoryState {
     anchor?: boolean   // anchored insights decay at 0.95 instead of 0.85
     reasoning?: string // WHY this insight was reached — preserves causal chain across ticks
     evidence?: string  // key evidence that supports this insight
+    createdAt?: number  // timestamp ms — used for time-based decay. Missing = legacy (use tick-based fallback)
   }>
   activeThreads: Array<{
     id: string
@@ -62,9 +63,9 @@ const EMPTY_STATE: WorkingMemoryState = {
   lastUpdated: 0,
 }
 
-// Decay constants — anchored insights decay slower (Akari's design: research chains survive)
-const INSIGHT_DECAY_RATE = 0.85      // normal insights
-const ANCHOR_DECAY_RATE = 0.95       // anchored insights — survive ~3x longer
+// Time-based half-life: relevance halves every N minutes
+const NORMAL_HALF_LIFE_MS = 15 * 60 * 1000   // 15 minutes for normal insights
+const ANCHOR_HALF_LIFE_MS = 60 * 60 * 1000   // 60 minutes for anchored insights
 const INSIGHT_MIN_RELEVANCE = 0.2    // remove below this
 const MAX_INSIGHTS = 15              // cap total insights
 const THREAD_DORMANT_TICKS = 5       // archive after N ticks inactive
@@ -87,13 +88,20 @@ export function createWorkingMemory(filePath: string) {
     } catch { /* fire-and-forget */ }
   }
 
-  function decay(currentTick: number): void {
+  function decay(currentTick: number, now?: number): void {
     // Decay insight relevance
+    const timestamp = now ?? Date.now()
     state.recentInsights = state.recentInsights
-      .map(i => ({
-        ...i,
-        relevance: i.relevance * (i.anchor ? ANCHOR_DECAY_RATE : INSIGHT_DECAY_RATE),
-      }))
+      .map(i => {
+        if (i.createdAt) {
+          // Time-based decay: relevance = 0.5^(elapsed / halfLife)
+          const elapsed = timestamp - i.createdAt
+          const halfLife = i.anchor ? ANCHOR_HALF_LIFE_MS : NORMAL_HALF_LIFE_MS
+          return { ...i, relevance: Math.pow(0.5, elapsed / halfLife) }
+        }
+        // Legacy fallback: tick-based for insights without createdAt
+        return { ...i, relevance: i.relevance * (i.anchor ? 0.95 : 0.85) }
+      })
       .filter(i => i.relevance >= INSIGHT_MIN_RELEVANCE)
       .slice(0, MAX_INSIGHTS)
 
@@ -147,6 +155,7 @@ export function createWorkingMemory(filePath: string) {
         content: updates.insight,
         tick: currentTick,
         relevance: 1.0,
+        createdAt: Date.now(),
       })
       if (state.recentInsights.length > MAX_INSIGHTS) {
         state.recentInsights = state.recentInsights.slice(0, MAX_INSIGHTS)

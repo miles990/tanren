@@ -9,13 +9,16 @@ import { writeFileSync, appendFileSync, mkdirSync, existsSync, readFileSync } fr
 import { dirname, resolve, join } from 'node:path'
 import type { Action, ActionHandler, ActionContext, ToolDefinition, RiskTier } from './types.js'
 
-// Convergence condition: track which files have been read this tick.
-// edit action uses this to enforce "read before edit" — not a prompt suggestion,
-// a structural constraint. Claude Code pattern: tools enforce discipline.
-const _filesReadThisTick = new Set<string>()
-export function markFileRead(path: string): void { _filesReadThisTick.add(path) }
-export function resetFilesRead(): void { _filesReadThisTick.clear() }
-export function hasFileBeenRead(path: string): boolean { return _filesReadThisTick.has(path) }
+// Convergence condition: file tracking for read-before-edit enforcement.
+// Previously module-level singletons — now per-tick via ActionContext.filesRead.
+// These exports are kept for backward compatibility but are no-ops.
+// All internal usage goes through context.filesRead.
+/** @deprecated Use context.filesRead.add(path) instead */
+export function markFileRead(_path: string): void { /* no-op — use context.filesRead */ }
+/** @deprecated No longer needed — filesRead is created fresh per tick */
+export function resetFilesRead(): void { /* no-op */ }
+/** @deprecated Use context.filesRead.has(path) instead */
+export function hasFileBeenRead(_path: string): boolean { return false }
 
 /**
  * Extract path from structured input — handles model merging path+content into one field.
@@ -562,7 +565,7 @@ export const builtinActions: ActionHandler[] = [
       try {
         const content = readFileSync(filePath, 'utf-8')
         // Track file reads — convergence condition for edit action
-        markFileRead(filePath)
+        context.filesRead.add(filePath)
         const allLines = content.split('\n')
         const startLine = Math.max(1, startLineOverride ?? (action.input?.start_line as number) ?? 1)
         const endLine = Math.min(allLines.length, endLineOverride ?? (action.input?.end_line as number) ?? allLines.length)
@@ -1035,7 +1038,7 @@ export const builtinActions: ActionHandler[] = [
       // Convergence condition: read before edit.
       // If file wasn't read this tick, warn and show surrounding context.
       // Claude Code enforces this structurally — blind edits miss context.
-      const wasRead = hasFileBeenRead(filePath)
+      const wasRead = context.filesRead.has(filePath)
 
       try {
         const content = readFileSync(filePath, 'utf-8')
@@ -1046,7 +1049,7 @@ export const builtinActions: ActionHandler[] = [
 
         const updated = content.slice(0, idx) + newStr + content.slice(idx + oldStr.length)
         writeFileSync(filePath, updated, 'utf-8')
-        markFileRead(filePath) // mark as read after successful edit
+        context.filesRead.add(filePath) // mark as read after successful edit
 
         // Build result with context awareness
         let result = `Edited ${rawPath}: replaced ${oldStr.length} chars with ${newStr.length} chars`

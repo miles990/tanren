@@ -15,19 +15,13 @@ import type {
   TanrenConfig,
   TickResult,
   Action,
-  Observation,
   GateContext,
-  GateResult,
-  MemorySystem,
   LLMProvider,
   ToolUseLLMProvider,
   ConversationMessage,
-  ContentBlock,
-  ToolUseResponse,
   EventTrigger,
   TriggerEvent,
   TickMode,
-  CognitiveMode,
   CognitiveContext,
 } from './types.js'
 import { createMemorySystem } from './memory.js'
@@ -37,8 +31,8 @@ import { createActionHealthTracker } from './action-health.js'
 import { createMPL } from './metacognitive.js'
 import { createContinuationSystem } from './continuation.js'
 import { createPerception, type PerceptionSystem } from './perception.js'
-import { createGateSystem, type GateSystem } from './gates.js'
-import { createActionRegistry, builtinActions, getRoundRiskTier, resetFilesRead, type ActionRegistry } from './actions.js'
+import { createGateSystem, defaultGates, type GateSystem } from './gates.js'
+import { createActionRegistry, builtinActions, getRoundRiskTier, type ActionRegistry } from './actions.js'
 import { createLearningSystem, type LearningSystem } from './learning/index.js'
 import { createEvolutionEngine } from './evolution.js'
 import { executeBatch } from './action-batch.js'
@@ -49,12 +43,20 @@ import { createWorkingMemory, type WorkingMemorySystem } from './working-memory.
 import { detectContextMode, type ContextModeConfig } from './context-modes.js'
 import { loadSkills, selectSkills, formatSkillsForPrompt } from './skills.js'
 import { createHookSystem } from './hooks.js'
-import { formatErrorForAgent } from './error-classification.js'
+import {
+  loadIdentity,
+  buildContext,
+  buildSystemPrompt,
+  buildToolUseSystemPrompt,
+  extractMessageContent,
+  createEmptyObservation,
+  parseToolUseResponse,
+  buildAssistantContent,
+} from './prompt-builder.js'
+import { runToolUseFeedbackLoop, runTextFeedbackLoop } from './feedback-loop.js'
 
-// === Context Mode (module-level, readable by perception plugins) ===
-
-let currentContextMode: ContextModeConfig | null = null
-export function getCurrentContextMode(): ContextModeConfig | null { return currentContextMode }
+// currentContextMode is now loop-local (inside createLoop closure).
+// Previously module-level — caused shared state between agents in same process.
 
 // === Checkpoint for crash recovery ===
 
@@ -129,7 +131,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   const memory = createMemorySystem(config.memoryDir, config.searchPaths)
   const llm: LLMProvider = config.llm ?? createClaudeCliProvider()
   const perception = createPerception(config.perceptionPlugins ?? [])
-  const gateSystem = createGateSystem(config.gates ?? [])
+  const gateSystem = createGateSystem(config.gates ?? defaultGates())
   const actionRegistry = createActionRegistry()
 
   // Built-in: recent memory perception — tail of memory.md (constant size).
@@ -168,7 +170,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         }).sort((a, b) => b.mtime - a.mtime)
 
         // Respect maxTopics from current context mode (ghost feature → real feature)
-        const mode = getCurrentContextMode()
+        const mode = currentContextMode
         const limit = mode?.maxTopics ?? 10  // default 10 if no mode detected yet
         const selected = withMtime.slice(0, limit)
 
@@ -188,6 +190,9 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       },
     })
   }
+
+  // Loop-local context mode — per agent instance, not module-level
+  let currentContextMode: ContextModeConfig | null = null
 
   // In-process message queue for chat() — consumed once per tick
   let pendingMessage: { from: string; text: string } | null = null
@@ -433,7 +438,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   async function tick(mode: TickMode = 'scheduled', triggerEvent?: TriggerEvent): Promise<TickResult> {
     const tickStart = Date.now()
     tickCount++
-    resetFilesRead()  // convergence condition: each tick starts fresh file tracking
+    const filesRead = new Set<string>()  // per-tick file tracking for read-before-edit enforcement
     lastResponse = ''  // reset per tick
 
     // Autonomous objective injection: scheduled ticks without a pendingMessage
@@ -679,7 +684,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       const initialBatch = await executeBatch(
         actions,
         { execute: (action, ctx) => actionRegistry.execute(action, ctx) },
-        { memory, workDir, tickCount, workingMemory },
+        { memory, workDir, tickCount, workingMemory, filesRead },
         (event) => {
           config.onActionProgress?.(event)
           if (event.phase === 'done') actionHealth.record(event.action.type, true, tickCount)
@@ -698,7 +703,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         for (const ha of hookActions) {
           if (actionRegistry.has(ha.type)) {
             try {
-              await actionRegistry.execute(ha, { memory, workDir, tickCount, workingMemory })
+              await actionRegistry.execute(ha, { memory, workDir, tickCount, workingMemory, filesRead })
               allActions.push(ha)
               actionsExecuted++
             } catch { /* hook actions are best-effort */ }
@@ -731,284 +736,58 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       currentMaxFeedbackRounds = maxFeedbackRounds
 
       if (useToolUse && structuredActions !== null) {
-        // Native tool_use multi-turn: send tool_results, get follow-up tool calls
-        const allToolDefs = actionRegistry.toToolDefinitions()
-        // Tool degradation: round 2+ removes read-only tools → forces action over exploration
-        // Disabled when config.toolDegradation === false (for capable models like Sonnet 4.6+)
+        // Native tool_use multi-turn feedback loop (see feedback-loop.ts)
         const degradeTools = config.toolDegradation !== false
-        const READ_ONLY_TOOLS = new Set(['read', 'explore', 'search', 'shell', 'web_fetch'])
-        const actionOnlyToolDefs = allToolDefs.filter(t => !READ_ONLY_TOOLS.has(t.name))
-        const toolSystemPrompt = buildToolUseSystemPrompt(identity)
-        // messages already has [user context, assistant response] from above
-        const messages: ConversationMessage[] = [
-          { role: 'user', content: context },
-          { role: 'assistant', content: structuredActions.length > 0
-            ? buildAssistantContent(thought, structuredActions)
-            : [{ type: 'text' as const, text: thought }]
+        const CONTEXT_BUDGET = config.contextBudget ?? 50_000
+
+        const loopResult = await runToolUseFeedbackLoop(
+          {
+            maxRounds: maxFeedbackRounds,
+            contextBudget: CONTEXT_BUDGET,
+            degradeTools,
+            hasIncomingMessage,
+            preMode,
           },
-        ]
+          actions,
+          actionResults,
+          thought,
+          context,
+          llm as ToolUseLLMProvider,
+          actionRegistry,
+          { memory, workDir, tickCount, workingMemory, filesRead },
+          identity,
+          (event) => {
+            config.onActionProgress?.(event)
+          },
+          (type, success, tick, error) => actionHealth.record(type, success, tick, error),
+          hookSystem,
+        )
 
-        // Track used tool+target combos to prevent repetitive actions
-        const usedToolTargets = new Set<string>()
-        for (const a of actions) {
-          const target = a.input?.path ?? a.input?.url ?? a.input?.query ?? a.input?.pattern ?? ''
-          usedToolTargets.add(`${a.type}:${target}`)
-        }
-
-        // Hybrid model-driven loop (Akari's design):
-        // Keep going as long as model calls tools. Only exit when:
-        //   (end_turn or no novel actions) AND (IDLE_THRESHOLD rounds since last tool_use)
-        // This lets capable models do deep multi-file research across many rounds.
-        const IDLE_THRESHOLD = degradeTools ? 0 : 2  // degraded: exit immediately; non-degraded: allow 2 idle rounds for thinking
-        let roundsSinceLastToolUse = 0
-        // Track rounds without productive output (write/respond/synthesize)
-        // Counts both read-only rounds AND idle thinking rounds as "unproductive"
-        const PRODUCTIVE_ACTIONS = new Set(['write', 'edit', 'append', 'respond', 'synthesize', 'shell'])
-        let roundsWithoutProduction = actions.every(a => !PRODUCTIVE_ACTIONS.has(a.type)) ? 1 : 0  // count initial round
-        const SYNTHESIZE_THRESHOLD = 2  // force synthesize after N unproductive rounds (lowered: model typically does 1 read round then goes idle)
-
-        // Context budget: hard ceiling on accumulated conversation size.
-        // When exceeded, force the model to synthesize with what it has — don't keep reading.
-        // This prevents O(n²) context accumulation across feedback rounds.
-        const CONTEXT_BUDGET = config.contextBudget ?? 50_000 // chars — generous enough for 3-4 file reads
-
-        for (let round = 0; round < maxFeedbackRounds; round++) {
-          // Context budget check — BEFORE compression. If over budget, force synthesis exit.
-          const currentContextSize = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)
-          if (currentContextSize > CONTEXT_BUDGET) {
-            console.error(`[tanren] BUDGET: ${currentContextSize} > ${CONTEXT_BUDGET} at round ${round} — forcing synthesis`)
-            // Don't break — give model one last chance to synthesize
-            messages.push({ role: 'user', content: [{ type: 'text', text: `Context budget reached (${Math.round(currentContextSize / 1000)}K chars). You have enough information. Synthesize your findings NOW using the respond tool. Do NOT read more files.` }] })
-            // After this round, exit regardless
-            if (round > 0) {
-              const budgetResponse = await (llm as ToolUseLLMProvider).thinkWithTools(messages, toolSystemPrompt, actionOnlyToolDefs)
-              const budgetParsed = parseToolUseResponse(budgetResponse, actionRegistry)
-              thought += `\n\n--- Budget Synthesis ---\n\n${budgetParsed.thought}`
-              if (budgetParsed.actions.length > 0) {
-                const batchResult = await executeBatch(
-                  budgetParsed.actions,
-                  { execute: (action, ctx) => actionRegistry.execute(action, ctx) },
-                  { memory, workDir, tickCount, workingMemory },
-                  (event) => { config.onActionProgress?.(event) },
-                )
-                actionsExecuted += batchResult.executed
-                actionsFailed += batchResult.failed
-                allActions.push(...budgetParsed.actions)
-                actionResults.push(...batchResult.results)
-              }
-              break
-            }
-          }
-
-          // Conversation compression: when accumulated context exceeds threshold,
-          // compress older tool_results to summaries. Keeps recent results verbatim.
-          // Claude Code pattern: auto-compress when context fills up.
-          const COMPRESS_THRESHOLD = 60_000 // chars
-          const totalMsgSize = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)
-          if (totalMsgSize > COMPRESS_THRESHOLD && messages.length > 3) {
-            // Compress all tool_result messages except the last 2 rounds
-            const keepVerbatim = 4 // keep last N messages verbatim (2 assistant + 2 user/results)
-            for (let mi = 1; mi < messages.length - keepVerbatim; mi++) {
-              const msg = messages[mi]
-              if (msg.role === 'user' && Array.isArray(msg.content)) {
-                const compressed = msg.content.map(block => {
-                  if (block.type === 'tool_result' && block.content.length > 500) {
-                    return { ...block, content: block.content.slice(0, 200) + '\n[... compressed]' }
-                  }
-                  return block
-                })
-                messages[mi] = { ...msg, content: compressed }
-              }
-            }
-            const newSize = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)
-            console.error(`[tanren] COMPRESS: ${totalMsgSize} → ${newSize} chars (round ${round})`)
-          }
-
-          // Build tool_result messages for all actions in this round
-          const toolResults: ContentBlock[] = []
-          const roundStartIdx = allActions.length - actionResults.slice(-actions.length).length
-          for (let i = 0; i < allActions.length; i++) {
-            const action = allActions[i]
-            if (!action.toolUseId) continue
-            // Only send results for actions from current round
-            if (i < allActions.length - actionResults.length + roundStartIdx) continue
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: action.toolUseId,
-              content: actionResults[i] ?? '',
-            })
-          }
-
-          if (toolResults.length === 0) {
-            // No tool results to send — model returned text-only
-            const neverCalledTools = allActions.length === 0
-            if (neverCalledTools && round === 0) {
-              // Model hasn't called ANY tools yet — must force at least one attempt
-              messages.push({ role: 'user', content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed. Use the respond tool to deliver your answer.' }] })
-            } else if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
-              const needsRespond = hasIncomingMessage && !allActions.some(a => a.type === 'respond')
-              messages.push({ role: 'user', content: [{ type: 'text', text: needsRespond
-                ? 'You MUST call the respond tool NOW to answer the pending message. Include your complete analysis in the respond content.'
-                : 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed in feedback rounds.'
-              }] })
-            } else {
-              break
-            }
-          } else {
-            // Append action guidance — if there's an unanswered message, explicitly require respond
-            const needsRespond = hasIncomingMessage && !allActions.some(a => a.type === 'respond')
-            const actionHint: ContentBlock = { type: 'text', text: needsRespond
-              ? 'Tool results above. You have an unanswered message. Call the respond tool NOW with your complete analysis. Do NOT return text without calling respond.'
-              : 'Tool results above. Now: call write/edit to create files, or call respond when done. Do NOT return text without a tool call.'
-            }
-            messages.push({ role: 'user', content: [...toolResults, actionHint] })
-          }
-
-          // Tool degradation: round 2+ only gets action tools (respond/edit/remember/git)
-          // Skipped when toolDegradation is disabled (capable models self-regulate)
-          const roundToolDefs = (round === 0 || !degradeTools) ? allToolDefs : actionOnlyToolDefs
-
-          let response: ToolUseResponse
-          try {
-            response = await (llm as ToolUseLLMProvider).thinkWithTools(messages, toolSystemPrompt, roundToolDefs)
-          } catch {
-            break
-          }
-
-          const parsed = parseToolUseResponse(response, actionRegistry)
-
-          // Filter out repetitive actions — same tool + same target = wasted round
-          const novelActions = parsed.actions.filter(a => {
-            const target = a.input?.path ?? a.input?.url ?? a.input?.query ?? a.input?.pattern ?? ''
-            const key = `${a.type}:${target}`
-            if (usedToolTargets.has(key)) return false
-            usedToolTargets.add(key)
-            return true
-          })
-
-          thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${parsed.thought}`
-
-          if (novelActions.length === 0) {
-            roundsSinceLastToolUse++
-            roundsWithoutProduction++
-
-            // Convergence check: if stuck in research mode, surface the gap between current state and desired state
-            if (!degradeTools && roundsWithoutProduction >= SYNTHESIZE_THRESHOLD) {
-              messages.push({ role: 'assistant', content: response.content })
-              messages.push({ role: 'user', content: [{ type: 'text', text: `Convergence check: The user asked you to BUILD something. After ${roundsWithoutProduction} rounds, you have not produced any output (no write, no respond, no synthesize). Your current state: research accumulated. Desired state: a file exists that didn't before, or a response delivered. What is the smallest step that moves you from current to desired? Take that step now.` }] })
-              roundsWithoutProduction = 0
-              continue
-            }
-
-            if (roundsSinceLastToolUse > IDLE_THRESHOLD) break
-
-            messages.push({ role: 'assistant', content: response.content })
-            continue
-          }
-
-          roundsSinceLastToolUse = 0
-          // Track productive vs unproductive rounds
-          const hasProduction = novelActions.some(a => PRODUCTIVE_ACTIONS.has(a.type))
-          if (hasProduction) {
-            roundsWithoutProduction = 0
-          } else {
-            roundsWithoutProduction++
-          }
-          messages.push({ role: 'assistant', content: response.content })
-
-          // Execute actions via ActionBatch — auto-parallelizes read-only,
-          // sequences writes, tracks per-action health.
-          const batchResult = await executeBatch(
-            novelActions,
-            { execute: (action, ctx) => actionRegistry.execute(action, ctx) },
-            { memory, workDir, tickCount, workingMemory },
-            (event) => {
-              config.onActionProgress?.(event)
-              if (event.phase === 'done') {
-                actionHealth.record(event.action.type, true, tickCount)
-              } else if (event.phase === 'error') {
-                actionHealth.record(event.action.type, false, tickCount, event.error)
-              }
-            },
-          )
-          actionsExecuted += batchResult.executed
-          actionsFailed += batchResult.failed
-
-          allActions.push(...novelActions)
-          actionResults.push(...batchResult.results)
-
-          // Fire postAction hooks for feedback round actions
-          for (let hi = 0; hi < novelActions.length; hi++) {
-            const hookActions = hookSystem.run('postAction', {
-              tickCount, action: novelActions[hi], result: batchResult.results[hi], allActions,
-            }, novelActions[hi].type)
-            for (const ha of hookActions) {
-              if (actionRegistry.has(ha.type)) {
-                try {
-                  await actionRegistry.execute(ha, { memory, workDir, tickCount, workingMemory })
-                  allActions.push(ha)
-                  actionsExecuted++
-                } catch { /* hook actions best-effort */ }
-              }
-            }
-          }
-
-          // Exit on substantial respond — threshold varies by mode.
-          // Research/verification need thorough answers. Interaction can be brief.
-          // Convergence condition: response must be COMPLETE for the mode, not just present.
-          const RESPOND_THRESHOLD: Record<string, number> = {
-            research: 500,      // deep analysis needs substance
-            verification: 400,  // fact-checking needs detail
-            execution: 100,     // action confirmation can be brief
-            interaction: 50,    // greetings/chat can be short
-          }
-          const minRespond = RESPOND_THRESHOLD[preMode?.mode ?? 'research'] ?? 300
-          const feedbackRespond = novelActions.find(a => a.type === 'respond')
-          if (feedbackRespond && feedbackRespond.content.length > minRespond) break
-        }
+        thought = loopResult.thought
+        allActions.push(...loopResult.actions.slice(actions.length))
+        actionResults.push(...loopResult.results.slice(actionResults.length))
+        actionsExecuted += loopResult.actionsExecuted
+        actionsFailed += loopResult.actionsFailed
       } else {
-        // Text-based feedback mini-loop (legacy)
-        let lastRoundResults = [...actionResults]
+        // Text-based feedback mini-loop (see feedback-loop.ts)
+        const loopResult = await runTextFeedbackLoop(
+          maxFeedbackRounds,
+          actions,
+          actionResults,
+          thought,
+          context,
+          systemPrompt,
+          llm,
+          actionRegistry,
+          { memory, workDir, tickCount, workingMemory, filesRead },
+          (type, success, tick, error) => actionHealth.record(type, success, tick, error),
+        )
 
-        for (let round = 0; round < maxFeedbackRounds && lastRoundResults.length > 0; round++) {
-          const resultSummary = lastRoundResults.map((r, i) => {
-            const idx = allActions.length - lastRoundResults.length + i
-            return `[${allActions[idx]?.type ?? 'action'}] ${r}`
-          }).join('\n')
-
-          const feedbackContext = `${context}\n\n<action-feedback round="${round + 1}">\nYou just executed actions and received these results:\n${resultSummary}\n</action-feedback>\n\nBased on these results, you may take additional actions or produce no actions if satisfied.`
-
-          let followUpThought: string
-          try {
-            followUpThought = await llm.think(feedbackContext, systemPrompt)
-          } catch {
-            break
-          }
-
-          thought += `\n\n--- Feedback Round ${round + 1} ---\n\n${followUpThought}`
-          const followUpActions = actionRegistry.parse(followUpThought)
-
-          if (followUpActions.length === 0) break
-
-          const roundResults: string[] = []
-          for (const action of followUpActions) {
-            try {
-              const result = await actionRegistry.execute(action, { memory, workDir, tickCount, workingMemory })
-              roundResults.push(result)
-              actionsExecuted++
-              actionHealth.record(action.type, true, tickCount)
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err)
-              roundResults.push(formatErrorForAgent(err, action.type))
-              actionsFailed++
-              actionHealth.record(action.type, false, tickCount, msg)
-            }
-          }
-
-          allActions.push(...followUpActions)
-          actionResults.push(...roundResults)
-          lastRoundResults = roundResults
-        }
+        thought = loopResult.thought
+        allActions.push(...loopResult.actions.slice(actions.length))
+        actionResults.push(...loopResult.results.slice(actionResults.length))
+        actionsExecuted += loopResult.actionsExecuted
+        actionsFailed += loopResult.actionsFailed
       }
 
       // ── Behavioral Floor: code-level guarantees regardless of LLM capability ──
@@ -1048,7 +827,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           try {
             const result = await actionRegistry.execute(
               { type: 'respond', content: autoResponse, raw: autoResponse },
-              { memory, workDir, tickCount, workingMemory },
+              { memory, workDir, tickCount, workingMemory, filesRead },
             )
             allActions.push({ type: 'respond', content: autoResponse, raw: autoResponse })
             actionResults.push(result)
@@ -1314,85 +1093,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   }
 }
 
-// === Helpers ===
-
-async function loadIdentity(identity: string, memory: MemorySystem): Promise<string> {
-  // If it looks like a file path, read it
-  if (identity.endsWith('.md') || identity.includes('/')) {
-    const content = await memory.read(identity)
-    if (content) return content
-    // Try as absolute path
-    try {
-      const { readFile } = await import('node:fs/promises')
-      return await readFile(identity, 'utf-8')
-    } catch {
-      return identity  // fall back to treating as inline string
-    }
-  }
-  return identity
-}
-
-function buildContext(
-  identity: string,
-  perception: string,
-  gateWarnings: string[],
-  _memory: MemorySystem,
-  learningContext: string = '',
-): string {
-  const sections: string[] = []
-
-  if (perception) {
-    sections.push(perception)
-  }
-
-  if (gateWarnings.length > 0) {
-    sections.push(
-      `<gate-warnings>\n${gateWarnings.map(w => `- ${w}`).join('\n')}\n</gate-warnings>`
-    )
-  }
-
-  if (learningContext) {
-    sections.push(learningContext)
-  }
-
-  sections.push(`<current-time>${new Date().toISOString()}</current-time>`)
-
-  return sections.join('\n\n')
-}
-
-function buildSystemPrompt(identity: string, actions: ActionRegistry): string {
-  const actionTypes = actions.types()
-
-  const actionLines = actionTypes.map(t => {
-    const desc = actions.getDescription(t)
-    return desc ? `- <action:${t}>...</action:${t}> — ${desc}` : `- <action:${t}>...</action:${t}>`
-  })
-
-  return `${identity}
-
-## Available Actions
-
-Use these tags in your response to take actions:
-
-${actionLines.join('\n')}
-
-You can include multiple actions in a single response. Actions are executed in order.
-
-CRITICAL: Your output MUST contain action tags to produce any effect. Text without action tags is recorded but has no side effects. If you want to respond to a message, you MUST use <action:respond>. If you want to remember something, you MUST use <action:remember>. Analysis without action tags = wasted tick.
-
-IMPORTANT: Action tags are executed by the Tanren framework on your behalf. You do NOT need file access, write permissions, or any external tools. Simply include the action tag in your response and the framework handles all I/O. For example, <action:respond>your message</action:respond> will be delivered to Kuro automatically — you don't write to any file yourself.`
-}
-
-function createEmptyObservation(tickStart: number): Observation {
-  return {
-    outputExists: false,
-    outputQuality: 0,
-    confidenceCalibration: 0,
-    actionsExecuted: 0,
-    actionsFailed: 0,
-    duration: Date.now() - tickStart,
-  }
-}
+// === Helpers (checkpoint, gate state, journal — loop-local I/O) ===
 
 function writeCheckpoint(path: string, data: Checkpoint): void {
   try {
@@ -1484,81 +1185,4 @@ function persistTick(journalDir: string, journalPath: string, tick: TickResult):
 
 function isToolUseProvider(provider: LLMProvider): provider is ToolUseLLMProvider {
   return 'thinkWithTools' in provider && typeof (provider as ToolUseLLMProvider).thinkWithTools === 'function'
-}
-
-function parseToolUseResponse(response: ToolUseResponse, registry: ActionRegistry): { thought: string; actions: Action[] } {
-  const textParts: string[] = []
-  const actions: Action[] = []
-
-  for (const block of response.content) {
-    if (block.type === 'text') {
-      textParts.push(block.text)
-    } else if (block.type === 'tool_use') {
-      actions.push(registry.fromToolUse(block.name, block.id, block.input as Record<string, unknown>))
-    }
-  }
-
-  return { thought: textParts.join('\n'), actions }
-}
-
-/** Build assistant content blocks for multi-turn conversation */
-function buildAssistantContent(thought: string, actions: Action[]): ContentBlock[] {
-  const blocks: ContentBlock[] = []
-  if (thought) {
-    blocks.push({ type: 'text', text: thought })
-  }
-  for (const action of actions) {
-    if (action.toolUseId) {
-      blocks.push({
-        type: 'tool_use',
-        id: action.toolUseId,
-        name: action.type,
-        input: action.input ?? { content: action.content },
-      })
-    }
-  }
-  return blocks
-}
-
-function buildToolUseSystemPrompt(identity: string): string {
-  return `${identity}
-
-## How This Works
-
-You have tools. Only tool calls produce effects — text is thinking. You get multiple rounds: call tools, see results, call more. The tick ends when you stop calling tools.
-
-Call MULTIPLE tools per response when they're independent. Batch reads. Batch writes. Don't serialize what can parallelize.
-
-## Engineering Standard
-
-Act like a senior engineer:
-- Do the work. Don't narrate. "Let me find..." → just call the tool.
-- Know the path? Read it. Know the answer? Respond. Simplest approach first.
-- Read code BEFORE editing. The framework warns if you don't.
-- After editing .ts: the framework auto-runs tsc. Fix errors in the same tick.
-- Add a field? Handle it EVERYWHERE — constructors, defaults, display, serialization. The framework checks.
-- No dead code. Wire features end-to-end or don't ship them.
-- Each response the user sees should be COMPLETE and ACTIONABLE — not a progress update.`
-}
-
-function extractMessageContent(perception: string): string {
-  // Try multiple extraction patterns — code handles determinism, not format prescription
-  const patterns = [
-    /<kuro-message>([\s\S]*?)<\/kuro-message>/i,
-    /<inbox>([\s\S]*?)<\/inbox>/i,
-    /<message[^>]*>([\s\S]*?)<\/message>/i,
-    /<from-[\w-]+>([\s\S]*?)<\/from-[\w-]+>/i,
-  ]
-
-  for (const pattern of patterns) {
-    const match = perception.match(pattern)
-    if (match) return match[1].trim()
-  }
-
-  // Unclosed tag fallback (same principle as action parser)
-  const unclosed = perception.match(/<(?:kuro-message|inbox|message|from-[\w-]+)>([\s\S]*?)(?=<\w|$)/i)
-  if (unclosed) return unclosed[1].trim()
-
-  // No structured message found — return empty to signal "no message detected"
-  return ''
 }
