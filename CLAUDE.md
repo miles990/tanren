@@ -73,24 +73,19 @@ Config discovery: `tanren.config.ts|js|mjs`, fallback `soul.md`. See `examples/`
 
 ## Agent Integrity Gates
 
-Three behavioral gates in `gates.ts` that prevent common agent failure modes. These are crystallized from repeated real-world failures — patterns that appeared 3+ times across agents.
+`defaultGates()` in `gates.ts` provides 7 gates — active by default when `config.gates` is not specified.
 
-### Code-Enforced (gates.ts)
+| Gate | Prevents |
+|------|----------|
+| `output-gate` | Consecutive ticks without visible output |
+| `analysis-without-action` | Substantial thought but zero actions (cognitive paralysis) |
+| `productivity-gate` | Only internal actions (read/remember) with no external output |
+| `symptom-fix-streak` | Consecutive fix-like actions without stepping back to root cause |
+| `ground-before-opine` | Responding about unread resources (URLs, projects) |
+| `write-through` | Claiming "done" without persistent state change |
+| `commitment` | Promising action without follow-through |
 
-- **Ground-Before-Opine Gate** (`createGroundBeforeOpineGate`) — Warns when agent responds about external resources (URLs, projects) without a prior `read`/`web_fetch`/`search` action. Prevents opinions on unread sources.
-- **Write-Through Gate** (`createWriteThroughGate`) — Warns when agent claims completion ("done", "fixed") but has no `write`/`edit`/`shell` action in recent ticks. Prevents claims without persistent state change.
-- **Commitment Gate** (`createCommitmentGate`) — Warns when agent promises future action ("let me", "I'll") in a short response but takes no substantive action. Prevents unfulfilled promises.
-
-### Guidance-Level (convergence conditions)
-
-These require judgment — they stay as guidance, not code:
-
-- **Complete the Flow**: Clear instructions → execute the entire chain without pausing. Only stop at genuine blockers.
-- **Be Useful**: Every interaction with the user should deliver value. Don't report unchanged status. Don't narrate process.
-- **Find the Leverage Point**: Before acting, ask "is this the highest-leverage action?" One structural fix > ten patches.
-- **Don't Regress**: When a capability fails, find the prior successful pattern first. Never declare "I can't" without checking history.
-- **Abstractions Must Be Complete**: After creating shared abstractions, grep for ALL old specific names. Partial abstraction is worse than none.
-- **Crystallize After Three**: Same lesson 3+ times → must become a gate. Memory entries that re-teach = failed crystallization.
+The principle behind all 7: use the smartest approach, find your own tools, adapt fast, complete perfectly, exceed expectations. Gates enforce this structurally where the failure mode is mechanical and detectable.
 
 ## TypeScript Conventions
 
