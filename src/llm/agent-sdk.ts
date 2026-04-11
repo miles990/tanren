@@ -17,8 +17,13 @@ import type { LLMProvider } from '../types.js'
 export interface AgentSdkOptions {
   /** Model override (default: determined by Claude Code) */
   model?: string
-  /** Budget in USD (default: 30) — replaces maxTurns */
+  /** Budget in USD per tick (default: 5). Controls token spend. */
   maxBudgetUsd?: number
+  /** Max tool-call rounds inside Agent SDK (default: 20). This is the REAL scope control —
+   *  limits how many Read/Write/Bash/etc calls happen per tick. */
+  maxTurns?: number
+  /** Wall-clock timeout in ms (default: 180000 = 3min). Hard stop safety net. */
+  timeoutMs?: number
   /** Working directory for file operations */
   cwd?: string
   /** Allowed tools (default: all standard tools) */
@@ -56,18 +61,12 @@ export interface AgentSdkOptions {
 
 export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
   const identityMode = opts?.identityMode ?? 'override'
+  const timeoutMs = opts?.timeoutMs ?? 180_000 // 3 min wall-clock safety net
 
   return {
     async think(context: string, systemPrompt: string): Promise<string> {
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
 
-      // Identity layer → options.systemPrompt (NEVER concatenated into prompt).
-      // See LLMProvider JSDoc in types.ts for the semantic contract.
-      //
-      // - 'override' (default): pass systemPrompt as a plain string — this fully
-      //   replaces Claude Code's preset. The agent's soul becomes the real system prompt.
-      // - 'inherit-claude-code': wrap in preset+append so Claude Code's persona
-      //   and tool-tuning are preserved and the agent's soul is appended.
       const systemPromptOption = systemPrompt
         ? (identityMode === 'inherit-claude-code'
           ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPrompt } }
@@ -76,23 +75,37 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
 
       let result = ''
 
-      for await (const message of query({
-        prompt: context,
-        options: {
-          cwd: opts?.cwd ?? process.cwd(),
-          additionalDirectories: opts?.additionalDirectories ?? ['/Users'],
-          allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
-          maxBudgetUsd: opts?.maxBudgetUsd ?? 30,
-          permissionMode: 'bypassPermissions',
-          allowDangerouslySkipPermissions: true,
-          ...systemPromptOption,
-          ...(opts?.model ? { model: opts.model } : {}),
-          ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
-        },
-      })) {
-        if ('result' in message) {
-          result = message.result
+      // Wall-clock timeout: hard stop regardless of what Agent SDK is doing.
+      // maxTurns controls scope (how much work), timeout prevents stuck ticks.
+      const abortController = new AbortController()
+      const timer = setTimeout(() => {
+        console.error(`[agent-sdk] TIMEOUT: ${timeoutMs}ms exceeded — aborting query`)
+        abortController.abort()
+      }, timeoutMs)
+
+      try {
+        for await (const message of query({
+          prompt: context,
+          options: {
+            cwd: opts?.cwd ?? process.cwd(),
+            additionalDirectories: opts?.additionalDirectories ?? ['/Users'],
+            allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
+            maxTurns: opts?.maxTurns ?? 20,
+            maxBudgetUsd: opts?.maxBudgetUsd ?? 5,
+            permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true,
+            abortController,
+            ...systemPromptOption,
+            ...(opts?.model ? { model: opts.model } : {}),
+            ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
+          },
+        })) {
+          if ('result' in message) {
+            result = message.result
+          }
         }
+      } finally {
+        clearTimeout(timer)
       }
 
       return result
