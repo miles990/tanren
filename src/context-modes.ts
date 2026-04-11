@@ -86,13 +86,13 @@ const MODE_PATTERNS: { mode: ContextMode; pattern: RegExp; weight: number }[] = 
   { mode: 'verification', pattern: /\b(did [iwe]|true|false)\b/i, weight: 2 },
   { mode: 'execution', pattern: /^(write|respond|send|create|edit|remove|delete|update|fix|deploy|commit|push)\b/i, weight: 3 },
   { mode: 'execution', pattern: /\b(implement|build)\b/i, weight: 2 },
-  { mode: 'execution', pattern: /[做修改加實作建]/, weight: 2 },  // CJK: no \b needed (not in \w charset)
+  { mode: 'execution', pattern: /修改|實作|實現|建立|創立|部署|重構/, weight: 2 },  // CJK imperative verbs only (增加/改善 too ambiguous)
   // Negative patterns — subtract weight when these follow a mode trigger
   { mode: 'execution', pattern: /^(write|create|send)\s+(me|us|a\s+(?:poem|story|essay|summary|report|list|description))\b/i, weight: -4 },
   { mode: 'execution', pattern: /\?\s*$/, weight: -2 },  // questions aren't execution
   { mode: 'research', pattern: /\b(analyz|examin|why\b|how does|explore|investigat|explain|compar|deep dive|research|understand)\b/i, weight: 2 },
   { mode: 'research', pattern: /\b(design|architectur)\b/i, weight: 2 },
-  { mode: 'research', pattern: /[設計分析研究]/, weight: 2 },  // CJK: no \b needed
+  { mode: 'research', pattern: /設計|分析|研究|探討|調查|比較/, weight: 2 },  // CJK compound words
   { mode: 'research', pattern: /\?/, weight: 1 },  // questions lean research
   { mode: 'research', pattern: /\b(what|how|why|when|where|who)\b/i, weight: 1 },
   { mode: 'interaction', pattern: /^(hi|hey|hello|yo|sup|morning|afternoon|evening|good\s)/i, weight: 4 },

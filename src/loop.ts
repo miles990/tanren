@@ -513,7 +513,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Auto-trim if exceeding budget. Surface metrics for agent self-awareness.
     const contextBudget = {
       perception: perceptionOutput.length,
-      identity: (await loadIdentity(config.identity, memory)).length,
+      identity: identity.length,
       workingMemory: wmContext?.length ?? 0,
       learning: learningContext.length + (evolutionContext?.length ?? 0),
       gates: gateWarnings.join('\n').length,

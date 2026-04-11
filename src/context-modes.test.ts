@@ -35,10 +35,16 @@ describe('detectContextMode', () => {
   })
 
   it('classifies Chinese commands as execution', () => {
-    // CJK characters don't match \b in regex — patterns must not use \b for CJK
-    // Also need enough length (>50 chars) to avoid short-message filter
+    // CJK uses compound words (修改, 實作) not single chars (改, 加) to avoid false positives
     assert.equal(detectContextMode('修改 loop.ts 的 tick 函式，把 feedback loop 的邏輯抽出到獨立模組').mode, 'execution')
     assert.equal(detectContextMode('幫我實作一個新的 gate 系統來偵測重複的 action pattern，放在 gates 目錄').mode, 'execution')
+  })
+
+  it('does NOT misclassify common CJK words as execution', () => {
+    // 「改善」「增加」as nouns/adjectives should not trigger execution
+    const mode = detectContextMode('這個改善方案的價格增加了，我們需要重新評估整體策略和可行性')
+    assert.notEqual(mode.mode, 'execution',
+      'common CJK words like 改善/增加 should not trigger execution mode')
   })
 
   // === Research mode ===

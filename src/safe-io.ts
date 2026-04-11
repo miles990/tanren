@@ -19,19 +19,28 @@ import { readFileSync, existsSync } from 'node:fs'
  */
 export function safeJsonLoad<T>(path: string, fallback: T): T {
   try {
-    if (!existsSync(path)) return fallback
+    if (!existsSync(path)) return cloneFallback(fallback)
     const raw = readFileSync(path, 'utf-8').trim()
-    if (!raw) return fallback
+    if (!raw) return cloneFallback(fallback)
     const parsed = JSON.parse(raw)
     // Merge with fallback to handle schema evolution (new fields get defaults)
     if (typeof fallback === 'object' && fallback !== null && !Array.isArray(fallback)
         && typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      return { ...fallback, ...parsed }
+      return { ...cloneFallback(fallback), ...parsed }
     }
     return parsed as T
   } catch {
-    return fallback
+    return cloneFallback(fallback)
   }
+}
+
+/** Clone fallback to prevent mutation of shared module-level constants.
+ *  Without this, `safeJsonLoad(path, EMPTY_STATE)` returns the same reference
+ *  when the file is missing — any subsequent mutation pollutes the constant.
+ *  structuredClone handles nested arrays/objects correctly (available Node 17+). */
+function cloneFallback<T>(fallback: T): T {
+  if (fallback === null || typeof fallback !== 'object') return fallback
+  return structuredClone(fallback)
 }
 
 /**
