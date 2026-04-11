@@ -29,15 +29,17 @@ export interface Skill {
   filePath: string
 }
 
-/** Load all skills from a directory. Cached after first load. */
-let skillCache: Skill[] | null = null
+/** Load all skills from a directory. Cached per directory path.
+ *  Previously module-level singleton — now keyed by skillsDir for multi-agent safety. */
+const skillCacheByDir = new Map<string, Skill[]>()
 
 export function loadSkills(skillsDir: string): Skill[] {
-  if (skillCache) return skillCache
+  const cached = skillCacheByDir.get(skillsDir)
+  if (cached) return cached
 
   if (!existsSync(skillsDir)) {
-    skillCache = []
-    return skillCache
+    skillCacheByDir.set(skillsDir, [])
+    return []
   }
 
   const files = readdirSync(skillsDir).filter(f => f.endsWith('.md'))
@@ -81,9 +83,9 @@ export function loadSkills(skillsDir: string): Skill[] {
     }
   }
 
-  skillCache = skills
+  skillCacheByDir.set(skillsDir, skills)
   console.error(`[tanren] Loaded ${skills.length} skill(s) from ${skillsDir}`)
-  return skillCache
+  return skills
 }
 
 /** Select relevant skills based on context mode and message keywords */
@@ -119,7 +121,11 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
   return `\n\n# Active Skills\n\n${sections.join('\n\n')}`
 }
 
-/** Clear cache (for hot-reload) */
-export function clearSkillCache(): void {
-  skillCache = null
+/** Clear cache (for hot-reload). Clears all dirs, or a specific one. */
+export function clearSkillCache(skillsDir?: string): void {
+  if (skillsDir) {
+    skillCacheByDir.delete(skillsDir)
+  } else {
+    skillCacheByDir.clear()
+  }
 }
