@@ -270,6 +270,10 @@ export interface TanrenConfig {
   tickInterval?: number         // ms between ticks (default: 60000)
   maxConcurrentDelegations?: number  // default: 4
   feedbackRounds?: number        // action feedback rounds per tick (default: 1, 0 = classic single-pass)
+  /** Context budget in chars for feedback loop. When accumulated conversation exceeds this,
+   *  force synthesis with existing data instead of reading more. Prevents O(n²) context bloat.
+   *  Default: 50000 chars (~3-4 file reads). */
+  contextBudget?: number
   /** Disable read-only tool degradation after round 0. Default: true (degrade).
    *  Set false for capable models (Sonnet 4.6+) that can self-regulate read depth. */
   toolDegradation?: boolean

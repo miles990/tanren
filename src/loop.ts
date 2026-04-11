@@ -767,7 +767,39 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         let roundsWithoutProduction = actions.every(a => !PRODUCTIVE_ACTIONS.has(a.type)) ? 1 : 0  // count initial round
         const SYNTHESIZE_THRESHOLD = 2  // force synthesize after N unproductive rounds (lowered: model typically does 1 read round then goes idle)
 
+        // Context budget: hard ceiling on accumulated conversation size.
+        // When exceeded, force the model to synthesize with what it has — don't keep reading.
+        // This prevents O(n²) context accumulation across feedback rounds.
+        const CONTEXT_BUDGET = config.contextBudget ?? 50_000 // chars — generous enough for 3-4 file reads
+
         for (let round = 0; round < maxFeedbackRounds; round++) {
+          // Context budget check — BEFORE compression. If over budget, force synthesis exit.
+          const currentContextSize = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)
+          if (currentContextSize > CONTEXT_BUDGET) {
+            console.error(`[tanren] BUDGET: ${currentContextSize} > ${CONTEXT_BUDGET} at round ${round} — forcing synthesis`)
+            // Don't break — give model one last chance to synthesize
+            messages.push({ role: 'user', content: [{ type: 'text', text: `Context budget reached (${Math.round(currentContextSize / 1000)}K chars). You have enough information. Synthesize your findings NOW using the respond tool. Do NOT read more files.` }] })
+            // After this round, exit regardless
+            if (round > 0) {
+              const budgetResponse = await (llm as ToolUseLLMProvider).thinkWithTools(messages, toolSystemPrompt, actionOnlyToolDefs)
+              const budgetParsed = parseToolUseResponse(budgetResponse, actionRegistry)
+              thought += `\n\n--- Budget Synthesis ---\n\n${budgetParsed.thought}`
+              if (budgetParsed.actions.length > 0) {
+                const batchResult = await executeBatch(
+                  budgetParsed.actions,
+                  { execute: (action, ctx) => actionRegistry.execute(action, ctx) },
+                  { memory, workDir, tickCount, workingMemory },
+                  (event) => { config.onActionProgress?.(event) },
+                )
+                actionsExecuted += batchResult.executed
+                actionsFailed += batchResult.failed
+                allActions.push(...budgetParsed.actions)
+                actionResults.push(...batchResult.results)
+              }
+              break
+            }
+          }
+
           // Conversation compression: when accumulated context exceeds threshold,
           // compress older tool_results to summaries. Keeps recent results verbatim.
           // Claude Code pattern: auto-compress when context fills up.
