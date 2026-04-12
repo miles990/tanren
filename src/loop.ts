@@ -212,14 +212,17 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     actionRegistry.register(handler)
   }
   // Built-in respond action — stores response in-process for chat()
-  // Enhanced: auto-appends tick metadata so any reader (human or agent) knows
-  // what tools were used and what files were touched. Structural transparency.
+  // Semantic: FINAL answer to the caller, not running commentary.
+  // A later respond overwrites earlier ones in the same chain, so writing
+  // respond early with "I'll do X" and then doing work leaves the caller
+  // with the stale "I'll do X" message. Use focus/reflect for progress;
+  // use respond once, at the end, with actual results.
   if (!config.actions?.some(a => a.type === 'respond')) {
     actionRegistry.register({
       type: 'respond',
-      description: 'Send a response message back to the caller.',
+      description: 'Your FINAL answer to the caller. Ends the conversation turn. Rules: (1) write ONCE per chain, at the end, after all work is done. (2) Must summarize actual results, not intentions — "I did X, found Y" not "I will do X". (3) For progress updates during work, use `focus` or `reflect`, NOT respond. (4) Writing respond signals "task complete" to the framework — a later tick can still happen, but any later respond overwrites this one.',
       toolSchema: {
-        properties: { content: { type: 'string', description: 'Response text' } },
+        properties: { content: { type: 'string', description: 'Final answer — actual results, not plans. Summarize what you did and what you found.' } },
         required: ['content'],
       },
       async execute(action) {

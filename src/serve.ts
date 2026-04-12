@@ -24,7 +24,10 @@ const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000  // 20 min total chain (sync /chat)
 const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000 // 30 min total chain (SSE /chat/stream)
 
 // Aggregate multi-tick results into a single ChatResult envelope.
-// Final response = last tick with respond action (or last tick's thought).
+// Final response priority:
+//   1. Last respond in the LAST tick (agent's intended final answer)
+//   2. Last respond in any earlier tick (fallback — agent responded early)
+//   3. Last tick's thought (graceful degradation — agent forgot to respond)
 function aggregateChain(results: TickResult[], mode: string): ChatResult & { chainTicks: number } {
   const last = results[results.length - 1]
   const allActionTypes: string[] = []
@@ -33,10 +36,13 @@ function aggregateChain(results: TickResult[], mode: string): ChatResult & { cha
   let totalDuration = 0
   let totalContextChars = 0
   let respondContent = ''
-  // Walk ticks in order — latest respond wins
-  for (const r of results) {
+  let lastTickRespond = ''
+  // Walk ticks in order — latest respond wins, but prefer last tick's respond
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]
     totalDuration += r.observation.duration
     totalContextChars += r.perception.length
+    const isLastTick = i === results.length - 1
     for (const a of r.actions) {
       allActionTypes.push(a.type)
       if (a.type === 'read' || a.type === 'grep') {
@@ -49,12 +55,17 @@ function aggregateChain(results: TickResult[], mode: string): ChatResult & { cha
       }
       if (a.type === 'respond') {
         const c = (a as Action & { content?: string }).content
-        if (c) respondContent = c
+        if (c) {
+          respondContent = c
+          if (isLastTick) lastTickRespond = c
+        }
       }
     }
   }
+  // Prefer last tick's respond over earlier ticks' respond. If neither, fallback to thought.
+  const finalResponse = lastTickRespond || respondContent || last.thought
   return {
-    response: respondContent,
+    response: finalResponse,
     thought: last.thought,
     actions: allActionTypes,
     duration: totalDuration,

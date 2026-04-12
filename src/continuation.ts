@@ -181,7 +181,22 @@ export function createContinuationSystem(memoryDir: string) {
             }
           }
 
+          // Detect "respond drift": agent has chained multiple ticks but the last
+          // respond action is stale (wrote early with intentions, never rewrote
+          // with results). This reminder targets that specific failure mode.
+          const ticksWithRespond = chain.chainHistory.filter(h => h.actions.includes('respond')).length
+          const ticksWithRealWork = chain.chainHistory.filter(h =>
+            h.actions.some(a => !['respond', 'focus', 'reflect', 'clear-inbox', 'remember'].includes(a))
+          ).length
+          if (chain.ticksInChain >= 2 && ticksWithRealWork > 0 && ticksWithRespond > 0) {
+            lines.push('  ⚠ You have written `respond` in an earlier tick AND done real work since.')
+            lines.push('    If that earlier respond was an intention ("I will do X"), it is now STALE.')
+            lines.push('    Write a NEW `respond` with ACTUAL RESULTS — what you did, what you found.')
+            lines.push('    Later `respond` overwrites earlier ones in the chain aggregation.')
+          }
+
           lines.push('  ⚡ Convergence check: is your task complete? Answer in reflect with "converged: yes/no" and reason.')
+          lines.push('  ⚡ If converged, make sure your LAST action in this tick is `respond` with final results (not intentions).')
           lines.push('</chain>')
           return lines.join('\n')
         },
