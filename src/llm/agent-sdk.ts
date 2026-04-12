@@ -19,9 +19,11 @@ export interface AgentSdkOptions {
   model?: string
   /** Budget in USD per tick (default: 5). Controls token spend. */
   maxBudgetUsd?: number
-  /** Max tool-call rounds inside Agent SDK (default: 20). This is the REAL scope control —
-   *  limits how many Read/Write/Bash/etc calls happen per tick. */
+  /** Max assistant turns (Agent SDK's soft hint). Default: 20. */
   maxTurns?: number
+  /** Max tool calls hard limit via canUseTool callback. Default: maxTurns * 2.
+   *  This is the REAL enforced limit — Agent SDK's maxTurns is unreliable. */
+  maxToolCalls?: number
   /** Wall-clock timeout in ms (default: 180000 = 3min). Hard stop safety net. */
   timeoutMs?: number
   /** Working directory for file operations */
@@ -75,6 +77,7 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
 
       let result = ''
       const maxTurns = opts?.maxTurns ?? 20
+      const maxToolCalls = opts?.maxToolCalls ?? (maxTurns * 2)  // hard limit: ~2 tool calls per turn
 
       // Wall-clock timeout: hard stop regardless of what Agent SDK is doing.
       const abortController = new AbortController()
@@ -82,6 +85,20 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
         console.error(`[agent-sdk] TIMEOUT: ${timeoutMs}ms exceeded — aborting query`)
         abortController.abort()
       }, timeoutMs)
+
+      // canUseTool: hard-enforce tool call count (Agent SDK's maxTurns is a soft hint)
+      let toolCallCount = 0
+      type PermResult = { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string; interrupt?: boolean }
+      const canUseTool = async (toolName: string, input: Record<string, unknown>): Promise<PermResult> => {
+        toolCallCount++
+        const preview = JSON.stringify(input).slice(0, 100)
+        console.error(`[agent-sdk] tool[${toolCallCount}/${maxToolCalls}] ${toolName} — ${preview}`)
+        if (toolCallCount > maxToolCalls) {
+          console.error(`[agent-sdk] HARD LIMIT: tool call ${toolCallCount} > ${maxToolCalls} — denying`)
+          return { behavior: 'deny', message: `Tool call limit reached (${maxToolCalls}). Wrap up and respond with current findings.` }
+        }
+        return { behavior: 'allow', updatedInput: input }
+      }
 
       try {
         let turns = 0
@@ -95,8 +112,7 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
             allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
             maxTurns,
             maxBudgetUsd: opts?.maxBudgetUsd ?? 5,
-            permissionMode: 'bypassPermissions',
-            allowDangerouslySkipPermissions: true,
+            canUseTool,
             abortController,
             ...systemPromptOption,
             ...(opts?.model ? { model: opts.model } : {}),
@@ -105,19 +121,15 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
         })) {
           if ('result' in message) {
             result = message.result
-          } else {
-            // Observe black box: count turns, log progress
-            turns++
-            const elapsed = Math.round((Date.now() - start) / 1000)
-            const msgType = typeof message === 'object' && message !== null
-              ? ('type' in message ? (message as Record<string, unknown>).type : Object.keys(message)[0])
-              : 'unknown'
-            console.error(`[agent-sdk] turn ${turns}/${maxTurns} (${elapsed}s) — ${msgType}`)
+          } else if (typeof message === 'object' && message !== null && 'type' in message) {
+            const msgType = (message as Record<string, unknown>).type as string
+            // Count only actual LLM turns (assistant messages), not every internal message
+            if (msgType === 'assistant') turns++
           }
         }
 
         const totalMs = Date.now() - start
-        console.error(`[agent-sdk] completed: ${turns} turns in ${Math.round(totalMs / 1000)}s`)
+        console.error(`[agent-sdk] completed: ${turns} turns, ${toolCallCount} tool calls in ${Math.round(totalMs / 1000)}s`)
       } finally {
         clearTimeout(timer)
       }
