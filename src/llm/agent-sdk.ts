@@ -112,6 +112,7 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
             allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
             maxTurns,
             maxBudgetUsd: opts?.maxBudgetUsd ?? 5,
+            permissionMode: 'default',  // required for canUseTool to be called (bypassPermissions skips it)
             canUseTool,
             abortController,
             ...systemPromptOption,
