@@ -81,8 +81,9 @@ export interface AgentLoop {
   injectMessage(from: string, text: string): void
   /** Set/clear LLM streaming callback — streams text chunks during think phase */
   setStreamCallback(fn: ((text: string) => void) | null): void
-  /** Run a self-paced chain — agent decides when to stop */
-  runChain(): Promise<TickResult[]>
+  /** Run a self-paced chain — agent decides when to stop.
+   *  `wallClockMs`: wall-clock cap across all ticks (default: no cap). */
+  runChain(opts?: { wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]>
   start(interval?: number): void
   stop(): void
   isRunning(): boolean
@@ -1070,13 +1071,23 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         (llm as { onStreamText?: ((text: string) => void) | undefined }).onStreamText = fn ?? undefined
       }
     },
-    async runChain(): Promise<TickResult[]> {
+    async runChain(opts?: { wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]> {
       const results: TickResult[] = []
       continuation.startChain()
+      const chainStart = Date.now()
 
       while (true) {
         const result = await tick()
         results.push(result)
+        if (opts?.onTick) {
+          try { await opts.onTick(result, results.length) } catch { /* ignore stream errors */ }
+        }
+
+        // Wall-clock cap — bounds total chain duration for sync HTTP callers
+        if (opts?.wallClockMs && (Date.now() - chainStart) >= opts.wallClockMs) {
+          console.error(`[tanren] Chain tick ${results.length}: stop — wall-clock cap ${opts.wallClockMs}ms reached`)
+          break
+        }
 
         const decision = continuation.shouldContinue(result)
         console.error(`[tanren] Chain tick ${results.length}: ${decision.continue ? 'continue' : 'stop'} — ${decision.reason}`)

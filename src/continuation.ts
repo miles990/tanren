@@ -122,6 +122,19 @@ export function createContinuationSystem(memoryDir: string) {
         return { continue: false, reason: `converged: ${reason}` }
       }
 
+      // Implicit convergence: respond action present AND no explicit continue signal.
+      // Rationale: `respond` means "I'm done talking to the caller". Unless the agent
+      // explicitly asks to continue (e.g. waiting on a background task), treat a
+      // respond-ending tick as done. This prevents 2x tick regression on simple queries
+      // while preserving the Constraint Texture — agents that need chains just write
+      // `continue: yes` in reflection.
+      const hasRespond = tickResult.actions.some(a => a.type === 'respond')
+      const explicitContinue = reason.includes('continue') || reason === 'agent wants to continue'
+      if (hasRespond && !explicitContinue) {
+        chain.active = false
+        return { continue: false, reason: 'respond action present (implicit converged)' }
+      }
+
       // Gate violations — any warn or block = stop chain
       const gateIssues = tickResult.gateResults.filter(g => g.action !== 'pass')
       if (gateIssues.length > 0) {

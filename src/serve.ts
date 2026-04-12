@@ -13,9 +13,63 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ChatResult } from './types.js'
+import type { ChatResult, TickResult, Action } from './types.js'
 import type { TanrenAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
+
+// Constraint Texture: /chat is a convergence condition, not a prescription.
+// Runs runChain() until agent declares converged OR bound hits.
+// Wall-clock bound prevents sync HTTP clients from hanging forever.
+const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000  // 20 min total chain (sync /chat)
+const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000 // 30 min total chain (SSE /chat/stream)
+
+// Aggregate multi-tick results into a single ChatResult envelope.
+// Final response = last tick with respond action (or last tick's thought).
+function aggregateChain(results: TickResult[], mode: string): ChatResult & { chainTicks: number } {
+  const last = results[results.length - 1]
+  const allActionTypes: string[] = []
+  const filesRead = new Set<string>()
+  const filesWritten = new Set<string>()
+  let totalDuration = 0
+  let totalContextChars = 0
+  let respondContent = ''
+  // Walk ticks in order — latest respond wins
+  for (const r of results) {
+    totalDuration += r.observation.duration
+    totalContextChars += r.perception.length
+    for (const a of r.actions) {
+      allActionTypes.push(a.type)
+      if (a.type === 'read' || a.type === 'grep') {
+        const p = (a as Action).input?.path as string | undefined
+        if (p) filesRead.add(p)
+      }
+      if (a.type === 'write' || a.type === 'edit') {
+        const p = (a as Action).input?.path as string | undefined
+        if (p) filesWritten.add(p)
+      }
+      if (a.type === 'respond') {
+        const c = (a as Action & { content?: string }).content
+        if (c) respondContent = c
+      }
+    }
+  }
+  return {
+    response: respondContent,
+    thought: last.thought,
+    actions: allActionTypes,
+    duration: totalDuration,
+    quality: last.observation.outputQuality,
+    meta: {
+      mode,
+      filesRead: [...filesRead],
+      filesWritten: [...filesWritten],
+      toolsUsed: [...new Set(allActionTypes)],
+      hypotheses: 0,
+      contextChars: totalContextChars,
+    },
+    chainTicks: results.length,
+  }
+}
 
 export interface ServeOptions {
   port?: number
@@ -79,16 +133,29 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   // All paths (/chat, /chat/stream, autonomous) go through agent.chat() → tick pipeline.
   // Streaming is handled via onStream callback, not a separate SDK path.
 
-  async function handleChat(from: string, text: string): Promise<ChatResult & { tick: number }> {
+  async function handleChat(from: string, text: string): Promise<ChatResult & { tick: number; chainTicks: number }> {
     if (options.onBeforeChat) await options.onBeforeChat(from, text)
 
-    // Always use tick pipeline — consistent perception, context modes, gates, learning.
-    const chatResult = await agent.chat(text, { from })
+    // Constraint Texture: convergence condition, not prescription.
+    // Agent declares `converged: yes/no` in reflection. Framework honors.
+    // Wall-clock cap prevents sync HTTP hang (agent may still be working when cap hits).
+    const results = await (agent as TanrenAgent & {
+      runChain(message?: string, options?: { from?: string; wallClockMs?: number }): Promise<TickResult[]>
+    }).runChain(text, { from, wallClockMs: CHAT_WALL_CLOCK_MS })
 
-    tickCount++
+    if (!results.length) {
+      throw new Error('runChain returned no ticks')
+    }
+
+    tickCount += results.length
+    // getCurrentMode is optional — use last known mode from memory
+    const loopWithMode = agent as TanrenAgent & { getCurrentMode?: () => string }
+    const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
+    const chatResult = aggregateChain(results, mode)
+
     if (options.onAfterChat) await options.onAfterChat(chatResult)
 
-    return { ...chatResult, tick: tickCount } as ChatResult & { tick: number }
+    return { ...chatResult, tick: tickCount, chainTicks: results.length }
   }
 
   /**
@@ -112,17 +179,32 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     const start = Date.now()
 
     try {
-      // Same pipeline as /chat — only difference is the onStream callback for SSE
-      const chatResult = await agent.chat(text, {
+      // Multi-tick chain with per-tick SSE events.
+      // Each tick: emit `tick-start`, stream text via setStreamCallback, emit `tick-end`.
+      // Final: emit `result` + `done`.
+      const results = await (agent as TanrenAgent & {
+        runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]>
+      }).runChain(text, {
         from,
-        onStream: (chunk) => sse('text', { text: chunk }),
+        wallClockMs: STREAM_WALL_CLOCK_MS,
+        onTick: (tickResult, tickNum) => {
+          sse('tick-end', {
+            tickNum,
+            actions: tickResult.actions.map(a => a.type),
+            duration: tickResult.observation.duration,
+            quality: tickResult.observation.outputQuality,
+          })
+        },
       })
 
-      tickCount++
+      tickCount += results.length
+      const loopWithMode = agent as TanrenAgent & { getCurrentMode?: () => string }
+      const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
+      const chatResult = aggregateChain(results, mode)
       if (options.onAfterChat) await options.onAfterChat(chatResult)
       recordTick(tickCount, Date.now() - start, chatResult.actions ?? [], chatResult.meta?.mode ?? 'unknown')
-      sse('result', { response: chatResult.response })
-      sse('done', { tick: tickCount, duration: Date.now() - start, actions: chatResult.actions })
+      sse('result', { response: chatResult.response, chainTicks: chatResult.chainTicks })
+      sse('done', { tick: tickCount, chainTicks: results.length, duration: Date.now() - start, actions: chatResult.actions })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       recordTick(tickCount, Date.now() - start, [], 'error', msg)

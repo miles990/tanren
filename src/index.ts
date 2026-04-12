@@ -21,8 +21,9 @@ export interface TanrenAgent {
   /** Send a message and get a response — injects message, runs tick, extracts response.
    *  Optional onStream callback receives text chunks during LLM think phase. */
   chat(message: string, options?: { from?: string; onStream?: (text: string) => void }): Promise<ChatResult>
-  /** Run a self-paced chain — agent decides when to stop */
-  runChain(message?: string, options?: { from?: string }): Promise<TickResult[]>
+  /** Run a self-paced chain — agent decides when to stop.
+   *  `wallClockMs`: wall-clock cap across all ticks. `onTick`: per-tick callback (for streaming). */
+  runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]>
   /** Start the autonomous loop */
   start(interval?: number): void
   /** Stop the loop gracefully */
@@ -98,11 +99,11 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
         },
       }
     },
-    async runChain(message?: string, options?: { from?: string }): Promise<TickResult[]> {
+    async runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]> {
       if (message) {
         loop.injectMessage(options?.from ?? 'user', message)
       }
-      return loop.runChain()
+      return loop.runChain({ wallClockMs: options?.wallClockMs, onTick: options?.onTick })
     },
     start: (interval) => loop.start(interval ?? config.tickInterval),
     stop: () => loop.stop(),
