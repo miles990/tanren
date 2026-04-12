@@ -25,7 +25,7 @@ export interface AgentSdkOptions {
    *  This is the REAL enforced limit — Agent SDK's maxTurns is unreliable,
    *  and canUseTool only fires for "dangerous" ops in default mode. */
   maxToolCalls?: number
-  /** Wall-clock timeout in ms (default: 180000 = 3min). Hard stop safety net. */
+  /** Wall-clock timeout in ms (default: 300000 = 5min). Hard stop safety net. */
   timeoutMs?: number
   /** Working directory for file operations */
   cwd?: string
@@ -64,7 +64,7 @@ export interface AgentSdkOptions {
 
 export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
   const identityMode = opts?.identityMode ?? 'override'
-  const timeoutMs = opts?.timeoutMs ?? 180_000 // 3 min wall-clock safety net
+  const timeoutMs = opts?.timeoutMs ?? 300_000 // 5 min wall-clock safety net
 
   return {
     async think(context: string, systemPrompt: string): Promise<string> {
