@@ -200,21 +200,30 @@ export async function runToolUseFeedbackLoop(
       })
     }
 
+    // Memory injection: if the agent already wrote a respond in an earlier round,
+    // show it back so the LLM knows and can choose to rewrite instead of append.
+    // This is the "memory gap" fix — without this, the LLM is blind to its own
+    // prior respond and can only narrate new intentions on top.
+    const priorResponds = allActions.filter(a => a.type === 'respond')
+    const priorRespondHint: string = priorResponds.length > 0
+      ? `\n\n⚠ PRIOR respond() already written this tick (${priorResponds.length} total). Latest content preview:\n"""${(priorResponds[priorResponds.length - 1].content ?? '').slice(0, 300)}${((priorResponds[priorResponds.length - 1].content ?? '').length > 300) ? '...' : ''}"""\nIf that's still your FINAL answer, DO NOT call respond again — let the loop end. If you have NEW results after the tool output, call respond with the COMPLETE final answer — your new call REPLACES the prior one, not appends to it. Do NOT write "Let me..." or "Now I will..." — respond is for RESULTS, not intentions.`
+      : ''
+
     if (toolResults.length === 0) {
       const neverCalledTools = allActions.length === 0
       if (neverCalledTools && round === 0) {
         messages.push({
           role: 'user',
-          content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed. Use the respond tool to deliver your answer.' }],
+          content: [{ type: 'text', text: 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed. Use the respond tool to deliver your answer.' + priorRespondHint }],
         })
       } else if (!degradeTools && roundsSinceLastToolUse <= IDLE_THRESHOLD) {
         const needsRespond = hasIncomingMessage && !allActions.some(a => a.type === 'respond')
         messages.push({
           role: 'user',
-          content: [{ type: 'text', text: needsRespond
+          content: [{ type: 'text', text: (needsRespond
             ? 'You MUST call the respond tool NOW to answer the pending message. Include your complete analysis in the respond content.'
-            : 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed in feedback rounds.',
-          }],
+            : 'You MUST call a tool now — respond, write, edit, read, or search. Text-only responses are not allowed in feedback rounds.'
+          ) + priorRespondHint }],
         })
       } else {
         break
@@ -223,9 +232,10 @@ export async function runToolUseFeedbackLoop(
       const needsRespond = hasIncomingMessage && !allActions.some(a => a.type === 'respond')
       const actionHint: ContentBlock = {
         type: 'text',
-        text: needsRespond
+        text: (needsRespond
           ? 'Tool results above. You have an unanswered message. Call the respond tool NOW with your complete analysis. Do NOT return text without calling respond.'
-          : 'Tool results above. Now: call write/edit to create files, or call respond when done. Do NOT return text without a tool call.',
+          : 'Tool results above. Now: call write/edit to create files, or call respond when done. Do NOT return text without a tool call.'
+        ) + priorRespondHint,
       }
       messages.push({ role: 'user', content: [...toolResults, actionHint] })
     }
@@ -327,7 +337,28 @@ export async function runToolUseFeedbackLoop(
     if (feedbackRespond && feedbackRespond.content.length > minRespond) break
   }
 
-  return { thought, actions: allActions, results: actionResults, actionsExecuted, actionsFailed }
+  // Collapse respond actions to the last one — enforces "final answer only"
+  // as a structural invariant. Any caller that extracts respond (via .find,
+  // .filter, etc.) sees a single canonical respond, eliminating the
+  // "first-respond-wins-but-first-is-stale-intention" bug.
+  const dedupedActions = collapseRespondActions(allActions)
+
+  return { thought, actions: dedupedActions, results: actionResults, actionsExecuted, actionsFailed }
+}
+
+/**
+ * Remove all but the last respond action from the action list.
+ * Preserves order for non-respond actions. This is the structural
+ * enforcement of "respond is a final answer, not a progress log".
+ */
+function collapseRespondActions(actions: Action[]): Action[] {
+  const respondIndices: number[] = []
+  for (let i = 0; i < actions.length; i++) {
+    if (actions[i].type === 'respond') respondIndices.push(i)
+  }
+  if (respondIndices.length <= 1) return actions
+  const lastRespondIdx = respondIndices[respondIndices.length - 1]
+  return actions.filter((a, i) => a.type !== 'respond' || i === lastRespondIdx)
 }
 
 // ── Text-based feedback mini-loop ─────────────────────────────────────────────

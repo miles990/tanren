@@ -71,8 +71,12 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
       } finally {
         if (options?.onStream) loop.setStreamCallback(null)
       }
-      // Extract response: prefer action:respond content, fallback to thought
-      const respondAction = result.actions.find(a => a.type === 'respond')
+      // Extract response: LATEST respond action content wins (not first).
+      // Rationale: feedback loop can produce multiple respond actions across rounds.
+      // The LLM's last word is the canonical answer — earlier ones are stale
+      // intentions ("I'll do X") written before the work was done.
+      const respondActions = result.actions.filter(a => a.type === 'respond')
+      const respondAction = respondActions[respondActions.length - 1]
       const response = respondAction?.content ?? ''
       // Extract structured metadata for cross-agent/human transparency
       const actionTypes = result.actions.map(a => a.type)
