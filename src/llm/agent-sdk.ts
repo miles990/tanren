@@ -21,8 +21,9 @@ export interface AgentSdkOptions {
   maxBudgetUsd?: number
   /** Max assistant turns (Agent SDK's soft hint). Default: 20. */
   maxTurns?: number
-  /** Max tool calls hard limit via canUseTool callback. Default: maxTurns * 2.
-   *  This is the REAL enforced limit — Agent SDK's maxTurns is unreliable. */
+  /** Max tool calls hard limit via PreToolUse hook. Default: maxTurns * 2.
+   *  This is the REAL enforced limit — Agent SDK's maxTurns is unreliable,
+   *  and canUseTool only fires for "dangerous" ops in default mode. */
   maxToolCalls?: number
   /** Wall-clock timeout in ms (default: 180000 = 3min). Hard stop safety net. */
   timeoutMs?: number
@@ -86,18 +87,25 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
         abortController.abort()
       }, timeoutMs)
 
-      // canUseTool: hard-enforce tool call count (Agent SDK's maxTurns is a soft hint)
+      // PreToolUse hook: fires on EVERY tool call regardless of permissionMode.
+      // canUseTool only fires for "dangerous" ops in default mode (e.g. Bash `ls` is
+      // auto-allowed and never hits the callback). PreToolUse is the real chokepoint.
       let toolCallCount = 0
-      type PermResult = { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string; interrupt?: boolean }
-      const canUseTool = async (toolName: string, input: Record<string, unknown>): Promise<PermResult> => {
+      const preToolUseHook = async (input: { tool_name: string; tool_input: unknown }) => {
         toolCallCount++
-        const preview = JSON.stringify(input).slice(0, 100)
-        console.error(`[agent-sdk] tool[${toolCallCount}/${maxToolCalls}] ${toolName} — ${preview}`)
+        const preview = JSON.stringify(input.tool_input).slice(0, 100)
+        console.error(`[agent-sdk] tool[${toolCallCount}/${maxToolCalls}] ${input.tool_name} — ${preview}`)
         if (toolCallCount > maxToolCalls) {
           console.error(`[agent-sdk] HARD LIMIT: tool call ${toolCallCount} > ${maxToolCalls} — denying`)
-          return { behavior: 'deny', message: `Tool call limit reached (${maxToolCalls}). Wrap up and respond with current findings.` }
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse' as const,
+              permissionDecision: 'deny' as const,
+              permissionDecisionReason: `Tool call limit reached (${maxToolCalls}). Wrap up and respond with current findings.`,
+            },
+          }
         }
-        return { behavior: 'allow', updatedInput: input }
+        return {}
       }
 
       try {
@@ -112,8 +120,9 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
             allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
             maxTurns,
             maxBudgetUsd: opts?.maxBudgetUsd ?? 5,
-            permissionMode: 'default',  // required for canUseTool to be called (bypassPermissions skips it)
-            canUseTool,
+            permissionMode: 'bypassPermissions',  // hooks fire regardless; bypass removes friction on allowed tools
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            hooks: { PreToolUse: [{ hooks: [preToolUseHook as any] }] },
             abortController,
             ...systemPromptOption,
             ...(opts?.model ? { model: opts.model } : {}),
