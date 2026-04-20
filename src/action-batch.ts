@@ -88,7 +88,7 @@ export async function executeBatch(
             thread.set('result', result)
             thread.set('action', action.type)
             // Detect soft errors: handler returned error string instead of throwing
-            if (result.startsWith('[') && result.includes('error')) {
+            if (result.startsWith('[') && /^\[[\w_-]+ error:/.test(result)) {
               thread.set('error', result)
               onProgress?.({ phase: 'error', action, error: result.slice(0, 200) })
               throw new Error(result)
@@ -131,7 +131,8 @@ export async function executeBatch(
           const result = await executor.execute(action, actionContext)
           results[index] = result
           // Detect soft errors: handler returned error string instead of throwing
-          if (result.startsWith('[') && result.includes('error')) {
+          // Pattern matches Tanren's "[action_type error: ...]" format only, not JSON arrays
+          if (result.startsWith('[') && /^\[[\w_-]+ error:/.test(result)) {
             failed++
             onProgress?.({ phase: 'error', action, error: result.slice(0, 200) })
           } else {
