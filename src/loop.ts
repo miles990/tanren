@@ -602,9 +602,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         verification: null, // all tools
       }
       const modeToolFilter = preMode ? MODE_TOOLS[preMode.mode] ?? null : null
+      // Config-registered custom actions always bypass mode filter
+      const customActionNames = new Set(config.actions?.map(a => a.type) ?? [])
       const allToolDefs = actionRegistry.toToolDefinitions()
       let toolDefs = modeToolFilter
-        ? allToolDefs.filter(t => modeToolFilter.has(t.name))
+        ? allToolDefs.filter(t => modeToolFilter.has(t.name) || customActionNames.has(t.name))
         : allToolDefs
       // Research-first: exclude respond from initial round when there's a message
       if (hasIncomingMessage && !modeToolFilter) {
