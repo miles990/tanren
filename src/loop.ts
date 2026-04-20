@@ -18,6 +18,7 @@ import type {
   GateContext,
   LLMProvider,
   ToolUseLLMProvider,
+  SessionAwareLLMProvider,
   ConversationMessage,
   EventTrigger,
   TriggerEvent,
@@ -89,6 +90,8 @@ export interface AgentLoop {
   isRunning(): boolean
   getRecentTicks(): TickResult[]
   getCurrentMode(): string
+  setSessionId(id: string | null): void
+  getSessionId(): string | null
 }
 
 /**
@@ -733,8 +736,10 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       //   - Idle threshold exceeded (model stopped calling tools)
       //   - Production convergence (synthesize threshold hit)
       // This gives weak models more room and strong models less waste.
-      const configMax = config.feedbackRounds ?? 10
-      const maxFeedbackRounds = skipFeedback ? 0
+      const providerSkipsFeedback = isSessionAwareProvider(llm) && llm.skipFeedbackLoop
+      const configMax = providerSkipsFeedback ? 0 : (config.feedbackRounds ?? 10)
+      const maxFeedbackRounds = providerSkipsFeedback ? 0
+        : skipFeedback ? 0
         : initialHadNoTools ? Math.max(configMax, 2)  // No tools yet → at least 2 rounds
         : configMax                                     // Environmental signals handle the rest
       currentMaxFeedbackRounds = maxFeedbackRounds
@@ -1106,6 +1111,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     isRunning: () => running,
     getRecentTicks: () => [...recentTicks],
     getCurrentMode: () => currentContextMode?.mode ?? 'unknown',
+    setSessionId(id: string | null) {
+      if (isSessionAwareProvider(llm)) llm.setResumeSession(id)
+    },
+    getSessionId(): string | null {
+      if (isSessionAwareProvider(llm)) return llm.getSessionId()
+      return null
+    },
   }
 }
 
@@ -1201,4 +1213,8 @@ function persistTick(journalDir: string, journalPath: string, tick: TickResult):
 
 function isToolUseProvider(provider: LLMProvider): provider is ToolUseLLMProvider {
   return 'thinkWithTools' in provider && typeof (provider as ToolUseLLMProvider).thinkWithTools === 'function'
+}
+
+function isSessionAwareProvider(provider: LLMProvider): provider is SessionAwareLLMProvider {
+  return 'skipFeedbackLoop' in provider && 'getSessionId' in provider
 }

@@ -32,6 +32,10 @@ export interface TanrenAgent {
   isRunning(): boolean
   /** Recent tick history */
   getRecentTicks(): TickResult[]
+  /** Set session ID for resume (Agent SDK session continuity) */
+  setSessionId(id: string | null): void
+  /** Get current session ID (Agent SDK session continuity) */
+  getSessionId(): string | null
 }
 
 export function createAgent(config: TanrenConfig): TanrenAgent {
@@ -87,12 +91,14 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
         .filter(a => a.type === 'write' || a.type === 'edit')
         .map(a => (a.input?.path as string) ?? '').filter(Boolean)
 
+      const sessionId = loop.getSessionId() ?? undefined
       return {
         response,
         thought: result.thought,
         actions: actionTypes,
         duration: result.observation.duration,
         quality: result.observation.outputQuality,
+        ...(sessionId ? { sessionId } : {}),
         meta: {
           mode: loop.getCurrentMode?.() ?? 'unknown',
           filesRead: [...new Set(filesRead)],
@@ -113,6 +119,8 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
     stop: () => loop.stop(),
     isRunning: () => loop.isRunning(),
     getRecentTicks: () => loop.getRecentTicks(),
+    setSessionId: (id) => loop.setSessionId(id),
+    getSessionId: () => loop.getSessionId(),
   }
 }
 
@@ -139,6 +147,7 @@ export type {
   SearchResult,
   LLMProvider,
   ToolUseLLMProvider,
+  SessionAwareLLMProvider,
   ToolDefinition,
   ConversationMessage,
   ContentBlock,

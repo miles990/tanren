@@ -12,7 +12,7 @@
  * Claude Code's tool-use RLHF tuning can opt in via `identityMode: 'inherit-claude-code'`.
  */
 
-import type { LLMProvider } from '../types.js'
+import type { LLMProvider, SessionAwareLLMProvider } from '../types.js'
 
 export interface AgentSdkOptions {
   /** Model override (default: determined by Claude Code) */
@@ -62,11 +62,18 @@ export interface AgentSdkOptions {
   identityMode?: 'override' | 'inherit-claude-code'
 }
 
-export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
+export function createAgentSdkProvider(opts?: AgentSdkOptions): SessionAwareLLMProvider {
   const identityMode = opts?.identityMode ?? 'override'
   const timeoutMs = opts?.timeoutMs ?? 300_000 // 5 min wall-clock safety net
 
+  let currentSessionId: string | null = null
+  let resumeSessionId: string | null = null
+
   return {
+    skipFeedbackLoop: true,
+    getSessionId() { return currentSessionId },
+    setResumeSession(id: string | null) { resumeSessionId = id },
+
     async think(context: string, systemPrompt: string): Promise<string> {
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
 
@@ -127,19 +134,22 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): LLMProvider {
             ...systemPromptOption,
             ...(opts?.model ? { model: opts.model } : {}),
             ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
+            ...(resumeSessionId ? { resume: resumeSessionId } : {}),
           },
         })) {
           if ('result' in message) {
             result = message.result
           } else if (typeof message === 'object' && message !== null && 'type' in message) {
-            const msgType = (message as Record<string, unknown>).type as string
-            // Count only actual LLM turns (assistant messages), not every internal message
-            if (msgType === 'assistant') turns++
+            const msg = message as Record<string, unknown>
+            if (msg.type === 'system' && msg.subtype === 'init') {
+              currentSessionId = ((msg.session_id ?? msg.sessionId) as string) ?? null
+            }
+            if (msg.type === 'assistant') turns++
           }
         }
 
         const totalMs = Date.now() - start
-        console.error(`[agent-sdk] completed: ${turns} turns, ${toolCallCount} tool calls in ${Math.round(totalMs / 1000)}s`)
+        console.error(`[agent-sdk] completed: ${turns} turns, ${toolCallCount} tool calls in ${Math.round(totalMs / 1000)}s${currentSessionId ? ` (session: ${currentSessionId.slice(0, 8)}...)` : ''}`)
       } finally {
         clearTimeout(timer)
       }

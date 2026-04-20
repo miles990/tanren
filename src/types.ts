@@ -21,6 +21,7 @@ export interface ChatResult {
   actions: string[]           // action types executed
   duration: number            // ms
   quality: number             // observation quality 1-5
+  sessionId?: string          // Agent SDK session ID for conversation continuity
   // Structured metadata — any agent or human can programmatically understand what happened
   meta?: {
     mode: string              // context mode (research/interaction/execution/verification)
@@ -141,6 +142,15 @@ export interface LLMProvider {
    * inherit Claude Code's persona and tool-use tuning.
    */
   think(context: string, systemPrompt: string): Promise<string>
+}
+
+/** LLM provider with native session management (e.g. Agent SDK).
+ *  Supports conversation continuity via session resume + skips framework feedback loop
+ *  since the provider handles multi-turn tool use internally. */
+export interface SessionAwareLLMProvider extends LLMProvider {
+  getSessionId(): string | null
+  setResumeSession(id: string | null): void
+  readonly skipFeedbackLoop: boolean
 }
 
 /** Tool definition for Anthropic API tool use */

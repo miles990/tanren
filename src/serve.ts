@@ -144,8 +144,12 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   // All paths (/chat, /chat/stream, autonomous) go through agent.chat() → tick pipeline.
   // Streaming is handled via onStream callback, not a separate SDK path.
 
-  async function handleChat(from: string, text: string): Promise<ChatResult & { tick: number; chainTicks: number }> {
+  async function handleChat(from: string, text: string, sessionId?: string): Promise<ChatResult & { tick: number; chainTicks: number; sessionId?: string }> {
     if (options.onBeforeChat) await options.onBeforeChat(from, text)
+
+    // Session resume: if client provides a sessionId, tell the provider to resume it
+    if (sessionId) agent.setSessionId(sessionId)
+    else agent.setSessionId(null)
 
     // Constraint Texture: convergence condition, not prescription.
     // Agent declares `converged: yes/no` in reflection. Framework honors.
@@ -164,16 +168,19 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
     const chatResult = aggregateChain(results, mode)
 
+    // Capture session ID from provider for response
+    const resultSessionId = agent.getSessionId() ?? undefined
+
     if (options.onAfterChat) await options.onAfterChat(chatResult)
 
-    return { ...chatResult, tick: tickCount, chainTicks: results.length }
+    return { ...chatResult, tick: tickCount, chainTicks: results.length, ...(resultSessionId ? { sessionId: resultSessionId } : {}) }
   }
 
   /**
    * Streaming chat via SSE — same tick pipeline as /chat, with real-time text chunks.
    * Events: text (LLM streaming chunk), result (final response), done (stream end).
    */
-  async function handleChatStream(from: string, text: string, res: ServerResponse): Promise<void> {
+  async function handleChatStream(from: string, text: string, res: ServerResponse, sessionId?: string): Promise<void> {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -186,6 +193,10 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     }
 
     if (options.onBeforeChat) await options.onBeforeChat(from, text)
+
+    // Session resume for streaming endpoint
+    if (sessionId) agent.setSessionId(sessionId)
+    else agent.setSessionId(null)
 
     const start = Date.now()
 
@@ -212,9 +223,10 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       const loopWithMode = agent as TanrenAgent & { getCurrentMode?: () => string }
       const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
       const chatResult = aggregateChain(results, mode)
+      const resultSessionId = agent.getSessionId() ?? undefined
       if (options.onAfterChat) await options.onAfterChat(chatResult)
       recordTick(tickCount, Date.now() - start, chatResult.actions ?? [], chatResult.meta?.mode ?? 'unknown')
-      sse('result', { response: chatResult.response, chainTicks: chatResult.chainTicks })
+      sse('result', { response: chatResult.response, chainTicks: chatResult.chainTicks, ...(resultSessionId ? { sessionId: resultSessionId } : {}) })
       sse('done', { tick: tickCount, chainTicks: results.length, duration: Date.now() - start, actions: chatResult.actions })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -283,7 +295,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     } else if (url.pathname === '/chat' && req.method === 'POST') {
       let body = ''
       for await (const chunk of req) body += chunk
-      let parsed: { from?: string; text?: string }
+      let parsed: { from?: string; text?: string; sessionId?: string }
       try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
       const from = parsed.from ?? 'anonymous'
@@ -294,7 +306,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       ticking = true
       const tickStart = Date.now()
       try {
-        const result = await handleChat(from, text)
+        const result = await handleChat(from, text, parsed.sessionId)
         recordTick(tickCount, Date.now() - tickStart, result.actions ?? [], result.meta?.mode ?? 'unknown')
         json(res, 200, result)
       } catch (err) {
@@ -308,7 +320,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     } else if (url.pathname === '/chat/stream' && req.method === 'POST') {
       let body = ''
       for await (const chunk of req) body += chunk
-      let parsed: { from?: string; text?: string }
+      let parsed: { from?: string; text?: string; sessionId?: string }
       try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
       const from = parsed.from ?? 'anonymous'
@@ -318,7 +330,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
       ticking = true
       try {
-        await handleChatStream(from, text, res)
+        await handleChatStream(from, text, res, parsed.sessionId)
       } finally {
         ticking = false
       }
