@@ -87,6 +87,12 @@ export async function executeBatch(
             const result = await executor.execute(action, actionContext)
             thread.set('result', result)
             thread.set('action', action.type)
+            // Detect soft errors: handler returned error string instead of throwing
+            if (result.startsWith('[') && result.includes('error')) {
+              thread.set('error', result)
+              onProgress?.({ phase: 'error', action, error: result.slice(0, 200) })
+              throw new Error(result)
+            }
             onProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
             return { result, index }
           } catch (err) {
@@ -124,9 +130,15 @@ export async function executeBatch(
         try {
           const result = await executor.execute(action, actionContext)
           results[index] = result
-          executed++
-          mainThread.set(`action-${index}`, result.slice(0, 200))
-          onProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
+          // Detect soft errors: handler returned error string instead of throwing
+          if (result.startsWith('[') && result.includes('error')) {
+            failed++
+            onProgress?.({ phase: 'error', action, error: result.slice(0, 200) })
+          } else {
+            executed++
+            mainThread.set(`action-${index}`, result.slice(0, 200))
+            onProgress?.({ phase: 'done', action, result: result.slice(0, 200) })
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           results[index] = `[action ${action.type} failed: ${msg}]`

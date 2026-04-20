@@ -254,10 +254,43 @@ export const builtinActions: ActionHandler[] = [
       required: ['url'],
     },
     async execute(action) {
-      const url = (action.input?.url as string) ?? ''
-      const method = ((action.input?.method as string) ?? 'GET').toUpperCase()
-      const bodyRaw = (action.input?.body as string) ?? action.content?.trim() ?? ''
-      const headersRaw = (action.input?.headers as string) ?? ''
+      let url = (action.input?.url as string) ?? ''
+      let method = ((action.input?.method as string) ?? 'GET').toUpperCase()
+      let bodyRaw = (action.input?.body as string) ?? ''
+      let headersRaw = (action.input?.headers as string) ?? ''
+
+      // Fallback: parse raw HTTP format from action.content when input fields are empty
+      // Supports: "POST http://... \n Content-Type: ... \n\n {body}"
+      if (!url && action.content) {
+        const lines = action.content.trim().split('\n')
+        const firstLine = lines[0].trim()
+        const methodMatch = firstLine.match(/^(GET|POST|PUT|DELETE|PATCH)\s+(.+)/i)
+        if (methodMatch) {
+          method = methodMatch[1].toUpperCase()
+          url = methodMatch[2].trim()
+        } else if (firstLine.startsWith('http://') || firstLine.startsWith('https://')) {
+          url = firstLine
+        }
+        // Parse headers and body from remaining lines
+        let inBody = false
+        const headerLines: string[] = []
+        const bodyLines: string[] = []
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i]
+          if (!inBody && line.trim() === '') { inBody = true; continue }
+          if (inBody) bodyLines.push(line)
+          else if (line.includes(':')) headerLines.push(line)
+        }
+        if (bodyLines.length > 0 && !bodyRaw) bodyRaw = bodyLines.join('\n').trim()
+        if (headerLines.length > 0 && !headersRaw) {
+          const parsed: Record<string, string> = {}
+          for (const h of headerLines) {
+            const idx = h.indexOf(':')
+            if (idx > 0) parsed[h.slice(0, idx).trim()] = h.slice(idx + 1).trim()
+          }
+          headersRaw = JSON.stringify(parsed)
+        }
+      }
 
       if (!url) return '[http_request error: url is required]'
 
