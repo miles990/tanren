@@ -596,8 +596,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // research: full toolset (grep, read, explore, delegate, search)
       // verification: read + search focused
       const MODE_TOOLS: Record<string, Set<string> | null> = {
-        interaction: new Set(['respond', 'remember', 'clear-inbox', 'search']),
-        execution: new Set(['respond', 'remember', 'write', 'edit', 'shell', 'clear-inbox']),
+        interaction: new Set(['respond', 'remember', 'clear-inbox', 'search', 'http_request']),
+        execution: new Set(['respond', 'remember', 'write', 'edit', 'shell', 'clear-inbox', 'http_request']),
         research: null,    // all tools
         verification: null, // all tools
       }
