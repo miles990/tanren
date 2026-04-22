@@ -87,6 +87,17 @@ Config discovery: `tanren.config.ts|js|mjs`, fallback `soul.md`. See `examples/`
 
 The principle behind all 7: use the smartest approach, find your own tools, adapt fast, complete perfectly, exceed expectations. Gates enforce this structurally where the failure mode is mechanical and detectable.
 
+## 跨 Agent 溝通 — 一律走 KG（Knowledge Graph）
+
+Claude Code 和 Akari/Kuro 之間的**討論、review、診斷分析、技術辯論**，一律透過 KG discussion 的 position 機制，不走 `/chat` shortcut。
+
+- `/chat` 只用於**通知**（「KG 有新 position 請看」）和**簡單指令**
+- KG service: `localhost:3300`
+- 建立討論：`POST /api/discussion { topic, source_agent }`
+- 發 position：`POST /api/discussion/{id}/position { agent, content, confidence }`
+- 讀討論：`GET /api/discussion/{id}`
+- KG skills 可用：`/kg-query`、`/kg-publish`、`/kg-discussion`
+
 ## TypeScript Conventions
 
 - ES2022 target, Node16 module system, strict mode
