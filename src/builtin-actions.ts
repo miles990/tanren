@@ -278,10 +278,10 @@ export const builtinActions: ActionHandler[] = [
         for (let i = 1; i < lines.length; i++) {
           const line = lines[i]
           if (!inBody && line.trim() === '') { inBody = true; continue }
-          // JSON body detection: lines starting with { or [ are body, not headers
           if (!inBody && /^\s*[{\[]/.test(line)) inBody = true
           if (inBody) bodyLines.push(line)
-          else if (line.includes(':')) headerLines.push(line)
+          else if (/^[A-Za-z][\w-]*:\s/.test(line)) headerLines.push(line)
+          else { inBody = true; bodyLines.push(line) }
         }
         if (bodyLines.length > 0 && !bodyRaw) bodyRaw = bodyLines.join('\n').trim()
         if (headerLines.length > 0 && !headersRaw) {
