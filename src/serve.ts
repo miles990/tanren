@@ -5,23 +5,123 @@
  * Agents define identity + plugins + skills. Framework provides the server.
  *
  * Endpoints:
- *   POST /chat  { from, text } → { response, actions, duration, quality, meta }
- *   GET  /health → { status, service, ticking, tickCount }
+ *   POST /chat  { from, text, discussionId? } → { response, actions, duration, quality, meta }
+ *   GET  /health → { status, service, ticking, tickCount, pool }
  *   GET  /status → live-status.json
+ *
+ * Agent Pool: supports concurrent /chat requests with different discussionIds.
+ * Each discussionId gets its own agent instance from the pool.
  */
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ChatResult, TickResult, Action } from './types.js'
+import type { ChatResult, TickResult, Action, TanrenConfig } from './types.js'
 import type { TanrenAgent } from './index.js'
+import { createAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
 
-// Constraint Texture: /chat is a convergence condition, not a prescription.
-// Runs runChain() until agent declares converged OR bound hits.
-// Wall-clock bound prevents sync HTTP clients from hanging forever.
-const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000  // 20 min total chain (sync /chat)
-const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000 // 30 min total chain (SSE /chat/stream)
+const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000
+const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000
+
+// === Agent Pool ===
+
+const DEFAULT_MAX_POOL_SIZE = 3
+const IDLE_CLEANUP_MS = 30 * 60 * 1000 // 30 min
+
+interface PoolEntry {
+  agent: TanrenAgent
+  busy: boolean
+  discussionId: string | null
+  lastUsed: number
+  index: number
+}
+
+interface AgentPool {
+  acquire(discussionId?: string): PoolEntry | null
+  release(entry: PoolEntry): void
+  status(): { active: number; idle: number; total: number; max: number; entries: Array<{ index: number; busy: boolean; discussionId: string | null }> }
+  destroy(): void
+}
+
+function createAgentPool(primaryAgent: TanrenAgent, config: TanrenConfig | undefined, maxSize: number): AgentPool {
+  let nextIndex = 1 // monotonic counter — never reuse indices after splice
+  const entries: PoolEntry[] = [
+    { agent: primaryAgent, busy: false, discussionId: null, lastUsed: Date.now(), index: 0 },
+  ]
+  const affinityMap = new Map<string, number>() // discussionId → pool index (survives cleanup)
+
+  function acquire(discussionId?: string): PoolEntry | null {
+    // 1. Affinity match — same discussionId, idle
+    if (discussionId) {
+      const affinityIdx = affinityMap.get(discussionId)
+      if (affinityIdx !== undefined) {
+        const entry = entries.find(e => e.index === affinityIdx && !e.busy)
+        if (entry) {
+          entry.busy = true
+          entry.discussionId = discussionId
+          entry.lastUsed = Date.now()
+          return entry
+        }
+      }
+    }
+
+    // 2. Any idle agent
+    const idle = entries.find(e => !e.busy)
+    if (idle) {
+      idle.busy = true
+      idle.discussionId = discussionId ?? null
+      idle.lastUsed = Date.now()
+      if (discussionId) affinityMap.set(discussionId, idle.index)
+      return idle
+    }
+
+    // 3. Pool not full — create new agent
+    if (entries.length < maxSize && config) {
+      const newAgent = createAgent(config)
+      const idx = nextIndex++
+      const entry: PoolEntry = { agent: newAgent, busy: true, discussionId: discussionId ?? null, lastUsed: Date.now(), index: idx }
+      entries.push(entry)
+      if (discussionId) affinityMap.set(discussionId, idx)
+      return entry
+    }
+
+    // 4. Pool full + all busy
+    return null
+  }
+
+  function release(entry: PoolEntry): void {
+    entry.busy = false
+    entry.lastUsed = Date.now()
+  }
+
+  // Idle cleanup — remove agents idle > IDLE_CLEANUP_MS (keep at least one)
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now()
+    for (let i = entries.length - 1; i > 0; i--) {
+      const e = entries[i]
+      if (!e.busy && (now - e.lastUsed) > IDLE_CLEANUP_MS) {
+        entries.splice(i, 1)
+      }
+    }
+  }, 60_000)
+
+  return {
+    acquire,
+    release,
+    destroy() { clearInterval(cleanupTimer) },
+    status() {
+      const active = entries.filter(e => e.busy).length
+      return {
+        active,
+        idle: entries.length - active,
+        total: entries.length,
+        max: maxSize,
+        entries: entries.map(e => ({ index: e.index, busy: e.busy, discussionId: e.discussionId })),
+      }
+    },
+  }
+}
 
 // Aggregate multi-tick results into a single ChatResult envelope.
 // Final response priority:
@@ -88,8 +188,9 @@ export interface ServeOptions {
   memoryDir?: string
   /** @deprecated No longer used — all chat goes through tick pipeline */
   identityPath?: string
-  /** Called before each tick — agent-specific setup (e.g., clear inbox files) */
-  onBeforeChat?: (from: string, text: string) => void | Promise<void>
+  /** Called before each tick — agent-specific setup (e.g., clear inbox files).
+   *  When pool is active, `agentIndex` identifies which pool agent is handling. */
+  onBeforeChat?: (from: string, text: string, agentIndex?: number) => void | Promise<void>
   /** Called after each tick — agent-specific cleanup */
   onAfterChat?: (result: ChatResult) => void | Promise<void>
   /** AEP §3.1 Unit declaration — exposed under /health.unit namespace when provided. */
@@ -102,16 +203,27 @@ export interface ServeOptions {
   mcpServers?: Record<string, any>
   /** @deprecated No longer used — all chat goes through tick pipeline */
   additionalAllowedTools?: string[]
+  /** Agent config for pool — allows creating additional agent instances for parallel discussions.
+   *  Without this, pool size is always 1 (singleton behavior). */
+  agentConfig?: TanrenConfig
+  /** Max concurrent pool agents (default: 3). Does not include the autonomous loop agent. */
+  maxPoolSize?: number
 }
 
 export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   const port = options.port ?? parseInt(process.env.PORT ?? '3000', 10)
   const serviceName = options.serviceName ?? 'tanren-agent'
   const memoryDir = options.memoryDir ?? './memory'
-  let ticking = false
   let tickCount = 0
   let errorCount = 0
   const startTime = Date.now()
+
+  // Agent Pool — enables concurrent /chat with different discussionIds
+  const maxPoolSize = options.maxPoolSize ?? DEFAULT_MAX_POOL_SIZE
+  const pool = createAgentPool(agent, options.agentConfig, maxPoolSize)
+
+  // Autonomous loop — independent from pool, never blocks /chat
+  let autonomousBusy = false
 
   // Production-grade: structured tick telemetry
   const recentTicks: Array<{
@@ -134,27 +246,20 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   process.on('uncaughtException', (err) => {
     console.error(`[${serviceName}] UNCAUGHT: ${err.message}`)
     errorCount++
-    // Don't exit — keep serving
   })
   process.on('unhandledRejection', (reason) => {
     console.error(`[${serviceName}] UNHANDLED: ${reason}`)
     errorCount++
   })
 
-  // All paths (/chat, /chat/stream, autonomous) go through agent.chat() → tick pipeline.
-  // Streaming is handled via onStream callback, not a separate SDK path.
+  async function handleChat(poolEntry: PoolEntry, from: string, text: string, sessionId?: string): Promise<ChatResult & { tick: number; chainTicks: number; sessionId?: string }> {
+    const ag = poolEntry.agent
+    if (options.onBeforeChat) await options.onBeforeChat(from, text, poolEntry.index)
 
-  async function handleChat(from: string, text: string, sessionId?: string): Promise<ChatResult & { tick: number; chainTicks: number; sessionId?: string }> {
-    if (options.onBeforeChat) await options.onBeforeChat(from, text)
+    if (sessionId) ag.setSessionId(sessionId)
+    else ag.setSessionId(null)
 
-    // Session resume: if client provides a sessionId, tell the provider to resume it
-    if (sessionId) agent.setSessionId(sessionId)
-    else agent.setSessionId(null)
-
-    // Constraint Texture: convergence condition, not prescription.
-    // Agent declares `converged: yes/no` in reflection. Framework honors.
-    // Wall-clock cap prevents sync HTTP hang (agent may still be working when cap hits).
-    const results = await (agent as TanrenAgent & {
+    const results = await (ag as TanrenAgent & {
       runChain(message?: string, options?: { from?: string; wallClockMs?: number }): Promise<TickResult[]>
     }).runChain(text, { from, wallClockMs: CHAT_WALL_CLOCK_MS })
 
@@ -163,24 +268,17 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     }
 
     tickCount += results.length
-    // getCurrentMode is optional — use last known mode from memory
-    const loopWithMode = agent as TanrenAgent & { getCurrentMode?: () => string }
+    const loopWithMode = ag as TanrenAgent & { getCurrentMode?: () => string }
     const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
     const chatResult = aggregateChain(results, mode)
-
-    // Capture session ID from provider for response
-    const resultSessionId = agent.getSessionId() ?? undefined
-
+    const resultSessionId = ag.getSessionId() ?? undefined
     if (options.onAfterChat) await options.onAfterChat(chatResult)
 
     return { ...chatResult, tick: tickCount, chainTicks: results.length, ...(resultSessionId ? { sessionId: resultSessionId } : {}) }
   }
 
-  /**
-   * Streaming chat via SSE — same tick pipeline as /chat, with real-time text chunks.
-   * Events: text (LLM streaming chunk), result (final response), done (stream end).
-   */
-  async function handleChatStream(from: string, text: string, res: ServerResponse, sessionId?: string): Promise<void> {
+  async function handleChatStream(poolEntry: PoolEntry, from: string, text: string, res: ServerResponse, sessionId?: string): Promise<void> {
+    const ag = poolEntry.agent
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -192,19 +290,15 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     }
 
-    if (options.onBeforeChat) await options.onBeforeChat(from, text)
+    if (options.onBeforeChat) await options.onBeforeChat(from, text, poolEntry.index)
 
-    // Session resume for streaming endpoint
-    if (sessionId) agent.setSessionId(sessionId)
-    else agent.setSessionId(null)
+    if (sessionId) ag.setSessionId(sessionId)
+    else ag.setSessionId(null)
 
     const start = Date.now()
 
     try {
-      // Multi-tick chain with per-tick SSE events.
-      // Each tick: emit `tick-start`, stream text via setStreamCallback, emit `tick-end`.
-      // Final: emit `result` + `done`.
-      const results = await (agent as TanrenAgent & {
+      const results = await (ag as TanrenAgent & {
         runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]>
       }).runChain(text, {
         from,
@@ -220,10 +314,10 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       })
 
       tickCount += results.length
-      const loopWithMode = agent as TanrenAgent & { getCurrentMode?: () => string }
+      const loopWithMode = ag as TanrenAgent & { getCurrentMode?: () => string }
       const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
       const chatResult = aggregateChain(results, mode)
-      const resultSessionId = agent.getSessionId() ?? undefined
+      const resultSessionId = ag.getSessionId() ?? undefined
       if (options.onAfterChat) await options.onAfterChat(chatResult)
       recordTick(tickCount, Date.now() - start, chatResult.actions ?? [], chatResult.meta?.mode ?? 'unknown')
       sse('result', { response: chatResult.response, chainTicks: chatResult.chainTicks, ...(resultSessionId ? { sessionId: resultSessionId } : {}) })
@@ -257,12 +351,6 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         ? Math.round(recentTicks.reduce((s, t) => s + t.duration, 0) / recentTicks.length)
         : 0
       const errorRate = tickCount > 0 ? Math.round((errorCount / tickCount) * 100) : 0
-      // AEP §3.1 Unit state — every tanren agent is AEP-Unit-compliant by default.
-      // Default: unit_id from serviceName, available_modes from CONTEXT_MODES (real
-      // context-modes vocabulary). Agents can override via opts.unit.
-      // current_mode derived from recentTicks[-1].mode at request time.
-      // Invariant `current_mode ∈ available_modes` holds by construction because
-      // both trace to the same source (context-modes.ts) when defaults are used.
       const lastTick = recentTicks[recentTicks.length - 1]
       const unit = options.unit ?? { unit_id: serviceName, available_modes: CONTEXT_MODES }
       const unitNamespace = {
@@ -272,16 +360,19 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           current_mode: lastTick?.mode ?? null,
         },
       }
+      const poolStatus = pool.status()
       json(res, 200, {
         status: errorRate > 50 ? 'degraded' : 'ok',
         service: serviceName,
-        ticking,
+        ticking: poolStatus.active > 0 || autonomousBusy,
         tickCount,
         uptime,
         errors: errorCount,
         errorRate: `${errorRate}%`,
         avgTickDuration: `${avgDuration}ms`,
         recentTicks: recentTicks.slice(-5),
+        pool: poolStatus,
+        autonomous: { busy: autonomousBusy },
         ...unitNamespace,
       })
 
@@ -295,18 +386,24 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     } else if (url.pathname === '/chat' && req.method === 'POST') {
       let body = ''
       for await (const chunk of req) body += chunk
-      let parsed: { from?: string; text?: string; sessionId?: string }
+      let parsed: { from?: string; text?: string; sessionId?: string; discussionId?: string }
       try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
       const from = parsed.from ?? 'anonymous'
       const text = parsed.text ?? ''
       if (!text.trim()) { json(res, 400, { error: 'Empty text' }); return }
-      if (ticking) { json(res, 429, { error: `${serviceName} is thinking, try again later` }); return }
 
-      ticking = true
+      const poolEntry = pool.acquire(parsed.discussionId)
+      if (!poolEntry) {
+        const ps = pool.status()
+        res.setHeader('Retry-After', '30')
+        json(res, 429, { error: `${serviceName} is thinking (${ps.active}/${ps.max} agents busy), try again later`, estimatedWaitMs: 30000 })
+        return
+      }
+
       const tickStart = Date.now()
       try {
-        const result = await handleChat(from, text, parsed.sessionId)
+        const result = await handleChat(poolEntry, from, text, parsed.sessionId)
         recordTick(tickCount, Date.now() - tickStart, result.actions ?? [], result.meta?.mode ?? 'unknown')
         json(res, 200, result)
       } catch (err) {
@@ -314,25 +411,31 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         recordTick(tickCount, Date.now() - tickStart, [], 'error', msg)
         json(res, 500, { error: msg })
       } finally {
-        ticking = false
+        pool.release(poolEntry)
       }
 
     } else if (url.pathname === '/chat/stream' && req.method === 'POST') {
       let body = ''
       for await (const chunk of req) body += chunk
-      let parsed: { from?: string; text?: string; sessionId?: string }
+      let parsed: { from?: string; text?: string; sessionId?: string; discussionId?: string }
       try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
       const from = parsed.from ?? 'anonymous'
       const text = parsed.text ?? ''
       if (!text.trim()) { json(res, 400, { error: 'Empty text' }); return }
-      if (ticking) { json(res, 429, { error: `${serviceName} is thinking, try again later` }); return }
 
-      ticking = true
+      const poolEntry = pool.acquire(parsed.discussionId)
+      if (!poolEntry) {
+        const ps = pool.status()
+        res.setHeader('Retry-After', '30')
+        json(res, 429, { error: `${serviceName} is thinking (${ps.active}/${ps.max} agents busy), try again later`, estimatedWaitMs: 30000 })
+        return
+      }
+
       try {
-        await handleChatStream(from, text, res, parsed.sessionId)
+        await handleChatStream(poolEntry, from, text, res, parsed.sessionId)
       } finally {
-        ticking = false
+        pool.release(poolEntry)
       }
 
     } else if (url.pathname === '/' && req.method === 'GET') {
@@ -344,8 +447,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         description: 'Tanren AI agent — perception-driven, learning-aware',
         endpoints: {
           'POST /chat': {
-            description: 'Send a message, get a response (blocks until complete)',
-            body: { from: 'string', text: 'string (required)' },
+            description: 'Send a message, get a response (blocks until complete). Supports concurrent discussions via discussionId.',
+            body: { from: 'string', text: 'string (required)', discussionId: 'string (optional — routes to dedicated pool agent)' },
             returns: {
               response: 'string — agent response (human-readable)',
               actions: 'string[] — tools used this tick',
@@ -373,7 +476,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
             },
             errors: { 400: 'Invalid JSON or empty text', 429: 'Agent is thinking' },
           },
-          'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number' } },
+          'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number', pool: '{ active, idle, total, max }' } },
           'GET /status': { description: 'Live agent status from working memory' },
         },
         capabilities: {
@@ -395,24 +498,26 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     console.log(`[${serviceName}] GET  /health | GET /status`)
   })
 
-  const shutdown = () => { console.log(`\n[${serviceName}] Stopping...`); server.close(); process.exit(0) }
+  const shutdown = () => { console.log(`\n[${serviceName}] Stopping...`); pool.destroy(); server.close(); process.exit(0) }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
 
   return {
     server,
-    /** Is a tick/chat currently in progress? */
-    isTicking: () => ticking,
+    /** Is any tick/chat currently in progress (pool or autonomous)? */
+    isTicking: () => pool.status().active > 0 || autonomousBusy,
     /**
-     * Run a function with exclusive access to the ticking mutex.
-     * Returns null if already ticking (non-blocking). Use this for
-     * autonomous loops that share the mutex with /chat endpoints.
+     * Run a function with exclusive access to the autonomous agent.
+     * Returns null if autonomous agent is already busy (non-blocking).
+     * Independent from pool — never blocks /chat endpoints.
      */
     async runExclusive<T>(fn: () => Promise<T>): Promise<T | null> {
-      if (ticking) return null
-      ticking = true
-      try { return await fn() } finally { ticking = false }
+      if (autonomousBusy) return null
+      autonomousBusy = true
+      try { return await fn() } finally { autonomousBusy = false }
     },
+    /** Get pool status for external monitoring */
+    getPoolStatus: () => pool.status(),
   }
 }
 
