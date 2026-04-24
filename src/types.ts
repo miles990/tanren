@@ -317,6 +317,12 @@ export interface TanrenConfig {
     antiGoodhart?: boolean      // default: true
   }
 
+  /** Knowledge Graph URL for cross-agent knowledge sharing.
+   *  When set, tick summaries are fire-and-forget posted to KG after each tick.
+   *  Fallback: if KG is unreachable, logs to memoryDir/journal/kg-pending.jsonl
+   *  for later replay. */
+  kgUrl?: string
+
   /**
    * Default objective injected into scheduled autonomous ticks when there is
    * no pendingMessage. Without this, the model gets full perception + all

@@ -126,7 +126,7 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): SessionAwareLLMP
             additionalDirectories: opts?.additionalDirectories ?? ['/Users'],
             allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
             maxTurns,
-            maxBudgetUsd: opts?.maxBudgetUsd ?? 5,
+            maxBudgetUsd: opts?.maxBudgetUsd ?? 30,
             permissionMode: 'bypassPermissions',  // hooks fire regardless; bypass removes friction on allowed tools
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             hooks: { PreToolUse: [{ hooks: [preToolUseHook as any] }] },

@@ -928,6 +928,14 @@ export function createLoop(config: TanrenConfig): AgentLoop {
     // Persist tick to journal (append-only JSONL)
     persistTick(journalDir, tickJournalPath, tickResult)
 
+    // Persist tick to Knowledge Graph (fire-and-forget with local fallback)
+    if (config.kgUrl) {
+      const agentId = config.workDir ? config.workDir.split('/').pop()! : process.cwd().split('/').pop()!
+      const kgFallbackPath = join(journalDir, 'kg-pending.jsonl')
+      persistToKG(config.kgUrl, agentId, tickResult, tickCount, kgFallbackPath)
+      if (tickCount % 10 === 0) replayKGPending(config.kgUrl, kgFallbackPath)
+    }
+
     // Auto-commit memory changes
     await memory.autoCommit().catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err)
@@ -1209,6 +1217,79 @@ function persistTick(journalDir: string, journalPath: string, tick: TickResult):
 
     writeFileSync(join(ticksDir, `tick-${tickNum}.md`), md, 'utf-8')
   } catch { /* best effort — don't break the loop */ }
+}
+
+// === Knowledge Graph Integration ===
+
+function persistToKG(kgUrl: string, agentId: string, tick: TickResult, tickCount: number, fallbackPath: string): void {
+  const actionTypes = tick.actions.map(a => a.type)
+  const summary = tick.thought.slice(0, 300)
+  const node = {
+    subject: `${agentId}:tick-${tickCount}`,
+    subject_type: 'observation' as const,
+    predicate: 'DESCRIBES',
+    object: summary,
+    object_type: 'content' as const,
+    source_agent: agentId,
+    namespace: agentId,
+    confidence: 0.7,
+    description: `[tick ${tickCount}] ${actionTypes.join('→') || 'no-action'} | quality=${tick.observation.outputQuality}/5 | ${(tick.observation.duration / 1000).toFixed(1)}s`,
+    properties: {
+      tick: tickCount,
+      actions: actionTypes,
+      quality: tick.observation.outputQuality,
+      duration: tick.observation.duration,
+      outputExists: tick.observation.outputExists,
+      perception: tick.perception.slice(0, 200),
+    },
+  }
+
+  fetch(`${kgUrl}/api/write/triple`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(node),
+    signal: AbortSignal.timeout(3000),
+  })
+    .then(r => { if (!r.ok) throw new Error(`KG ${r.status}`) })
+    .catch(() => {
+      try {
+        const dir = fallbackPath.substring(0, fallbackPath.lastIndexOf('/'))
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+        appendFileSync(fallbackPath, JSON.stringify({ ...node, _failedAt: new Date().toISOString() }) + '\n', 'utf-8')
+      } catch { /* double fault — give up silently */ }
+    })
+}
+
+function replayKGPending(kgUrl: string, fallbackPath: string): void {
+  try {
+    if (!existsSync(fallbackPath)) return
+    const lines = readFileSync(fallbackPath, 'utf-8').trim().split('\n').filter(Boolean)
+    if (lines.length === 0) return
+
+    let remaining: string[] = []
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line)
+        const { _failedAt, ...node } = entry
+        fetch(`${kgUrl}/api/write/triple`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(node),
+          signal: AbortSignal.timeout(3000),
+        }).catch(() => { remaining.push(line) })
+      } catch { /* skip malformed */ }
+    }
+
+    setTimeout(() => {
+      try {
+        if (remaining.length === 0) {
+          unlinkSync(fallbackPath)
+        } else {
+          writeFileSync(fallbackPath, remaining.join('\n') + '\n', 'utf-8')
+        }
+      } catch { /* best effort */ }
+    }, 5000)
+  } catch { /* best effort */ }
 }
 
 // === Tool Use Integration ===
