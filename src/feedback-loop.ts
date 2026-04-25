@@ -318,7 +318,7 @@ export async function runToolUseFeedbackLoop(
     if (hookSystem) {
       for (let hi = 0; hi < novelActions.length; hi++) {
         const hookActions = hookSystem.run('postAction', {
-          tickCount: actionContext.tickCount ?? 0, action: novelActions[hi], result: batchResult.results[hi], allActions,
+          tickCount: actionContext.tickCount ?? 0, action: novelActions[hi], result: batchResult.results[hi], allActions, allResults: actionResults,
         }, novelActions[hi].type)
         for (const ha of hookActions) {
           if (actionRegistry.has(ha.type)) {

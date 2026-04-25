@@ -253,7 +253,7 @@ export const builtinActions: ActionHandler[] = [
       },
       required: ['url'],
     },
-    async execute(action) {
+    async execute(action, context) {
       let url = (action.input?.url as string) ?? ''
       let method = ((action.input?.method as string) ?? 'GET').toUpperCase()
       let bodyRaw = (action.input?.body as string) ?? ''
@@ -295,6 +295,30 @@ export const builtinActions: ActionHandler[] = [
       }
 
       if (!url) return '[http_request error: url is required]'
+
+      // UUID hallucination guard: only fires on writes (POST/PUT/PATCH) because
+      // GETs with a fabricated UUID are idempotent — they 404 and do no damage.
+      // Writes to a hallucinated UUID can hit a real-but-wrong target if IDs
+      // collide, and the failure is masked by pre-committed respond claims.
+      // The guard checks: URL contains a full UUID (8-4-4-4-12 hex) that did
+      // NOT appear in any earlier action result this tick. The single-pass
+      // generator can only "know" UUIDs that came out of an earlier action.
+      // Perception-sourced UUIDs are intentionally allowed (would cause false
+      // positives on legitimate read-then-write workflows) — the consequences
+      // of a wrong write are surfaced separately by claim-verification hook.
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+        const UUID_RE =
+          /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
+        const urlUuids = url.match(UUID_RE) ?? []
+        if (urlUuids.length > 0) {
+          const priorResults = context?.tickResults ?? []
+          const haystack = priorResults.join('\n').toLowerCase()
+          const unseen = urlUuids.filter(u => !haystack.includes(u.toLowerCase()))
+          if (unseen.length > 0 && priorResults.length > 0) {
+            return `[http_request blocked: ${method} URL contains UUID(s) not seen in any prior action result this tick — likely LLM hallucination from single-pass action generation. Unseen UUID(s): ${unseen.join(', ')}. Either (a) re-issue the request using the short ID prefix the API supports, or (b) make a prior GET that returns the full UUID, then reference it from that result. URL was: ${url}]`
+          }
+        }
+      }
 
       try {
         const controller = new AbortController()

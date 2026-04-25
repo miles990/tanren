@@ -196,7 +196,7 @@ export { createContinuationSystem, type ChainState } from './continuation.js'
 // Context Modes
 export { detectContextMode, getModeConfig, type ContextMode, type ContextModeConfig } from './context-modes.js'
 export { loadSkills, selectSkills, formatSkillsForPrompt, clearSkillCache, type Skill } from './skills.js'
-export { createHookSystem, builtinHooks, createAutoVerifyHook, type Hook, type HookPhase, type HookContext } from './hooks.js'
+export { createHookSystem, builtinHooks, createAutoVerifyHook, createClaimVerificationHook, type Hook, type HookPhase, type HookContext } from './hooks.js'
 export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorType } from './error-classification.js'
 export { writeHandoff, readPendingHandoffs, updateHandoffStatus, formatHandoffsForContext, type Handoff } from './handoff.js'
 export { serve, type ServeOptions, type ServeHandle } from './serve.js'

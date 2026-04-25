@@ -693,7 +693,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       const initialBatch = await executeBatch(
         actions,
         { execute: (action, ctx) => actionRegistry.execute(action, ctx) },
-        { memory, workDir, tickCount, workingMemory, filesRead },
+        { memory, workDir, tickCount, workingMemory, filesRead, tickResults: actionResults },
         (event) => {
           config.onActionProgress?.(event)
           if (event.phase === 'done') actionHealth.record(event.action.type, true, tickCount)
@@ -707,12 +707,12 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       // Fire postAction hooks — auto-execute follow-up actions (e.g., auto-clear-inbox)
       for (let i = 0; i < actions.length; i++) {
         const hookActions = hookSystem.run('postAction', {
-          tickCount, action: actions[i], result: initialBatch.results[i], allActions,
+          tickCount, action: actions[i], result: initialBatch.results[i], allActions, allResults: actionResults,
         }, actions[i].type)
         for (const ha of hookActions) {
           if (actionRegistry.has(ha.type)) {
             try {
-              await actionRegistry.execute(ha, { memory, workDir, tickCount, workingMemory, filesRead })
+              await actionRegistry.execute(ha, { memory, workDir, tickCount, workingMemory, filesRead, tickResults: actionResults })
               allActions.push(ha)
               actionsExecuted++
             } catch { /* hook actions are best-effort */ }
@@ -765,7 +765,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           context,
           llm as ToolUseLLMProvider,
           actionRegistry,
-          { memory, workDir, tickCount, workingMemory, filesRead },
+          { memory, workDir, tickCount, workingMemory, filesRead, tickResults: actionResults },
           identity,
           (event) => {
             config.onActionProgress?.(event)
@@ -790,7 +790,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           systemPrompt,
           llm,
           actionRegistry,
-          { memory, workDir, tickCount, workingMemory, filesRead },
+          { memory, workDir, tickCount, workingMemory, filesRead, tickResults: actionResults },
           (type, success, tick, error) => actionHealth.record(type, success, tick, error),
         )
 
@@ -838,7 +838,7 @@ export function createLoop(config: TanrenConfig): AgentLoop {
           try {
             const result = await actionRegistry.execute(
               { type: 'respond', content: autoResponse, raw: autoResponse },
-              { memory, workDir, tickCount, workingMemory, filesRead },
+              { memory, workDir, tickCount, workingMemory, filesRead, tickResults: actionResults },
             )
             allActions.push({ type: 'respond', content: autoResponse, raw: autoResponse })
             actionResults.push(result)

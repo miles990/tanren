@@ -222,6 +222,11 @@ export interface ActionContext {
   /** Tracks files read this tick — used by edit action to enforce read-before-edit.
    *  Created fresh each tick. Per-instance (not module-level) for multi-agent safety. */
   filesRead: Set<string>
+  /** Results of actions executed earlier in the same tick (in execution order).
+   *  Used by handlers (e.g. http_request) to validate that identifiers appearing
+   *  in their inputs were actually returned by prior actions, catching the
+   *  "single-pass action generation hallucinates a UUID" failure mode. */
+  tickResults?: string[]
 }
 
 // === Event-Driven System ===
