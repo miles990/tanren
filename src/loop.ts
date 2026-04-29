@@ -55,6 +55,7 @@ import {
   buildAssistantContent,
 } from './prompt-builder.js'
 import { runToolUseFeedbackLoop, runTextFeedbackLoop } from './feedback-loop.js'
+import { createAdaptiveScheduler, type AdaptiveScheduler } from './adaptive-scheduler.js'
 
 // currentContextMode is now loop-local (inside createLoop closure).
 // Previously module-level — caused shared state between agents in same process.
@@ -386,16 +387,29 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   actionRegistry.register(mpl.getReflectAction())
 
   // Event-driven system state
-  const eventDrivenEnabled = config.eventDriven?.enabled ?? false
+  const adaptiveSchedulerEnabled = config.adaptiveScheduler?.enabled ?? false
+  const eventDrivenEnabled = config.eventDriven?.enabled ?? adaptiveSchedulerEnabled
   const maxReactiveRate = config.eventDriven?.maxReactiveRate ?? 10
   const urgentBypass = config.eventDriven?.urgentBypass ?? true
-  
-  const triggerStates: TriggerState[] = (config.eventTriggers ?? []).map(trigger => ({
-    trigger,
-    lastRun: 0,
-    pendingEvent: null,
-  }))
-  
+
+  // Adaptive scheduler: auto-registers its trigger when enabled
+  let adaptiveSchedulerInstance: AdaptiveScheduler | null = null
+  if (adaptiveSchedulerEnabled) {
+    const queueDir = config.adaptiveScheduler!.queueDir ?? join(config.memoryDir, '..', 'events')
+    adaptiveSchedulerInstance = createAdaptiveScheduler({
+      queueDir,
+      baseInterval: config.tickInterval ?? 60_000,
+      reactiveInterval: config.adaptiveScheduler!.reactiveInterval,
+      wakeBudgetPerHour: config.adaptiveScheduler!.wakeBudgetPerHour,
+      cooldown: config.adaptiveScheduler!.cooldown,
+    })
+  }
+
+  const triggerStates: TriggerState[] = [
+    ...(config.eventTriggers ?? []),
+    ...(adaptiveSchedulerInstance ? [adaptiveSchedulerInstance.trigger] : []),
+  ].map(trigger => ({ trigger, lastRun: 0, pendingEvent: null }))
+
   let reactiveTickCount = 0
   let reactiveTickWindowStart = Date.now()
   const reactiveWindowMs = 60_000 // 1 minute
@@ -993,7 +1007,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
   function shouldRunReactiveTick(event: TriggerEvent): boolean {
     if (!eventDrivenEnabled) return false
-    
+
+    // Wake budget gate (adaptive scheduler)
+    if (adaptiveSchedulerInstance && !adaptiveSchedulerInstance.recordWake()) {
+      console.warn(`[tanren] wake budget exhausted, dropping reactive tick from ${event.source}`)
+      return false
+    }
+
     // Check rate limiting
     const now = Date.now()
     if (now - reactiveTickWindowStart >= reactiveWindowMs) {
@@ -1003,20 +1023,23 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
     // Urgent events bypass rate limiting if enabled
     if (event.priority === 'urgent' && urgentBypass) return true
-    
+
     // Check rate limit
     if (reactiveTickCount >= maxReactiveRate) return false
-    
+
     return true
   }
 
   function start(interval?: number): void {
     if (running) return
     running = true
-    const ms = interval ?? config.tickInterval ?? 60_000
+    const baseMs = interval ?? config.tickInterval ?? 60_000
 
     const scheduleNext = () => {
       if (!running) return
+      const ms = adaptiveSchedulerInstance
+        ? adaptiveSchedulerInstance.getNextInterval()
+        : baseMs
       timer = setTimeout(async () => {
         try {
           await tick()

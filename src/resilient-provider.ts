@@ -17,12 +17,13 @@ export function createResilientProvider(opts: ResilientProviderOptions): LLMProv
     async think(context: string, systemPrompt: string): Promise<string> {
       let lastError: Error | null = null
 
-      for (const { name, provider } of opts.chain) {
+      for (let i = 0; i < opts.chain.length; i++) {
+        const { name, provider } = opts.chain[i]
         try {
           return await provider.think(context, systemPrompt)
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err))
-          const nextEntry = opts.chain[opts.chain.indexOf({ name, provider }) + 1]
+          const nextEntry = opts.chain[i + 1]
           if (nextEntry && opts.onFallback) {
             opts.onFallback(name, nextEntry.name, lastError.message)
           }

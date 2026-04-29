@@ -305,6 +305,14 @@ export interface TanrenConfig {
     urgentBypass?: boolean      // urgent events bypass rate limiting (default: true)
   }
 
+  adaptiveScheduler?: {
+    enabled?: boolean
+    queueDir?: string
+    reactiveInterval?: number
+    wakeBudgetPerHour?: number
+    cooldown?: number
+  }
+
   cognitiveMode?: {
     enabled?: boolean           // default: false
     modelMap?: Record<CognitiveMode, string>  // custom model per mode (overrides COGNITIVE_MODE_MODELS)
