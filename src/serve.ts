@@ -438,6 +438,26 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         pool.release(poolEntry)
       }
 
+    } else if (url.pathname === '/webhook' && req.method === 'POST') {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let parsed: { source?: string; event?: string; priority_hint?: string; payload?: Record<string, unknown> }
+      try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
+
+      if (!parsed.source || !parsed.event) { json(res, 400, { error: 'source and event required' }); return }
+
+      const eventsDir = join(memoryDir, 'events')
+      const pendingDir = join(eventsDir, 'pending')
+      const { mkdirSync: mk, writeFileSync: wf, renameSync: rn } = await import('node:fs')
+      const { randomBytes } = await import('node:crypto')
+      mk(pendingDir, { recursive: true })
+      const id = `${Date.now()}-${randomBytes(2).toString('hex')}-${parsed.source.replace(/[^a-zA-Z0-9-]/g, '_').slice(0, 20)}.json`
+      const event = { ...parsed, priority_hint: parsed.priority_hint ?? 'medium', payload: parsed.payload ?? {}, version: 1, timestamp: new Date().toISOString() }
+      const tmpPath = join(pendingDir, `.${id}.tmp`)
+      wf(tmpPath, JSON.stringify(event, null, 2), 'utf-8')
+      rn(tmpPath, join(pendingDir, id))
+      json(res, 200, { ok: true, id })
+
     } else if (url.pathname === '/' && req.method === 'GET') {
       // Self-documenting root — any visitor immediately knows what this agent does
       // Convergence condition: no documentation needed, the interface IS the documentation
