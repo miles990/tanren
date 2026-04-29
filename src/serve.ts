@@ -224,6 +224,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
   // Autonomous loop — independent from pool, never blocks /chat
   let autonomousBusy = false
+  let lastWebhookTick = 0
+  const WEBHOOK_TICK_COOLDOWN = 30_000
 
   // Production-grade: structured tick telemetry
   const recentTicks: Array<{
@@ -472,6 +474,26 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       const tmpPath = join(pendingDir, `.${id}.tmp`)
       wf(tmpPath, JSON.stringify(event, null, 2), 'utf-8')
       rn(tmpPath, join(pendingDir, id))
+
+      // Event-driven tick: fire-and-forget, rate-limited
+      const now = Date.now()
+      const cooldown = priorityHint === 'high' ? 0 : WEBHOOK_TICK_COOLDOWN
+      if (now - lastWebhookTick >= cooldown && !autonomousBusy) {
+        lastWebhookTick = now
+        {
+          autonomousBusy = true
+          agent.tick().then(result => {
+            tickCount++
+            const actions = result.actions.map(a => a.type).join(', ') || '(none)'
+            console.log(`[${serviceName}] webhook tick: ${actions} (${result.observation.duration}ms)`)
+            recordTick(tickCount, result.observation.duration, result.actions.map(a => a.type), 'webhook')
+          }).catch(err => {
+            console.error(`[${serviceName}] webhook tick error: ${err instanceof Error ? err.message : err}`)
+            recordTick(tickCount, 0, [], 'webhook', String(err))
+          }).finally(() => { autonomousBusy = false })
+        }
+      }
+
       json(res, 200, { ok: true, id })
 
     } else if (url.pathname === '/' && req.method === 'GET') {
