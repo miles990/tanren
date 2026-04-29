@@ -1131,4 +1131,76 @@ export const builtinActions: ActionHandler[] = [
       ).join('\n')
     },
   },
+  // v2: Expand perception section — agent requests detail for a section shown as index
+  {
+    type: 'expand',
+    description: 'Request full detail for a perception section that was loaded as an index stub. Use when you see a section summary like "[memory:4K] 12 topics..." and need the full content to make a decision.',
+    toolSchema: {
+      properties: {
+        section: { type: 'string', description: 'Name of the perception section to expand (e.g. "recent-memory", "topic-memories")' },
+      },
+      required: ['section'],
+    },
+    async execute(action, context) {
+      const section = (action.input?.section ?? action.content) as string
+      const expandResult = context.tickResults ?? []
+      expandResult.push(`[expand:${section}]`)
+      return `Expansion requested for "${section}". The full content will be available in your next tick's perception. Plan your remaining actions for this tick, then continue next tick with the expanded context.`
+    },
+  },
+  // v3: KG read — query Knowledge Graph for specific knowledge on demand
+  {
+    type: 'kg_read',
+    description: 'Query the Knowledge Graph for specific knowledge. Use for: reading KG discussion positions, searching experience/lessons, fetching entity details. Returns structured results.',
+    toolSchema: {
+      properties: {
+        query: { type: 'string', description: 'Search query or entity name' },
+        discussion_id: { type: 'string', description: 'Read a specific discussion and its positions' },
+        type: { type: 'string', description: 'Filter by node type: discussion, decision, pattern, lesson' },
+        limit: { type: 'number', description: 'Max results (default: 5)' },
+      },
+      required: [],
+    },
+    async execute(action) {
+      const kgUrl = process.env.KG_BASE_URL || 'http://localhost:3300'
+      const discussionId = action.input?.discussion_id as string | undefined
+      const query = (action.input?.query ?? action.content) as string | undefined
+      const nodeType = action.input?.type as string | undefined
+      const limit = (action.input?.limit as number) ?? 5
+
+      try {
+        if (discussionId) {
+          const res = await fetch(`${kgUrl}/api/discussion/${discussionId}`, {
+            signal: AbortSignal.timeout(5000),
+          })
+          if (!res.ok) return `KG error: ${res.status}`
+          const data = await res.json() as Record<string, unknown>
+          const positions = (data.positions as Array<Record<string, unknown>>) ?? []
+          const lines = [`Discussion: ${data.topic} (${data.status}, ${positions.length} positions)`]
+          for (const p of positions.slice(-limit)) {
+            lines.push(`  [${p.source_agent}] (conf=${p.confidence}) ${(p.description as string)?.slice(0, 200)}`)
+          }
+          return lines.join('\n')
+        }
+
+        if (query) {
+          const params = new URLSearchParams({ q: query, limit: String(limit) })
+          if (nodeType) params.set('type', nodeType)
+          const res = await fetch(`${kgUrl}/api/query/search?${params}`, {
+            signal: AbortSignal.timeout(5000),
+          })
+          if (!res.ok) return `KG search error: ${res.status}`
+          const data = await res.json() as { results?: Array<Record<string, unknown>> }
+          if (!data.results?.length) return 'No results found.'
+          return data.results.slice(0, limit).map(r =>
+            `[${r.type}] ${r.name}: ${(r.description as string)?.slice(0, 150)}`
+          ).join('\n')
+        }
+
+        return 'Provide either discussion_id or query.'
+      } catch (err) {
+        return `KG unavailable: ${err instanceof Error ? err.message : String(err)}`
+      }
+    },
+  },
 ]

@@ -194,11 +194,21 @@ export interface ToolUseLLMProvider extends LLMProvider {
 
 // === Perception ===
 
+export type PerceptionTier = 1 | 2 | 3
+
 export interface PerceptionPlugin {
   name: string
   fn: () => Promise<string> | string
   interval?: number     // ms, default: every tick
   category?: string
+  /** Injection tier: 1=full inject, 2=index+auto-expand, 3=index-only. Default: 1 */
+  tier?: PerceptionTier
+  /** Return lightweight index (~100 chars) instead of full content. Used for tier 2/3. */
+  gatherIndex?: () => Promise<string> | string
+  /** Expand detail for specific context when needed. Used for tier 2 auto-expand. */
+  expand?: () => Promise<string> | string
+  /** Estimated char cost of full expand — used for budget scheduling. */
+  expandCost?: number
 }
 
 // === Action Handler ===

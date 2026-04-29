@@ -153,6 +153,7 @@ export type {
   ContentBlock,
   ToolUseResponse,
   PerceptionPlugin,
+  PerceptionTier,
   ActionHandler,
   ActionContext,
   RiskTier,

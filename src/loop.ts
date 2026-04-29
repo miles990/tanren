@@ -414,8 +414,11 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   let reactiveTickWindowStart = Date.now()
   const reactiveWindowMs = 60_000 // 1 minute
 
-  // Cognitive mode system  
+  // Cognitive mode system
   let lastInteractionTime = 0
+
+  // Virtual memory: expand requests from previous tick
+  let pendingExpands: string[] = []
 
   // Initialize tick count from existing ticks
   try {
@@ -496,9 +499,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       ? preMode.perceptionCategories
       : undefined  // no message or research mode = load all
     const preComplexity = classifyComplexity(preMessage)
-    const perceptionOutput = await perception.perceive(
-      effectiveCategories ? { categories: effectiveCategories } : undefined
-    )
+    const perceptionBudget = config.contextBudget ? Math.round(config.contextBudget * 0.6) : undefined
+    const perceptionOutput = await perception.perceive({
+      ...(effectiveCategories ? { categories: effectiveCategories } : {}),
+      ...(perceptionBudget ? { contextBudget: perceptionBudget } : {}),
+      ...(pendingExpands.length > 0 ? { expandSections: pendingExpands } : {}),
+    })
+    pendingExpands = []
     console.error(`[tanren] PERCEPTION: ${perceptionOutput.length} chars, mode=${preMode?.mode ?? 'none'}, complexity=${preComplexity}, categories=${effectiveCategories?.join(',') ?? 'all'}`)
     writeCheckpoint(checkpointPath, { tickStarted: tickStart, perception: perceptionOutput })
 
@@ -974,6 +981,13 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         failed: tickResult.observation.actionsFailed,
       },
     })
+
+    // Collect expand requests for next tick's perception
+    const expandMarkers = (tickResult.observation.environmentFeedback ?? '')
+      .match(/\[expand:([^\]]+)\]/g)
+    if (expandMarkers) {
+      pendingExpands = expandMarkers.map(m => m.replace(/\[expand:|]/g, ''))
+    }
 
     return tickResult
   }
