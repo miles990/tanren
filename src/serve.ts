@@ -441,18 +441,34 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     } else if (url.pathname === '/webhook' && req.method === 'POST') {
       let body = ''
       for await (const chunk of req) body += chunk
-      let parsed: { source?: string; event?: string; priority_hint?: string; payload?: Record<string, unknown> }
+      let parsed: Record<string, unknown>
       try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
-      if (!parsed.source || !parsed.event) { json(res, 400, { error: 'source and event required' }); return }
+      // Normalize: accept both EventQueue format ({ source, event }) and KG notification format ({ discussion_id, events })
+      let source = (parsed.source as string) ?? 'webhook'
+      let eventName = parsed.event as string | undefined
+      let priorityHint = (parsed.priority_hint as string) ?? 'medium'
+      const payload = (parsed.payload as Record<string, unknown>) ?? {}
+
+      if (!eventName && parsed.discussion_id) {
+        source = 'kg-notification'
+        eventName = 'discussion.update'
+        payload.discussion_id = parsed.discussion_id
+        payload.events = parsed.events
+        payload.event_count = parsed.event_count
+        const events = parsed.events as Array<{ data?: { priority_hint?: string } }> | undefined
+        if (events?.some(e => e.data?.priority_hint === 'high')) priorityHint = 'high'
+      }
+
+      if (!eventName) { json(res, 400, { error: 'event (or discussion_id) required' }); return }
 
       const eventsDir = join(memoryDir, 'events')
       const pendingDir = join(eventsDir, 'pending')
       const { mkdirSync: mk, writeFileSync: wf, renameSync: rn } = await import('node:fs')
       const { randomBytes } = await import('node:crypto')
       mk(pendingDir, { recursive: true })
-      const id = `${Date.now()}-${randomBytes(2).toString('hex')}-${parsed.source.replace(/[^a-zA-Z0-9-]/g, '_').slice(0, 20)}.json`
-      const event = { ...parsed, priority_hint: parsed.priority_hint ?? 'medium', payload: parsed.payload ?? {}, version: 1, timestamp: new Date().toISOString() }
+      const id = `${Date.now()}-${randomBytes(2).toString('hex')}-${source.replace(/[^a-zA-Z0-9-]/g, '_').slice(0, 20)}.json`
+      const event = { source, event: eventName, priority_hint: priorityHint, payload, version: 1, timestamp: new Date().toISOString() }
       const tmpPath = join(pendingDir, `.${id}.tmp`)
       wf(tmpPath, JSON.stringify(event, null, 2), 'utf-8')
       rn(tmpPath, join(pendingDir, id))
