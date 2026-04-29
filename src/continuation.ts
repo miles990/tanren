@@ -1,15 +1,16 @@
 /**
  * Tanren — Self-Paced Continuation
  *
- * Agent decides when to continue. Framework asks, doesn't judge.
- * Gates verify honesty.
+ * Agent decides when to stop. Framework continues by default.
  *
  * Design:
- * - Agent writes `converged: yes/no` in reflect
- * - Framework reads it after tick
- * - If `no` + gates clean → trigger next tick
- * - If `yes` or gates warn → stop
- * - Hard cap as last resort
+ * - Default: chain continues (agent has more work to do)
+ * - Agent writes `converged: yes` in reflect → chain stops
+ * - Gates warn/block → chain stops
+ * - Hard cap (20 ticks) → chain stops (safety net)
+ *
+ * Convergence has exactly one source: agent's explicit declaration.
+ * Framework never infers intent from action types.
  *
  * "框架是笨的但誠實的。智能屬於 agent。"
  */
@@ -27,6 +28,7 @@ export interface ChainState {
   chainHistory: Array<{
     tick: number
     actions: string[]
+    actionsExecuted: number
     converged: boolean
     reason: string
   }>
@@ -57,6 +59,7 @@ export function createContinuationSystem(memoryDir: string) {
       chain.chainHistory.push({
         tick: tickCount,
         actions: tickResult.actions.map(a => a.type),
+        actionsExecuted: tickResult.observation.actionsExecuted,
         converged,
         reason,
       })
@@ -89,14 +92,7 @@ export function createContinuationSystem(memoryDir: string) {
           return { converged: true, reason: reasonMatch?.[1]?.trim() ?? 'agent declared converged' }
         }
 
-        // Look for explicit continuation signal
-        const continueMatch = content.match(/continue:\s*(yes|true)/i)
-        if (continueMatch) {
-          const reasonMatch = content.match(/reason:\s*(.+)/i)
-          return { converged: false, reason: reasonMatch?.[1]?.trim() ?? 'agent wants to continue' }
-        }
-
-        // No explicit signal — default to not converged (agent forgot to declare)
+        // No explicit convergence signal — default to not converged
         return { converged: false, reason: 'no explicit convergence signal in reflection' }
       } catch {
         return { converged: false, reason: 'reflection unreadable' }
@@ -122,19 +118,6 @@ export function createContinuationSystem(memoryDir: string) {
         return { continue: false, reason: `converged: ${reason}` }
       }
 
-      // Implicit convergence: respond action present AND no explicit continue signal.
-      // Rationale: `respond` means "I'm done talking to the caller". Unless the agent
-      // explicitly asks to continue (e.g. waiting on a background task), treat a
-      // respond-ending tick as done. This prevents 2x tick regression on simple queries
-      // while preserving the Constraint Texture — agents that need chains just write
-      // `continue: yes` in reflection.
-      const hasRespond = tickResult.actions.some(a => a.type === 'respond')
-      const explicitContinue = reason.includes('continue') || reason === 'agent wants to continue'
-      if (hasRespond && !explicitContinue) {
-        chain.active = false
-        return { continue: false, reason: 'respond action present (implicit converged)' }
-      }
-
       // Gate violations — any warn or block = stop chain
       const gateIssues = tickResult.gateResults.filter(g => g.action !== 'pass')
       if (gateIssues.length > 0) {
@@ -148,7 +131,7 @@ export function createContinuationSystem(memoryDir: string) {
         // Allow 1 empty tick (thinking), but 2 = stop
         const recentEmpty = chain.chainHistory
           .slice(-2)
-          .filter(h => h.actions.length === 0).length
+          .filter(h => h.actionsExecuted === 0).length
         if (recentEmpty >= 2) {
           chain.active = false
           return { continue: false, reason: '2 consecutive empty ticks' }
@@ -195,8 +178,9 @@ export function createContinuationSystem(memoryDir: string) {
             lines.push('    Later `respond` overwrites earlier ones in the chain aggregation.')
           }
 
-          lines.push('  ⚡ Convergence check: is your task complete? Answer in reflect with "converged: yes/no" and reason.')
-          lines.push('  ⚡ If converged, make sure your LAST action in this tick is `respond` with final results (not intentions).')
+          lines.push(`  ⚡ CONVERGENCE: You MUST write "converged: yes" in your reflect action when your task is complete.`)
+          lines.push(`     If you do NOT write this, the chain continues automatically (up to cap=${HARD_CAP}).`)
+          lines.push('     When converged, ensure your LAST action is `respond` with final results (not intentions).')
           lines.push('</chain>')
           return lines.join('\n')
         },
