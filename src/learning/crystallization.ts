@@ -70,6 +70,7 @@ interface CrystallizationState {
 const CRYSTALLIZATION_THRESHOLD = 3
 const MAX_EXAMPLES = 5
 const MAX_PATTERNS = 100
+const PATTERN_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 // === Factory ===
 
@@ -106,6 +107,10 @@ export function createCrystallization(stateDir: string): CrystallizationEngine {
         }
       }
 
+      // Decay: remove patterns not seen within TTL
+      const cutoff = now - PATTERN_TTL_MS
+      state.patterns = state.patterns.filter(p => p.lastSeen >= cutoff)
+
       // Prune old patterns (keep most recent MAX_PATTERNS)
       if (state.patterns.length > MAX_PATTERNS) {
         state.patterns.sort((a, b) => b.lastSeen - a.lastSeen)
@@ -132,8 +137,9 @@ export function createCrystallization(stateDir: string): CrystallizationEngine {
     },
 
     rehydrate(): Gate[] {
+      const cutoff = Date.now() - PATTERN_TTL_MS
       return state.patterns
-        .filter(p => p.crystallized)
+        .filter(p => p.crystallized && p.lastSeen >= cutoff)
         .map(p => patternToGate(p))
     },
 
@@ -157,18 +163,24 @@ function detectSignatures(tick: TickResult): SignatureHit[] {
   const hits: SignatureHit[] = []
 
   // Detector 1: Repeated failures
-  // Same action type failing with similar error messages
-  for (const action of tick.actions) {
-    const feedback = tick.observation.environmentFeedback ?? ''
-    if (feedback.includes(`action ${action.type} failed`) || feedback.includes(`${action.type} failed`) || tick.observation.actionsFailed > 0) {
-      // Extract error essence: try multiple patterns, then fallback to first 80 chars
+  // Only attribute failure to the specific action whose type is mentioned in feedback.
+  // Previously used tick-level `actionsFailed > 0` which blamed ALL actions in the tick
+  // for a single action's failure — caused 100+ noise patterns in production (Akari).
+  const feedback = tick.observation.environmentFeedback ?? ''
+  if (feedback && tick.observation.actionsFailed > 0) {
+    const blamed = new Set<string>()
+    for (const action of tick.actions) {
+      if (blamed.has(action.type)) continue
+      if (!feedback.includes(`${action.type} failed`) && !feedback.includes(`action ${action.type} failed`)) continue
+      blamed.add(action.type)
+
       const errorPatterns = [/failed:\s*(.{1,80})/, /error:\s*(.{1,80})/i, /\bfailed\b[^.]*?:\s*(.{1,80})/i]
       let errorEssence = 'unknown'
       for (const pat of errorPatterns) {
         const m = feedback.match(pat)
         if (m) { errorEssence = m[1].trim(); break }
       }
-      if (errorEssence === 'unknown' && feedback.length > 0) {
+      if (errorEssence === 'unknown') {
         errorEssence = feedback.slice(0, 80).trim()
       }
 
