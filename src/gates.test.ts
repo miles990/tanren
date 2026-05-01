@@ -87,17 +87,27 @@ describe('GateSystem', () => {
 describe('OutputGate', () => {
   it('warns after N consecutive ticks without output', () => {
     const gate = createOutputGate(2)
+    const emptyObs = { outputExists: false, outputQuality: 0, confidenceCalibration: 0, actionsExecuted: 0, actionsFailed: 0, duration: 1000 }
+    const fullObs = { outputExists: true, outputQuality: 3, confidenceCalibration: 0, actionsExecuted: 1, actionsFailed: 0, duration: 1000 }
 
-    // Tick 1: no output → no warn yet
-    let result = gate.check(makeContext(makeTick({ observation: { outputExists: false, outputQuality: 0, confidenceCalibration: 0, actionsExecuted: 0, actionsFailed: 0, duration: 1000 } })))
+    const emptyTick1 = makeTick({ observation: emptyObs })
+    const emptyTick2 = makeTick({ observation: emptyObs })
+    const outputTick = makeTick({ observation: fullObs })
+
+    // Tick 1: first tick, no history → pass (no penalty)
+    let result = gate.check(makeContext(makeTick(), []))
     assert.equal(result.action, 'pass')
 
-    // Tick 2: no output → warn
-    result = gate.check(makeContext(makeTick({ observation: { outputExists: false, outputQuality: 0, confidenceCalibration: 0, actionsExecuted: 0, actionsFailed: 0, duration: 1000 } })))
+    // Tick 2: previous tick had no output → consecutiveEmpty=1, below threshold → pass
+    result = gate.check(makeContext(makeTick(), [emptyTick1]))
+    assert.equal(result.action, 'pass')
+
+    // Tick 3: 2 previous ticks without output → consecutiveEmpty=2 → warn
+    result = gate.check(makeContext(makeTick(), [emptyTick1, emptyTick2]))
     assert.equal(result.action, 'warn')
 
-    // Tick 3: has output → reset
-    result = gate.check(makeContext(makeTick({ observation: { outputExists: true, outputQuality: 3, confidenceCalibration: 0, actionsExecuted: 1, actionsFailed: 0, duration: 1000 } })))
+    // Tick 4: previous tick had output → reset
+    result = gate.check(makeContext(makeTick(), [emptyTick1, emptyTick2, outputTick]))
     assert.equal(result.action, 'pass')
   })
 })

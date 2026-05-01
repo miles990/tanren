@@ -166,10 +166,20 @@ export function createOutputGate(threshold: number = 3): Gate {
     name: 'output-gate',
     description: `Warn after ${threshold} ticks without visible output`,
     check(ctx) {
-      if (ctx.tick.observation.outputExists) {
+      // Gate runs before action execution, so ctx.tick.observation is empty.
+      // Use the most recent completed tick's observation instead.
+      const lastTick = ctx.recentTicks.length > 0
+        ? ctx.recentTicks[ctx.recentTicks.length - 1]
+        : null
+      const lastOutputExists = lastTick?.observation.outputExists ?? false
+
+      if (lastOutputExists) {
         consecutiveEmpty = 0
         return { action: 'pass' }
       }
+
+      // First tick has no history — don't penalize
+      if (!lastTick) return { action: 'pass' }
 
       consecutiveEmpty++
       if (consecutiveEmpty >= threshold) {
