@@ -12,6 +12,7 @@ import {
   createArtifactProviderFromEnv,
   createArtifactGraphExecutor,
   createOpenAIArtifactProvider,
+  routeArtifactRequest,
   wrapArtifactProviderWithPolicy,
   type ArtifactProvider,
   type ArtifactRequest,
@@ -65,7 +66,7 @@ describe('ArtifactIO', () => {
   it('exposes artifact/image/audio generation actions', async () => {
     const fakeProvider: ArtifactProvider = {
       name: 'fake',
-      capabilities: { kinds: ['image', 'audio'], streaming: false, input: { image: false, audio: false, video: false, file: false }, output: { base64: true, file: true, url: false } },
+      capabilities: { kinds: ['image', 'audio'], streaming: false, input: { image: false, audio: false, video: false, file: true }, output: { base64: true, file: true, url: false } },
       async submit(request) {
         return {
           id: 'job-1',
@@ -98,6 +99,27 @@ describe('ArtifactIO', () => {
 
     assert.equal(request.inputs?.length, 3)
     assert.deepEqual(request.inputs?.map(input => input.type), ['text', 'ref', 'ref'])
+  })
+
+  it('routes artifact requests by provider capabilities', () => {
+    const imageOnly: ArtifactProvider = {
+      name: 'image-only',
+      capabilities: { kinds: ['image'], streaming: false, input: { image: true, audio: false, video: false, file: true }, output: { base64: true, file: true, url: false } },
+      async submit() { throw new Error('not used') },
+      async get() { return null },
+    }
+    const audioOnly: ArtifactProvider = {
+      name: 'audio-only',
+      capabilities: { kinds: ['audio'], streaming: false, input: { image: false, audio: false, video: false, file: false }, output: { base64: true, file: true, url: false } },
+      async submit() { throw new Error('not used') },
+      async get() { return null },
+    }
+    const routed = routeArtifactRequest(
+      { type: 'audio', prompt: 'say hi' },
+      { providers: { image: imageOnly, audio: audioOnly }, defaultProvider: 'image' },
+    )
+    assert.equal(routed.provider.name, 'audio-only')
+    assert.equal(routed.reason, 'capability match')
   })
 
   it('keeps env factory disabled when credentials are absent', () => {

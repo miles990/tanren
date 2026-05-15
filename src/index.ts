@@ -183,7 +183,7 @@ export { createOpenAIProvider, createFallbackProvider, type OpenAIProviderOption
 export { createGoogleProvider, type GoogleProviderOptions } from './llm/google.js'
 export { createManagedAgentProvider, type ManagedAgentProviderOptions } from './llm/managed-agent.js'
 export { createProvider, createProviderFromEnv, listProviders, readScopedEnv, type ProviderConfig, type ProviderKey, type ProviderSelection, type ProviderFromEnvOptions } from './provider-registry.js'
-export { decideProviderUse, writePolicyEvent, type ProviderPolicy, type ProviderPolicyDecision, type PolicyEvent, type TaskRisk } from './provider-policy.js'
+export { decideProviderUse, readPolicyEvents, writePolicyEvent, type ProviderPolicy, type ProviderPolicyDecision, type PolicyEvent, type TaskRisk } from './provider-policy.js'
 export { promptToText, toAnthropic, toOpenAI, toGemini, extractOpenAIOutputs, extractAnthropicOutputs, extractGeminiOutputs } from './content-adapter.js'
 export { createModelIO, collectStream, type ModelIO, type ModelRequest, type ModelResponse } from './model-io.js'
 export { TEXT_ONLY_CAPABILITIES, ANTHROPIC_CAPABILITIES, OPENAI_COMPAT_CAPABILITIES, GEMINI_CAPABILITIES, MANAGED_AGENT_CAPABILITIES, AGENT_SDK_CAPABILITIES } from './provider-capabilities.js'
@@ -218,6 +218,9 @@ export {
   type ArtifactGraphResult,
   type FetchLike,
 } from './artifact-io.js'
+export { routeArtifactRequest, supportsArtifactRequest, type ArtifactRouteDecision, type ArtifactRouterOptions } from './artifact-router.js'
+export { handleArtifactHttpRoute, type ArtifactHttpOptions } from './artifact-http.js'
+export type * from './artifact-types.js'
 export {
   createInboxPlugin,
   createOutboxHistoryPlugin,

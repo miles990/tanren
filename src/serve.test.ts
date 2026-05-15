@@ -8,6 +8,7 @@ import { describe, it } from 'node:test'
 import { serve } from './serve.js'
 import type { TanrenAgent } from './index.js'
 import { FileArtifactJobStore, FileArtifactStore, type ArtifactProvider } from './artifact-io.js'
+import { writePolicyEvent } from './provider-policy.js'
 
 describe('serve', () => {
   it('exposes declared capabilities on /health', async () => {
@@ -160,6 +161,36 @@ describe('serve', () => {
       const cancelResponse = await fetch(`http://127.0.0.1:${port}/artifacts/job-persisted`, { method: 'DELETE' })
       const cancelled = await cancelResponse.json() as { status: string }
       assert.equal(cancelled.status, 'cancelled')
+    } finally {
+      handle.server.closeAllConnections()
+      await new Promise<void>(resolve => handle.server.close(() => resolve()))
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('lists policy events from the runtime state directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-policy-events-'))
+    writePolicyEvent(join(dir, 'state'), {
+      domain: 'llm',
+      provider: 'codex',
+      allowed: false,
+      reason: 'blocked in test',
+    })
+    const handle = serve(createFakeAgent(), {
+      port: 0,
+      serviceName: 'test-agent',
+      memoryDir: dir,
+    })
+
+    try {
+      await once(handle.server, 'listening')
+      const address = handle.server.address()
+      assert.ok(address && typeof address === 'object')
+      const port = (address as AddressInfo).port
+      const response = await fetch(`http://127.0.0.1:${port}/policy/events?domain=llm`)
+      const body = await response.json() as { events: Array<{ provider: string; reason: string }> }
+      assert.equal(body.events[0]?.provider, 'codex')
+      assert.equal(body.events[0]?.reason, 'blocked in test')
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))

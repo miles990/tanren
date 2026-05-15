@@ -120,40 +120,10 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     defaultPath: opts.mcpDefaultPath,
     logger: console,
   })
-  const providerSelection = createProviderFromEnv({
-    cwd: process.cwd(),
-    stateDir: join(memoryDir, 'state'),
-    env,
-    serviceEnvPrefix,
-    mode,
-    provider,
-    cloudFallbackEnabled,
-    agentSdk: mcpConfig.mcpServers ? { mcpServers: mcpConfig.mcpServers, mcpToolNames: mcpConfig.mcpToolNames } : undefined,
-  })
-  const providerPolicyDecision = decideProviderUse(providerSelection, {
-    policy: opts.providerPolicy,
-    autonomous: opts.providerPolicyAutonomous,
-    stateDir: join(memoryDir, 'state'),
-  })
-  const llm = opts.providerPolicy
-    ? wrapProviderWithPolicy(providerSelection.provider, {
-        selection: providerSelection,
-        policy: opts.providerPolicy,
-        autonomous: opts.providerPolicyAutonomous,
-        stateDir: join(memoryDir, 'state'),
-      })
-    : providerSelection.provider
-  const artifactSelection = opts.enableArtifacts ?? true
-    ? createArtifactProviderFromEnv({
-        cwd: process.cwd(),
-        env,
-        artifactDir: opts.artifactDir,
-        provider: opts.artifactProvider,
-        artifactPolicy: opts.artifactPolicy,
-        policyStateDir: join(memoryDir, 'state'),
-        requireConfigured: opts.artifactRequireConfigured,
-      })
-    : createArtifactProviderFromEnv({ env, provider: 'none' })
+  const providerLayer = createProviderLayer({ opts, env, serviceEnvPrefix, mode, provider, cloudFallbackEnabled, memoryDir, mcpConfig })
+  const { providerSelection, providerPolicyDecision, llm } = providerLayer
+  const artifactLayer = createArtifactLayer({ opts, env, memoryDir })
+  const { artifactSelection } = artifactLayer
 
   const perceptionPlugins: PerceptionPlugin[] = [
     {
@@ -190,33 +160,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     ? createArtifactActions({ providers: artifactSelection.providers, defaultProvider: artifactSelection.defaultProvider })
     : []
 
-  const capabilities: RuntimeCapabilities = {
-    llm: {
-      provider: providerSelection.providerName,
-      providerKey: providerSelection.providerKey,
-      cloud: providerSelection.cloud,
-      cloudFallbackEnabled: providerSelection.cloudFallbackEnabled,
-      model: providerSelection.model,
-      capabilities: providerSelection.provider.capabilities,
-    },
-    artifacts: {
-      enabled: artifactSelection.enabled,
-      defaultProvider: artifactSelection.defaultProvider,
-      providers: uniqueArtifactProviders(artifactSelection.providers).map(provider => ({
-        name: provider.name,
-        capabilities: provider.capabilities,
-      })),
-      reason: artifactSelection.reason,
-    },
-    mcp: {
-      servers: mcpConfig.serverNames,
-    },
-    runtime: {
-      peerBridge: { enabled: true, peerName: opts.peerName ?? 'peer' },
-      agora: { enabled: Boolean(agora) },
-      kgNotifications: { enabled: opts.enableKgNotifications ?? true },
-    },
-  }
+  const capabilities = createRuntimeCapabilities({ opts, providerSelection, artifactSelection, mcpConfig, agora })
 
   const config: TanrenConfig = {
     identity: opts.identity ?? './soul.md',
@@ -276,6 +220,101 @@ function uniqueArtifactProviders(providers: Record<string, { name: string; capab
     seen.add(provider.name)
     return true
   })
+}
+
+function createProviderLayer(args: {
+  opts: RuntimePresetOptions
+  env: NodeJS.ProcessEnv
+  serviceEnvPrefix: string
+  mode: string
+  provider: ProviderKey
+  cloudFallbackEnabled: boolean
+  memoryDir: string
+  mcpConfig: McpConfigSelection
+}) {
+  const { opts, env, serviceEnvPrefix, mode, provider, cloudFallbackEnabled, memoryDir, mcpConfig } = args
+  const stateDir = join(memoryDir, 'state')
+  const providerSelection = createProviderFromEnv({
+    cwd: process.cwd(),
+    stateDir,
+    env,
+    serviceEnvPrefix,
+    mode,
+    provider,
+    cloudFallbackEnabled,
+    agentSdk: mcpConfig.mcpServers ? { mcpServers: mcpConfig.mcpServers, mcpToolNames: mcpConfig.mcpToolNames } : undefined,
+  })
+  const providerPolicyDecision = decideProviderUse(providerSelection, {
+    policy: opts.providerPolicy,
+    autonomous: opts.providerPolicyAutonomous,
+    stateDir,
+  })
+  const llm = opts.providerPolicy
+    ? wrapProviderWithPolicy(providerSelection.provider, {
+        selection: providerSelection,
+        policy: opts.providerPolicy,
+        autonomous: opts.providerPolicyAutonomous,
+        stateDir,
+      })
+    : providerSelection.provider
+  return { providerSelection, providerPolicyDecision, llm }
+}
+
+function createArtifactLayer(args: {
+  opts: RuntimePresetOptions
+  env: NodeJS.ProcessEnv
+  memoryDir: string
+}) {
+  const { opts, env, memoryDir } = args
+  const artifactSelection = opts.enableArtifacts ?? true
+    ? createArtifactProviderFromEnv({
+        cwd: process.cwd(),
+        env,
+        artifactDir: opts.artifactDir,
+        provider: opts.artifactProvider,
+        artifactPolicy: opts.artifactPolicy,
+        policyStateDir: join(memoryDir, 'state'),
+        requireConfigured: opts.artifactRequireConfigured,
+      })
+    : createArtifactProviderFromEnv({ env, provider: 'none' })
+  return { artifactSelection }
+}
+
+function createRuntimeCapabilities(args: {
+  opts: RuntimePresetOptions
+  providerSelection: ProviderSelection
+  artifactSelection: ArtifactProviderSelection
+  mcpConfig: McpConfigSelection
+  agora?: AgoraCollaboration
+}): RuntimeCapabilities {
+  const { opts, providerSelection, artifactSelection, mcpConfig, agora } = args
+  return {
+    llm: {
+      provider: providerSelection.providerName,
+      providerKey: providerSelection.providerKey,
+      cloud: providerSelection.cloud,
+      cloudFallbackEnabled: providerSelection.cloudFallbackEnabled,
+      model: providerSelection.model,
+      capabilities: providerSelection.provider.capabilities,
+    },
+    artifacts: {
+      enabled: artifactSelection.enabled,
+      defaultProvider: artifactSelection.defaultProvider,
+      providers: uniqueArtifactProviders(artifactSelection.providers).map(provider => ({
+        name: provider.name,
+        capabilities: provider.capabilities,
+      })),
+      reason: artifactSelection.reason,
+    },
+    mcp: {
+      servers: mcpConfig.serverNames,
+    },
+    runtime: {
+      peerBridge: { enabled: true, peerName: opts.peerName ?? 'peer' },
+      agora: { enabled: Boolean(agora) },
+      kgNotifications: { enabled: opts.enableKgNotifications ?? true },
+    },
+  }
 }
 
 function createTickHistoryPlugin(memoryDir: string): PerceptionPlugin {

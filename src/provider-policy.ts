@@ -167,6 +167,29 @@ export function writePolicyEvent(stateDir: string | undefined, event: Omit<Polic
   }
 }
 
+export function readPolicyEvents(
+  stateDir: string | undefined,
+  opts: { limit?: number; domain?: PolicyEvent['domain']; provider?: string } = {},
+): PolicyEvent[] {
+  if (!stateDir) return []
+  const path = join(stateDir, 'policy-events.jsonl')
+  if (!existsSync(path)) return []
+  try {
+    const limit = opts.limit ?? 100
+    return readFileSync(path, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line) as PolicyEvent)
+      .filter(event => !opts.domain || event.domain === opts.domain)
+      .filter(event => !opts.provider || event.provider === opts.provider)
+      .slice(-limit)
+      .reverse()
+  } catch {
+    return []
+  }
+}
+
 function readTodayCloudCalls(stateDir: string): number {
   const path = join(stateDir, 'llm-usage-summary.json')
   if (!existsSync(path)) return 0
