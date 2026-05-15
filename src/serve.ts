@@ -601,13 +601,19 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     }
   })
 
+  // Some TS runners can exit after top-level await resolves when the HTTP
+  // server object is only retained through native handles. Keep an explicit
+  // ref alive for serve mode; tests clear it by closing the server.
+  const keepAliveTimer = setInterval(() => {}, 60 * 60 * 1000)
+  server.on('close', () => clearInterval(keepAliveTimer))
+
   server.listen(port, () => {
     console.log(`[${serviceName}] Server on port ${port}`)
     console.log(`[${serviceName}] POST /chat — { "from": "user", "text": "message" }`)
     console.log(`[${serviceName}] GET  /health | GET /status`)
   })
 
-  const shutdown = () => { console.log(`\n[${serviceName}] Stopping...`); pool.destroy(); server.close(); process.exit(0) }
+  const shutdown = () => { console.log(`\n[${serviceName}] Stopping...`); pool.destroy(); clearInterval(keepAliveTimer); server.close(); process.exit(0) }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
 
