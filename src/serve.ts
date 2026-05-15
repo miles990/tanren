@@ -210,6 +210,8 @@ export interface ServeOptions {
   maxPoolSize?: number
   /** Extra health metadata supplied by the concrete agent instance. */
   health?: () => Record<string, unknown>
+  /** Declared runtime capabilities exposed under /health.capabilities. */
+  capabilities?: Record<string, unknown>
 }
 
 export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
@@ -378,6 +380,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         pool: poolStatus,
         autonomous: { busy: autonomousBusy },
         ...(options.health ? { agent: options.health() } : {}),
+        ...(options.capabilities ? { capabilities: options.capabilities } : {}),
         ...unitNamespace,
       })
 
