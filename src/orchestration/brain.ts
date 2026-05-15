@@ -1,0 +1,120 @@
+/**
+ * Planning brain — framework-level constrained planner/digest layer.
+ *
+ * The brain does not execute work directly. It produces DAG plans and digests
+ * worker results into either a final answer or a follow-up plan.
+ */
+
+import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk'
+import { createAgentSdkProvider } from '../llm/agent-sdk.js'
+import type { LLMProvider } from '../types.js'
+import type { PlanResult } from './plan-engine.js'
+import { getSdkAgentDefinitions } from './workers.js'
+
+export interface BrainConfig {
+  model?: string
+  cwd?: string
+  additionalTools?: string[]
+  maxReplanRounds?: number
+}
+
+export interface WorkerInfo {
+  name: string
+  description: string
+  backend: string
+  model?: string
+  maxConcurrency?: number
+}
+
+const DEFAULT_MAX_REPLAN = 3
+
+const PLANNING_SYSTEM = `You are the planning brain of an AI agent system. Your ONLY job is to produce action plans.
+
+OUTPUT FORMAT: Return a JSON action plan inside \`\`\`json ... \`\`\` block:
+{
+  "goal": "用一句人話說明這個計劃要達成什麼",
+  "acceptance": "驗收條件 — 怎麼判斷目標達成了（可選）",
+  "steps": [
+    {
+      "id": "kebab-case-id",
+      "worker": "researcher|coder|reviewer|shell|analyst|explorer",
+      "task": "具體任務描述 — 可以引用前序結果 {{stepId.result}} 或 {{stepId.summary}}",
+      "label": "給人看的摘要 < 30 字",
+      "dependsOn": ["dependency-ids"],
+      "retry": { "maxRetries": 2, "onExhausted": "skip" }
+    }
+  ]
+}
+
+CRITICAL RULES:
+- YOU decide the last step. If goal is "寫報告", the last step is a report-writing step.
+  If goal is "部署", the last step is a health-check step. Do not leave it to the framework.
+- The last step should return structured JSON: { "accepted": bool, "summary": "...", "deliverable": "..." }
+- Steps with empty dependsOn run in parallel.
+- Use {{stepId.result}} or {{stepId.summary}} to pass data between steps.
+- Keep steps at independently verifiable work-unit granularity.
+- Add retry for unreliable steps: { "maxRetries": 2, "onExhausted": "skip" }.
+- DO NOT execute tools yourself; only produce the plan.`
+
+const DIGEST_SYSTEM = `You are the digest brain of an AI agent system. Workers have completed their tasks.
+
+Your job:
+1. Read all worker results.
+2. Decide: task complete -> respond to user, OR need more work -> produce another plan.
+
+If task is complete: respond naturally with the synthesized answer.
+If more work is needed: produce another action plan in a \`\`\`json ... \`\`\` block.
+If some steps had low confidence: you may produce a targeted replan for just those steps.`
+
+export function createPlanningBrain(config?: BrainConfig): LLMProvider {
+  return createAgentSdkProvider({
+    model: config?.model ?? 'opus',
+    cwd: config?.cwd ?? process.cwd(),
+    allowedTools: ['Agent', ...(config?.additionalTools ?? [])],
+    agents: getSdkAgentDefinitions() as unknown as Record<string, AgentDefinition>,
+    identityMode: 'override',
+  })
+}
+
+export const createBrain = createPlanningBrain
+
+export async function brainPlan(
+  brain: LLMProvider,
+  goal: string,
+  opts?: { context?: string; availableWorkers?: WorkerInfo[]; convergenceIteration?: number },
+): Promise<string> {
+  const parts: string[] = []
+  if (opts?.context) parts.push(`Context:\n${opts.context}\n`)
+  if (opts?.availableWorkers?.length) {
+    parts.push(`Available workers:\n${opts.availableWorkers.map(w => `- ${w.name} (${w.backend}/${w.model ?? 'default'}): ${w.description}`).join('\n')}\n`)
+  }
+  if (opts?.convergenceIteration) {
+    parts.push(`This is convergence iteration ${opts.convergenceIteration}. Refine the plan based on previous results.\n`)
+  }
+  parts.push(`Goal: ${goal}`)
+  return brain.think(parts.join('\n'), PLANNING_SYSTEM)
+}
+
+export async function brainDigest(
+  brain: LLMProvider,
+  goal: string,
+  planResult: PlanResult,
+  opts?: { additionalContext?: string; replanRound?: number; maxReplanRounds?: number },
+): Promise<string> {
+  const round = opts?.replanRound ?? 0
+  const maxRounds = opts?.maxReplanRounds ?? DEFAULT_MAX_REPLAN
+  const replanWarning = round >= maxRounds
+    ? `\n\nREPLAN LIMIT (${round}/${maxRounds}). Produce final response NOW.`
+    : round > 0 ? `\n\nReplan round ${round}/${maxRounds}.` : ''
+
+  const prompt = [
+    `Goal: ${goal}\n`,
+    `Plan: ${planResult.summary.completed} completed, ${planResult.summary.failed} failed, ${planResult.summary.skipped} skipped`,
+    ` (${(planResult.totalDurationMs / 1000).toFixed(1)}s, ${planResult.convergenceIterations} convergence iterations)\n\n`,
+    planResult.digestContext,
+    opts?.additionalContext ? `\n\n${opts.additionalContext}` : '',
+    replanWarning,
+  ].join('')
+
+  return brain.think(prompt, DIGEST_SYSTEM)
+}

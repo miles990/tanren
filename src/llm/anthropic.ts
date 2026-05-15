@@ -5,7 +5,8 @@
  * Requires API key. For headless/server deployments where CLI isn't available.
  */
 
-import type { LLMProvider, ToolUseLLMProvider, ToolDefinition, ConversationMessage, ToolUseResponse } from '../types.js'
+import type { ToolUseLLMProvider, ToolDefinition, ConversationMessage, ToolUseResponse, Prompt } from '../types.js'
+import { toAnthropic } from '../content-adapter.js'
 
 export interface AnthropicProviderOptions {
   apiKey: string
@@ -110,6 +111,22 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
         .map(b => b.text)
         .join('\n')
         .trim()
+    },
+
+    async thinkStructured(prompt: Prompt, systemPrompt: string) {
+      const data = await callApi({
+        system: systemPrompt || undefined,
+        messages: [{ role: 'user', content: typeof prompt === 'string' ? prompt : toAnthropic(prompt) }],
+      }, this.activeModel)
+
+      return {
+        text: data.content
+          .filter(b => b.type === 'text')
+          .map(b => b.text ?? '')
+          .join('\n')
+          .trim(),
+        metadata: { model: this.activeModel ?? model, usage: data.usage },
+      }
     },
 
     // Settable stream callback — set by serve mode to push live thinking

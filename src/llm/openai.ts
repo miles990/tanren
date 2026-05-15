@@ -6,7 +6,8 @@
  * response_format, cost tracking, provider fallback.
  */
 
-import type { LLMProvider, ToolUseLLMProvider, ToolDefinition, ConversationMessage, ContentBlock, ToolUseResponse } from '../types.js'
+import type { LLMProvider, ToolUseLLMProvider, ToolDefinition, ConversationMessage, ContentBlock, ToolUseResponse, Prompt } from '../types.js'
+import { toOpenAI } from '../content-adapter.js'
 
 export type OnStreamText = (text: string) => void
 
@@ -158,6 +159,38 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): ToolUseLLMPro
         }
 
         return await parseSSEStream(response, provider.onStreamText, trackUsage)
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+
+    async thinkStructured(prompt: Prompt, systemPrompt: string) {
+      const model = provider.activeModel ?? defaultModel
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      const messages: Array<Record<string, unknown>> = []
+      if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
+      messages.push({ role: 'user', content: typeof prompt === 'string' ? prompt : toOpenAI(prompt) })
+
+      try {
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${opts.apiKey}` },
+          body: JSON.stringify({ model, max_tokens: maxTokens, messages, ...opts.extraBody }),
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          const text = await response.text().catch(() => '')
+          throw new Error(`OpenAI API ${response.status}: ${text.slice(0, 500)}`)
+        }
+
+        const data = await response.json() as { choices: Array<{ message: { content?: string } }>; usage?: { prompt_tokens: number; completion_tokens: number } }
+        trackUsage(data.usage)
+        return {
+          text: (data.choices[0]?.message?.content ?? '').trim(),
+          metadata: { model, usage: data.usage },
+        }
       } finally {
         clearTimeout(timer)
       }
@@ -322,6 +355,19 @@ export function createFallbackProvider(
       } catch (err) {
         console.warn(`[${label}] Primary failed (${err instanceof Error ? err.message : err}), falling back`)
         return secondary.think(context, systemPrompt)
+      }
+    },
+
+    async thinkStructured(prompt, systemPrompt) {
+      try {
+        return await primary.thinkStructured!(prompt, systemPrompt)
+      } catch (err) {
+        console.warn(`[${label}] Primary thinkStructured failed (${err instanceof Error ? err.message : err}), falling back`)
+        const text = await secondary.think(
+          typeof prompt === 'string' ? prompt : prompt.map(block => JSON.stringify(block)).join('\n'),
+          systemPrompt,
+        )
+        return { text, metadata: { fallback: true } }
       }
     },
 

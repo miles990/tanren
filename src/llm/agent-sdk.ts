@@ -12,7 +12,9 @@
  * Claude Code's tool-use RLHF tuning can opt in via `identityMode: 'inherit-claude-code'`.
  */
 
-import type { LLMProvider, SessionAwareLLMProvider } from '../types.js'
+import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk'
+import type { LLMProvider, Prompt, SessionAwareLLMProvider } from '../types.js'
+import { promptToText } from '../content-adapter.js'
 
 export interface AgentSdkOptions {
   /** Model override (default: determined by Claude Code) */
@@ -43,6 +45,8 @@ export interface AgentSdkOptions {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mcpServers?: Record<string, any>
+  /** Worker/subagent definitions exposed to the Agent SDK Agent tool. */
+  agents?: Record<string, AgentDefinition>
   /**
    * How the agent's `systemPrompt` (soul) maps onto Claude Agent SDK's preset.
    *
@@ -134,6 +138,7 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): SessionAwareLLMP
             ...systemPromptOption,
             ...(opts?.model ? { model: opts.model } : {}),
             ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
+            ...(opts?.agents ? { agents: opts.agents } : {}),
             ...(resumeSessionId ? { resume: resumeSessionId } : {}),
           },
         })) {
@@ -155,6 +160,10 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): SessionAwareLLMP
       }
 
       return result
+    },
+
+    async thinkStructured(prompt: Prompt, systemPrompt: string) {
+      return { text: await this.think(promptToText(prompt), systemPrompt), metadata: { degradedToText: true } }
     },
   }
 }

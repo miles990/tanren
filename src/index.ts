@@ -195,6 +195,13 @@ export { ResultBuffer, type TaskRecord, type TaskStatus, type TaskEvent } from '
 export { WORKERS, allWorkers, getSdkAgentDefinitions, getWorkerNames, addCustomWorker, removeCustomWorker, type WorkerBackend, type WorkerDefinition } from './orchestration/workers.js'
 export { createWorkerRuntime, type WorkerRuntime, type WorkerRuntimeOptions } from './orchestration/worker-runtime.js'
 export { ACPGateway, createGateway, DEFAULT_BACKENDS, type CLIBackend, type ACPSession, type GatewayStats } from './orchestration/acp-gateway.js'
+export { PLAN_TEMPLATES, type PlanTemplate } from './orchestration/templates.js'
+export { PresetManager, type WorkerPreset } from './orchestration/presets.js'
+export { createPlanningBrain, createBrain, brainPlan, brainDigest, type BrainConfig, type WorkerInfo } from './orchestration/brain.js'
+export { createOrchestrationMiddleware, createOrchestrationRouter, type OrchestrationMiddleware, type OrchestrationMiddlewareConfig } from './orchestration/router.js'
+export { createOrchestrationMcpServer, startOrchestrationMcpServer, type OrchestrationMcpOptions } from './orchestration/mcp-server.js'
+export { createKgCollaboration, createKgDiscussionPlugin, createKgActions, type KgCollaborationOptions } from './kg-collaboration.js'
+export { createRoleContractPlugin, type RoleContractPluginOptions } from './role-contract.js'
 
 // Action Health
 export { createActionHealthTracker } from './action-health.js'

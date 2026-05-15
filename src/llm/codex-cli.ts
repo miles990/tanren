@@ -9,7 +9,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import type { LLMProvider } from '../types.js'
+import type { LLMProvider, Prompt } from '../types.js'
+import { promptToText } from '../content-adapter.js'
 
 export interface CodexCliOptions {
   model?: string
@@ -107,6 +108,9 @@ export function createCodexCliProvider(opts?: CodexCliOptions): LLMProvider {
         ? `<system>\n${systemPrompt}\n</system>\n\n<context>\n${context}\n</context>`
         : context
       return runCodex(prompt)
+    },
+    async thinkStructured(prompt: Prompt, systemPrompt: string) {
+      return { text: await this.think(promptToText(prompt), systemPrompt), metadata: { degradedToText: true } }
     },
   }
 }

@@ -7,7 +7,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import type { LLMProvider } from '../types.js'
+import type { LLMProvider, Prompt } from '../types.js'
+import { promptToText } from '../content-adapter.js'
 
 export interface ClaudeCliOptions {
   model?: string
@@ -101,6 +102,10 @@ export function createClaudeCliProvider(opts?: ClaudeCliOptions): LLMProvider {
       }
       if (opts?.model) args.push('--model', opts.model)
       return runClaude(context, args)
+    },
+
+    async thinkStructured(prompt: Prompt, systemPrompt: string) {
+      return { text: await this.think(promptToText(prompt), systemPrompt), metadata: { degradedToText: true } }
     },
 
     // CLI is text-only — loop.ts handles action parsing via text-based feedback path.
