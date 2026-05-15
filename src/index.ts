@@ -157,6 +157,7 @@ export type {
   ActionHandler,
   ActionContext,
   RiskTier,
+  ProviderCapabilities,
 } from './types.js'
 
 // Modules
@@ -186,6 +187,25 @@ export { decideProviderUse, type ProviderPolicy, type ProviderPolicyDecision, ty
 export { promptToText, toAnthropic, toOpenAI, toGemini, extractOpenAIOutputs, extractAnthropicOutputs, extractGeminiOutputs } from './content-adapter.js'
 export { createModelIO, collectStream, type ModelIO, type ModelRequest, type ModelResponse } from './model-io.js'
 export { TEXT_ONLY_CAPABILITIES, ANTHROPIC_CAPABILITIES, OPENAI_COMPAT_CAPABILITIES, GEMINI_CAPABILITIES, MANAGED_AGENT_CAPABILITIES, AGENT_SDK_CAPABILITIES } from './provider-capabilities.js'
+export {
+  FileArtifactStore,
+  createOpenAIArtifactProvider,
+  createArtifactGraphExecutor,
+  createArtifactActions,
+  type ArtifactKind,
+  type ArtifactStatus,
+  type ArtifactRef,
+  type ArtifactBlob,
+  type ArtifactRequest,
+  type ArtifactJob,
+  type ArtifactEvent,
+  type ArtifactCapabilities,
+  type ArtifactProvider,
+  type ArtifactStore,
+  type ArtifactGraphNode,
+  type ArtifactGraph,
+  type ArtifactGraphResult,
+} from './artifact-io.js'
 
 // Working Memory
 export { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
