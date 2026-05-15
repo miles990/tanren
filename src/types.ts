@@ -106,6 +106,58 @@ export interface SearchResult {
 
 // === LLM ===
 
+/** Text content block for multimodal-capable providers. */
+export interface TextContent {
+  type: 'text'
+  text: string
+}
+
+/** Binary/media content block. Providers that cannot handle the media directly
+ * should degrade through `promptToText()` instead of throwing at the seam. */
+export interface MediaContent {
+  type: 'media'
+  mediaType: string
+  source:
+    | { type: 'base64'; data: string }
+    | { type: 'url'; url: string }
+    | { type: 'file'; path: string }
+  label?: string
+}
+
+/** Real-time stream reference. */
+export interface StreamContent {
+  type: 'stream'
+  mediaType: string
+  url: string
+  protocol?: 'ws' | 'sse' | 'rtmp' | 'http-chunked'
+  label?: string
+}
+
+/** Reference to an external/local resource. */
+export interface RefContent {
+  type: 'ref'
+  uri: string
+  mediaType?: string
+  label?: string
+}
+
+export type PromptContentBlock = TextContent | MediaContent | StreamContent | RefContent
+export type Prompt = string | PromptContentBlock[]
+
+export interface StructuredResponse {
+  text: string
+  outputs?: PromptContentBlock[]
+  metadata?: Record<string, unknown>
+}
+
+export interface StreamChunk {
+  type: 'text_delta' | 'content_block' | 'tool_use' | 'done' | 'error'
+  text?: string
+  content?: PromptContentBlock
+  metadata?: Record<string, unknown>
+  error?: string
+}
+
 export interface LLMProvider {
   /**
    * Generate a response from the LLM.
@@ -142,6 +194,10 @@ export interface LLMProvider {
    * inherit Claude Code's persona and tool-use tuning.
    */
   think(context: string, systemPrompt: string): Promise<string>
+  /** Optional multimodal/structured output seam. Text-only providers can omit. */
+  thinkStructured?(prompt: Prompt, systemPrompt: string): Promise<StructuredResponse>
+  /** Optional streaming seam. */
+  thinkStream?(prompt: Prompt, systemPrompt: string): AsyncIterable<StreamChunk>
 }
 
 /** LLM provider with native session management (e.g. Agent SDK).

@@ -176,14 +176,25 @@ export { createContextMesh, createMeshPerception, createMeshAction, type Context
 
 // LLM Providers
 export { createClaudeCliProvider, type ClaudeCliOptions } from './llm/claude-cli.js'
+export { createCodexCliProvider, type CodexCliOptions } from './llm/codex-cli.js'
 export { createAnthropicProvider, type AnthropicProviderOptions } from './llm/anthropic.js'
 export { createOpenAIProvider, createFallbackProvider, type OpenAIProviderOptions, type ToolCallOptions, type CostTracker } from './llm/openai.js'
+export { createGoogleProvider, type GoogleProviderOptions } from './llm/google.js'
+export { createManagedAgentProvider, type ManagedAgentProviderOptions } from './llm/managed-agent.js'
+export { createProvider, createProviderFromEnv, listProviders, type ProviderConfig, type ProviderKey, type ProviderSelection, type ProviderFromEnvOptions } from './provider-registry.js'
+export { decideProviderUse, type ProviderPolicy, type ProviderPolicyDecision, type TaskRisk } from './provider-policy.js'
+export { promptToText, toAnthropic, toOpenAI, toGemini } from './content-adapter.js'
 
 // Working Memory
 export { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'
 
 // Plan System
 export { createPlanSystem, loadPlans, parsePlan, type Plan, type PlanStep } from './plans.js'
+export { PlanEngine, parsePlan as parseActionPlan, type ActionPlan, type PlanStep as OrchestrationPlanStep, type PlanResult, type StepResult, type WorkerExecutor, type PlanEngineOptions, type StructuredOutput as PlanStructuredOutput, type DigestInput, type StepRisk, type ConfirmationResult, type PlanEvent } from './orchestration/plan-engine.js'
+export { ResultBuffer, type TaskRecord, type TaskStatus, type TaskEvent } from './orchestration/result-buffer.js'
+export { WORKERS, allWorkers, getSdkAgentDefinitions, getWorkerNames, addCustomWorker, removeCustomWorker, type WorkerBackend, type WorkerDefinition } from './orchestration/workers.js'
+export { createWorkerRuntime, type WorkerRuntime, type WorkerRuntimeOptions } from './orchestration/worker-runtime.js'
+export { ACPGateway, createGateway, DEFAULT_BACKENDS, type CLIBackend, type ACPSession, type GatewayStats } from './orchestration/acp-gateway.js'
 
 // Action Health
 export { createActionHealthTracker } from './action-health.js'
@@ -204,6 +215,7 @@ export { serve, type ServeOptions, type ServeHandle } from './serve.js'
 export { createAgentSdkProvider, type AgentSdkOptions } from './llm/agent-sdk.js'
 export { safeJsonLoad, safeReadFile, safeJsonlLoad } from './safe-io.js'
 export { saveSession, loadSession, listSessions, forkSession, formatSessionsForContext, type SessionSnapshot } from './session.js'
+export { wrapProviderWithUsageLedger, type UsageLedgerOptions, type UsageRecord } from './usage-ledger.js'
 
 // Learning System
 export {

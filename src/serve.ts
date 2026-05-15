@@ -208,6 +208,8 @@ export interface ServeOptions {
   agentConfig?: TanrenConfig
   /** Max concurrent pool agents (default: 3). Does not include the autonomous loop agent. */
   maxPoolSize?: number
+  /** Extra health metadata supplied by the concrete agent instance. */
+  health?: () => Record<string, unknown>
 }
 
 export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
@@ -375,6 +377,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         recentTicks: recentTicks.slice(-5),
         pool: poolStatus,
         autonomous: { busy: autonomousBusy },
+        ...(options.health ? { agent: options.health() } : {}),
         ...unitNamespace,
       })
 

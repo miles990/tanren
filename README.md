@@ -183,9 +183,27 @@ All providers support native tool_use (multi-turn feedback rounds):
 | Provider | Config | Tool Use |
 |----------|--------|----------|
 | Claude CLI | default (no API key) | stream-json |
+| Codex CLI | `createCodexCliProvider()` | text |
 | Anthropic API | `createAnthropicProvider()` | native |
 | OpenAI-compatible | `createOpenAIProvider()` | native |
+| Provider registry | `createProviderFromEnv()` | auto |
 | Fallback chain | `createFallbackProvider(a, b)` | auto |
+
+Wrap any provider with `wrapProviderWithUsageLedger(provider, { stateDir, provider, model, cloud })`
+to persist `llm-usage.jsonl` and `llm-usage-summary.json` for cloud/token auditing.
+
+`createProviderFromEnv({ stateDir })` centralizes `LLM_PROVIDER`, local-vs-cloud fallback,
+Codex CLI, usage ledger wiring, and health metadata. `decideProviderUse()` can block cloud
+or autonomous cloud calls before tokens are spent.
+
+### Orchestration
+
+Tanren also exports reusable worker orchestration modules:
+
+- `PlanEngine` — DAG execution with dependencies, retry, verification, and convergence.
+- `ResultBuffer` — task state, JSONL persistence, and event subscription.
+- `createWorkerRuntime()` — backend routing for SDK, ACP, shell, webhook, logic, and middleware workers.
+- `WORKERS` / `WorkerDefinition` — reusable worker presets and extension seam.
 
 ### Multi-Agent Collaboration
 
