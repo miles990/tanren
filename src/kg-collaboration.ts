@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ActionHandler, PerceptionPlugin } from './types.js'
 
@@ -10,6 +10,12 @@ export interface KgCollaborationOptions {
   cursorPath?: string
   interval?: number
   timeoutMs?: number
+}
+
+export interface KgNotificationDiscussionPluginOptions extends KgCollaborationOptions {
+  eventsDir?: string
+  processedDir?: string
+  maxFiles?: number
 }
 
 function readJson(path: string): Record<string, unknown> {
@@ -200,5 +206,65 @@ export function createKgCollaboration(opts: KgCollaborationOptions = {}): { perc
   return {
     perceptionPlugins: [createKgDiscussionPlugin(opts)],
     actions: createKgActions(opts),
+  }
+}
+
+export function createKgNotificationDiscussionPlugin(opts: KgNotificationDiscussionPluginOptions = {}): PerceptionPlugin {
+  const eventsDir = opts.eventsDir ?? join(process.cwd(), 'memory', 'events', 'pending')
+  const processedDir = opts.processedDir ?? join(process.cwd(), 'memory', 'events', 'processed')
+  const sourceAgent = opts.sourceAgent ?? opts.agentId ?? 'agent'
+  const maxFiles = opts.maxFiles ?? 5
+  const timeoutMs = opts.timeoutMs ?? 5_000
+
+  return {
+    name: 'kg-discussions',
+    interval: opts.interval ?? 30_000,
+    category: 'input',
+    fn: async () => {
+      const parts: string[] = []
+      try {
+        if (!existsSync(eventsDir)) return ''
+        const files = readdirSync(eventsDir).filter(f => f.endsWith('.json') && f.includes('kg-notification'))
+        if (files.length === 0) return ''
+
+        const seenDiscussions = new Set<string>()
+        for (const file of files.slice(0, maxFiles)) {
+          try {
+            const eventPath = join(eventsDir, file)
+            const evt = JSON.parse(readFileSync(eventPath, 'utf-8')) as { payload?: { discussion_id?: string }; discussion_id?: string }
+            const discId = evt.payload?.discussion_id ?? evt.discussion_id
+            if (discId) seenDiscussions.add(discId)
+            mkdirSync(processedDir, { recursive: true })
+            renameSync(eventPath, join(processedDir, file))
+          } catch { /* skip bad event */ }
+        }
+
+        for (const discId of seenDiscussions) {
+          try {
+            const res = await fetch(`${kgBase(opts)}/api/discussion/${encodeURIComponent(discId)}`, { signal: AbortSignal.timeout(timeoutMs) })
+            if (!res.ok) continue
+            const disc = await res.json() as {
+              topic: string
+              status?: string
+              positions: Array<{ source_agent: string; name?: string; description?: string; confidence?: number }>
+            }
+            if (disc.status === 'closed' || disc.status === 'resolved') continue
+            const myPositions = disc.positions.filter(p => p.source_agent === sourceAgent)
+            const othersRecent = disc.positions.filter(p => p.source_agent !== sourceAgent).slice(-3)
+            if (othersRecent.length === 0) continue
+
+            parts.push('\n### KG Discussion Awaiting Your Response')
+            parts.push(`**Topic**: ${disc.topic}`)
+            parts.push(`**ID**: ${discId}`)
+            parts.push(`**Your positions so far**: ${myPositions.length}`)
+            parts.push('**Recent positions from others**:')
+            for (const p of othersRecent) parts.push(`  - [${p.source_agent}] "${p.name ?? 'position'}": ${(p.description ?? '').slice(0, 400)}`)
+            parts.push(`\n**ACTION REQUIRED**: Use kg_discuss with discussion_id="${discId}".`)
+          } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
+
+      return parts.join('\n')
+    },
   }
 }

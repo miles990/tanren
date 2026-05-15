@@ -235,7 +235,7 @@ export { PresetManager, type WorkerPreset } from './orchestration/presets.js'
 export { createPlanningBrain, createBrain, brainPlan, brainDigest, type BrainConfig, type WorkerInfo } from './orchestration/brain.js'
 export { createOrchestrationMiddleware, createOrchestrationRouter, type OrchestrationMiddleware, type OrchestrationMiddlewareConfig } from './orchestration/router.js'
 export { createOrchestrationMcpServer, startOrchestrationMcpServer, type OrchestrationMcpOptions } from './orchestration/mcp-server.js'
-export { createKgCollaboration, createKgDiscussionPlugin, createKgActions, type KgCollaborationOptions } from './kg-collaboration.js'
+export { createKgCollaboration, createKgDiscussionPlugin, createKgNotificationDiscussionPlugin, createKgActions, type KgCollaborationOptions, type KgNotificationDiscussionPluginOptions } from './kg-collaboration.js'
 export { createRoleContractPlugin, type RoleContractPluginOptions } from './role-contract.js'
 
 // Action Health
@@ -258,6 +258,20 @@ export { createAgentSdkProvider, type AgentSdkOptions } from './llm/agent-sdk.js
 export { safeJsonLoad, safeReadFile, safeJsonlLoad } from './safe-io.js'
 export { saveSession, loadSession, listSessions, forkSession, formatSessionsForContext, type SessionSnapshot } from './session.js'
 export { wrapProviderWithUsageLedger, type UsageLedgerOptions, type UsageRecord } from './usage-ledger.js'
+export { loadDotEnvFile, readUsageSummary, type DotEnvLoadOptions } from './env.js'
+export { loadMcpServersFromConfig, type McpConfigLoadOptions, type McpConfigSelection } from './mcp-config.js'
+export { createPeerBridge, type PeerBridge, type PeerBridgeOptions } from './peer-bridge.js'
+export { createAgoraCollaboration, type AgoraCollaboration, type AgoraCollaborationOptions } from './agora-collaboration.js'
+export { chatStream, checkAgentHealth, type AgentChatResult, type ChatStreamOptions } from './chat-client.js'
+export {
+  createKgDiscussionClient,
+  loadLocalSessionMap,
+  saveLocalSessionMap,
+  type KgDiscussionClientOptions,
+  type KgDiscussionClient,
+  type KgDiscussion,
+  type KgPosition,
+} from './kg-discussion-client.js'
 
 // Learning System
 export {
