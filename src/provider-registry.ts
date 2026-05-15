@@ -17,7 +17,7 @@ import { createGoogleProvider, type GoogleProviderOptions } from './llm/google.j
 import { createManagedAgentProvider, type ManagedAgentProviderOptions } from './llm/managed-agent.js'
 import { wrapProviderWithUsageLedger } from './usage-ledger.js'
 
-export type ProviderKey =
+export type BuiltinProviderKey =
   | 'agent-sdk'
   | 'anthropic'
   | 'anthropic-managed'
@@ -28,7 +28,9 @@ export type ProviderKey =
   | 'codex'
   | 'claude-cli'
 
-const PROVIDER_KEYS: ProviderKey[] = [
+export type ProviderKey = BuiltinProviderKey | (string & {})
+
+const PROVIDER_KEYS: BuiltinProviderKey[] = [
   'agent-sdk',
   'anthropic',
   'anthropic-managed',
@@ -41,7 +43,8 @@ const PROVIDER_KEYS: ProviderKey[] = [
 ]
 
 function isProviderKey(value: string | undefined): value is ProviderKey {
-  return !!value && (PROVIDER_KEYS as string[]).includes(value)
+  ensureBuiltinProviderFactories()
+  return !!value && providerFactories.has(value)
 }
 
 export interface ProviderConfig {
@@ -49,6 +52,28 @@ export interface ProviderConfig {
   model?: string
   cloud?: boolean
   options?: Record<string, unknown>
+}
+
+export interface ProviderFactoryContext {
+  model?: string
+  options: Record<string, unknown>
+  env: NodeJS.ProcessEnv
+  cwd?: string
+}
+
+export type ProviderFactory = (context: ProviderFactoryContext) => LLMProvider
+
+const providerFactories = new Map<string, ProviderFactory>()
+const providerDescriptions = new Map<string, { provider: ProviderKey; cloud: boolean; description: string }>()
+let builtinsRegistered = false
+
+export function registerProviderFactory(
+  provider: ProviderKey,
+  factory: ProviderFactory,
+  metadata: { cloud: boolean; description: string },
+): void {
+  providerFactories.set(provider, factory)
+  providerDescriptions.set(provider, { provider, ...metadata })
 }
 
 export interface ProviderSelection {
@@ -77,57 +102,17 @@ export interface ProviderFromEnvOptions {
 }
 
 export function createProvider(config: ProviderConfig): LLMProvider {
+  ensureBuiltinProviderFactories()
   const model = config.model
   const options = config.options ?? {}
-
-  switch (config.provider) {
-    case 'agent-sdk':
-      return createAgentSdkProvider({ model: model ?? 'claude-sonnet-4-6', ...(options as Partial<AgentSdkOptions>) })
-    case 'anthropic':
-      return createAnthropicProvider({
-        apiKey: String(options.apiKey ?? process.env.ANTHROPIC_API_KEY ?? ''),
-        model: model ?? 'claude-sonnet-4-6',
-        ...(options as Partial<AnthropicProviderOptions>),
-      } as AnthropicProviderOptions)
-    case 'anthropic-managed':
-      return createManagedAgentProvider({ model: model ?? 'claude-sonnet-4-6', ...(options as Partial<ManagedAgentProviderOptions>) })
-    case 'openai':
-      return createOpenAIProvider({
-        ...(options as Partial<OpenAIProviderOptions>),
-        apiKey: String(options.apiKey ?? process.env.OPENAI_API_KEY ?? ''),
-        model: model ?? 'gpt-4o',
-      } as OpenAIProviderOptions)
-    case 'google':
-      return createGoogleProvider({ model: model ?? 'gemini-2.0-flash', ...(options as Partial<GoogleProviderOptions>) })
-    case 'local':
-    case 'omlx':
-      return createOpenAIProvider({
-        ...(options as Partial<OpenAIProviderOptions>),
-        apiKey: String(options.apiKey ?? process.env.LOCAL_LLM_KEY ?? 'local'),
-        baseUrl: String(options.baseUrl ?? `${process.env.LOCAL_LLM_URL ?? 'http://localhost:8000'}/v1`),
-        model: model ?? process.env.LOCAL_LLM_MODEL ?? 'Qwen3.5-4B-MLX-4bit',
-        maxTokens: 4096,
-        extraBody: { chat_template_kwargs: { enable_thinking: false } },
-      } as OpenAIProviderOptions)
-    case 'codex':
-      return createCodexCliProvider({ model, ...(options as Partial<CodexCliOptions>) })
-    case 'claude-cli':
-      return createClaudeCliProvider({ model: model ?? 'claude-sonnet-4-6', ...(options as Partial<ClaudeCliOptions>) })
-  }
+  const factory = providerFactories.get(config.provider)
+  if (!factory) throw new Error(`Unknown provider "${config.provider}". Use ${[...providerFactories.keys()].join(', ')}.`)
+  return factory({ model, options, env: process.env })
 }
 
 export function listProviders(): Array<{ provider: ProviderKey; cloud: boolean; description: string }> {
-  return [
-    { provider: 'agent-sdk', cloud: true, description: 'Claude Agent SDK via local subscription auth' },
-    { provider: 'anthropic', cloud: true, description: 'Anthropic Messages API' },
-    { provider: 'anthropic-managed', cloud: true, description: 'Anthropic cloud managed agent/container' },
-    { provider: 'openai', cloud: true, description: 'OpenAI-compatible cloud API' },
-    { provider: 'google', cloud: true, description: 'Google Gemini API' },
-    { provider: 'local', cloud: false, description: 'OpenAI-compatible local model' },
-    { provider: 'omlx', cloud: false, description: 'omlx/MLX local model' },
-    { provider: 'codex', cloud: true, description: 'Codex CLI, cloud unless CODEX_OSS=1' },
-    { provider: 'claude-cli', cloud: true, description: 'Claude CLI via local subscription auth' },
-  ]
+  ensureBuiltinProviderFactories()
+  return [...providerDescriptions.values()]
 }
 
 export function createProviderFromEnv(opts: ProviderFromEnvOptions = {}): ProviderSelection {
@@ -136,7 +121,7 @@ export function createProviderFromEnv(opts: ProviderFromEnvOptions = {}): Provid
   const mode = opts.mode ?? readScopedEnv(env, 'MODE', opts.serviceEnvPrefix) ?? opts.defaultMode ?? 'cloud-research'
   const rawProvider = opts.provider ?? env.TANREN_LLM_PROVIDER ?? env.LLM_PROVIDER
   if (rawProvider && !isProviderKey(rawProvider)) {
-    throw new Error(`Unknown LLM_PROVIDER="${rawProvider}". Use ${PROVIDER_KEYS.join(', ')}.`)
+    throw new Error(`Unknown LLM_PROVIDER="${rawProvider}". Use ${[...providerFactories.keys()].join(', ')}.`)
   }
   const providerKey: ProviderKey = (rawProvider as ProviderKey | undefined)
     ?? (mode === 'local-review'
@@ -225,4 +210,71 @@ export function normalizeEnvPrefix(prefix?: string): string | undefined {
   if (!prefix) return undefined
   const normalized = prefix.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
   return normalized ? `${normalized}_` : undefined
+}
+
+function ensureBuiltinProviderFactories(): void {
+  if (builtinsRegistered) return
+  builtinsRegistered = true
+  registerProviderFactory('agent-sdk', ({ model, options }) =>
+    createAgentSdkProvider({ model: model ?? 'claude-sonnet-4-6', ...(options as Partial<AgentSdkOptions>) }), {
+      cloud: true,
+      description: 'Claude Agent SDK via local subscription auth',
+    })
+  registerProviderFactory('anthropic', ({ model, options, env }) =>
+    createAnthropicProvider({
+      apiKey: String(options.apiKey ?? env.ANTHROPIC_API_KEY ?? ''),
+      model: model ?? 'claude-sonnet-4-6',
+      ...(options as Partial<AnthropicProviderOptions>),
+    } as AnthropicProviderOptions), {
+      cloud: true,
+      description: 'Anthropic Messages API',
+    })
+  registerProviderFactory('anthropic-managed', ({ model, options }) =>
+    createManagedAgentProvider({ model: model ?? 'claude-sonnet-4-6', ...(options as Partial<ManagedAgentProviderOptions>) }), {
+      cloud: true,
+      description: 'Anthropic cloud managed agent/container',
+    })
+  registerProviderFactory('openai', ({ model, options, env }) =>
+    createOpenAIProvider({
+      ...(options as Partial<OpenAIProviderOptions>),
+      apiKey: String(options.apiKey ?? env.OPENAI_API_KEY ?? ''),
+      model: model ?? 'gpt-4o',
+    } as OpenAIProviderOptions), {
+      cloud: true,
+      description: 'OpenAI-compatible cloud API',
+    })
+  registerProviderFactory('google', ({ model, options }) =>
+    createGoogleProvider({ model: model ?? 'gemini-2.0-flash', ...(options as Partial<GoogleProviderOptions>) }), {
+      cloud: true,
+      description: 'Google Gemini API',
+    })
+  registerProviderFactory('local', createLocalProvider, {
+    cloud: false,
+    description: 'OpenAI-compatible local model',
+  })
+  registerProviderFactory('omlx', createLocalProvider, {
+    cloud: false,
+    description: 'omlx/MLX local model',
+  })
+  registerProviderFactory('codex', ({ model, options }) =>
+    createCodexCliProvider({ model, ...(options as Partial<CodexCliOptions>) }), {
+      cloud: true,
+      description: 'Codex CLI, cloud unless CODEX_OSS=1',
+    })
+  registerProviderFactory('claude-cli', ({ model, options }) =>
+    createClaudeCliProvider({ model: model ?? 'claude-sonnet-4-6', ...(options as Partial<ClaudeCliOptions>) }), {
+      cloud: true,
+      description: 'Claude CLI via local subscription auth',
+    })
+}
+
+function createLocalProvider({ model, options, env }: ProviderFactoryContext): LLMProvider {
+  return createOpenAIProvider({
+    ...(options as Partial<OpenAIProviderOptions>),
+    apiKey: String(options.apiKey ?? env.LOCAL_LLM_KEY ?? 'local'),
+    baseUrl: String(options.baseUrl ?? `${env.LOCAL_LLM_URL ?? 'http://localhost:8000'}/v1`),
+    model: model ?? env.LOCAL_LLM_MODEL ?? 'Qwen3.5-4B-MLX-4bit',
+    maxTokens: 4096,
+    extraBody: { chat_template_kwargs: { enable_thinking: false } },
+  } as OpenAIProviderOptions)
 }

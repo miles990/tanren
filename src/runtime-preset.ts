@@ -96,6 +96,45 @@ export interface RuntimeCapabilities {
   }
 }
 
+export interface RuntimeLayerPipeline {
+  provider: ReturnType<typeof createProviderLayer>
+  artifacts: ReturnType<typeof createArtifactLayer>
+  capabilities: RuntimeCapabilities
+  mcpConfig: McpConfigSelection
+}
+
+export function createRuntimeLayers(opts: RuntimePresetOptions = {}): RuntimeLayerPipeline {
+  const env = opts.env ?? process.env
+  const baseDir = opts.baseDir ?? '.'
+  const memoryDir = opts.memoryDir ?? join(baseDir, 'memory')
+  const serviceName = opts.serviceName ?? 'tanren-agent'
+  const serviceEnvPrefix = opts.serviceEnvPrefix ?? serviceName
+  const mode = opts.mode ?? readScopedEnv(env, 'MODE', serviceEnvPrefix) ?? 'cloud-research'
+  const provider = opts.provider
+    ?? (env.TANREN_LLM_PROVIDER as ProviderKey | undefined)
+    ?? (env.LLM_PROVIDER as ProviderKey | undefined)
+    ?? (mode === 'local-review' ? 'omlx' : mode === 'codex' ? 'codex' : 'agent-sdk')
+  const cloudFallbackEnabled = opts.cloudFallbackEnabled ?? readScopedEnv(env, 'CLOUD_FALLBACK', serviceEnvPrefix) === '1'
+  const mcpConfig = loadMcpServersFromConfig({
+    path: opts.mcpConfigPath,
+    defaultPath: opts.mcpDefaultPath,
+    logger: console,
+  })
+  const providerLayer = createProviderLayer({ opts, env, serviceEnvPrefix, mode, provider, cloudFallbackEnabled, memoryDir, mcpConfig })
+  const artifactLayer = createArtifactLayer({ opts, env, memoryDir })
+  return {
+    provider: providerLayer,
+    artifacts: artifactLayer,
+    mcpConfig,
+    capabilities: createRuntimeCapabilities({
+      opts,
+      providerSelection: providerLayer.providerSelection,
+      artifactSelection: artifactLayer.artifactSelection,
+      mcpConfig,
+    }),
+  }
+}
+
 export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): RuntimePreset {
   const env = opts.env ?? process.env
   const baseDir = opts.baseDir ?? '.'
@@ -222,7 +261,7 @@ function uniqueArtifactProviders(providers: Record<string, { name: string; capab
   })
 }
 
-function createProviderLayer(args: {
+export function createProviderLayer(args: {
   opts: RuntimePresetOptions
   env: NodeJS.ProcessEnv
   serviceEnvPrefix: string
@@ -260,7 +299,7 @@ function createProviderLayer(args: {
   return { providerSelection, providerPolicyDecision, llm }
 }
 
-function createArtifactLayer(args: {
+export function createArtifactLayer(args: {
   opts: RuntimePresetOptions
   env: NodeJS.ProcessEnv
   memoryDir: string
@@ -280,7 +319,7 @@ function createArtifactLayer(args: {
   return { artifactSelection }
 }
 
-function createRuntimeCapabilities(args: {
+export function createRuntimeCapabilities(args: {
   opts: RuntimePresetOptions
   providerSelection: ProviderSelection
   artifactSelection: ArtifactProviderSelection

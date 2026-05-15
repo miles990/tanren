@@ -182,10 +182,10 @@ export { createAnthropicProvider, type AnthropicProviderOptions } from './llm/an
 export { createOpenAIProvider, createFallbackProvider, type OpenAIProviderOptions, type ToolCallOptions, type CostTracker } from './llm/openai.js'
 export { createGoogleProvider, type GoogleProviderOptions } from './llm/google.js'
 export { createManagedAgentProvider, type ManagedAgentProviderOptions } from './llm/managed-agent.js'
-export { createProvider, createProviderFromEnv, listProviders, readScopedEnv, type ProviderConfig, type ProviderKey, type ProviderSelection, type ProviderFromEnvOptions } from './provider-registry.js'
+export { createProvider, createProviderFromEnv, listProviders, readScopedEnv, registerProviderFactory, type BuiltinProviderKey, type ProviderConfig, type ProviderFactory, type ProviderFactoryContext, type ProviderKey, type ProviderSelection, type ProviderFromEnvOptions } from './provider-registry.js'
 export { decideProviderUse, readPolicyEvents, writePolicyEvent, type ProviderPolicy, type ProviderPolicyDecision, type PolicyEvent, type TaskRisk } from './provider-policy.js'
 export { promptToText, toAnthropic, toOpenAI, toGemini, extractOpenAIOutputs, extractAnthropicOutputs, extractGeminiOutputs } from './content-adapter.js'
-export { createModelIO, collectStream, type ModelIO, type ModelRequest, type ModelResponse } from './model-io.js'
+export { createGenerationIO, createModelIO, collectStream, type GenerationIO, type GenerationRequest, type GenerationResponse, type ModelIO, type ModelRequest, type ModelResponse } from './model-io.js'
 export { TEXT_ONLY_CAPABILITIES, ANTHROPIC_CAPABILITIES, OPENAI_COMPAT_CAPABILITIES, GEMINI_CAPABILITIES, MANAGED_AGENT_CAPABILITIES, AGENT_SDK_CAPABILITIES } from './provider-capabilities.js'
 export {
   FileArtifactStore,
@@ -220,6 +220,8 @@ export {
 } from './artifact-io.js'
 export { routeArtifactRequest, supportsArtifactRequest, type ArtifactRouteDecision, type ArtifactRouterOptions } from './artifact-router.js'
 export { handleArtifactHttpRoute, type ArtifactHttpOptions } from './artifact-http.js'
+export { ArtifactController, ArtifactFileServer, PolicyEventController } from './artifact-controller.js'
+export { parseArtifactJob, parseArtifactRequest } from './artifact-schema.js'
 export type * from './artifact-types.js'
 export {
   createInboxPlugin,
@@ -273,7 +275,7 @@ export { loadDotEnvFile, readUsageSummary, type DotEnvLoadOptions } from './env.
 export { loadMcpServersFromConfig, type McpConfigLoadOptions, type McpConfigSelection } from './mcp-config.js'
 export { createPeerBridge, type PeerBridge, type PeerBridgeOptions } from './peer-bridge.js'
 export { createAgoraCollaboration, type AgoraCollaboration, type AgoraCollaborationOptions } from './agora-collaboration.js'
-export { createAgentRuntimePreset, type RuntimeCapabilities, type RuntimePreset, type RuntimePresetOptions } from './runtime-preset.js'
+export { createAgentRuntimePreset, createArtifactLayer, createProviderLayer, createRuntimeCapabilities, createRuntimeLayers, type RuntimeCapabilities, type RuntimeLayerPipeline, type RuntimePreset, type RuntimePresetOptions } from './runtime-preset.js'
 export { runAgentCli, type RuntimeCliOptions } from './runtime-cli.js'
 export { createDiscussionSessionStore, type DiscussionMessage, type DiscussionSession, type DiscussionSessionStoreOptions } from './discussion-session-store.js'
 export { chatStream, checkAgentHealth, type AgentChatResult, type ChatStreamOptions } from './chat-client.js'

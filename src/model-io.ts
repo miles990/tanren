@@ -1,5 +1,6 @@
 import { promptToText } from './content-adapter.js'
 import { TEXT_ONLY_CAPABILITIES } from './provider-capabilities.js'
+import type { ArtifactRequest, ArtifactJob, ArtifactProvider } from './artifact-types.js'
 import type { LLMProvider, Prompt, ProviderCapabilities, StreamChunk, StructuredResponse } from './types.js'
 
 export interface ModelRequest {
@@ -17,6 +18,33 @@ export interface ModelIO {
   readonly capabilities: ProviderCapabilities
   generate(request: ModelRequest): Promise<ModelResponse>
   stream(request: ModelRequest): AsyncIterable<StreamChunk>
+}
+
+export type GenerationRequest =
+  | { modality: 'model'; request: ModelRequest }
+  | { modality: 'artifact'; request: ArtifactRequest }
+
+export type GenerationResponse =
+  | { modality: 'model'; response: ModelResponse }
+  | { modality: 'artifact'; job: ArtifactJob }
+
+export interface GenerationIO {
+  readonly name: string
+  generate(request: GenerationRequest): Promise<GenerationResponse>
+}
+
+export function createGenerationIO(opts: { name: string; model?: ModelIO; artifactProvider?: ArtifactProvider }): GenerationIO {
+  return {
+    name: opts.name,
+    async generate(request) {
+      if (request.modality === 'model') {
+        if (!opts.model) throw new Error('GenerationIO has no model adapter')
+        return { modality: 'model', response: await opts.model.generate(request.request) }
+      }
+      if (!opts.artifactProvider) throw new Error('GenerationIO has no artifact adapter')
+      return { modality: 'artifact', job: await opts.artifactProvider.submit(request.request) }
+    },
+  }
 }
 
 export function createModelIO(name: string, provider: LLMProvider): ModelIO {

@@ -5,7 +5,9 @@ import type { ActionHandler, PromptContentBlock, StreamChunk } from './types.js'
 import { promptToText } from './content-adapter.js'
 import { writePolicyEvent } from './provider-policy.js'
 import { routeArtifactRequest } from './artifact-router.js'
+import { parseArtifactRequest } from './artifact-schema.js'
 export { routeArtifactRequest, supportsArtifactRequest, type ArtifactRouteDecision, type ArtifactRouterOptions } from './artifact-router.js'
+export { parseArtifactJob, parseArtifactRequest } from './artifact-schema.js'
 import type {
   ArtifactBlob,
   ArtifactEvent,
@@ -536,19 +538,7 @@ export function wrapArtifactProviderWithPolicy(
 }
 
 export function createArtifactRequestFromInput(input: Record<string, unknown>): ArtifactRequest {
-  return {
-    type: String(input.type ?? input.kind ?? 'image') as ArtifactKind,
-    prompt: String(input.prompt ?? input.content ?? ''),
-    inputs: normalizeArtifactInputs(input),
-    options: (input.options as ArtifactRequest['options']) ?? {
-      model: input.model as string | undefined,
-      format: input.format as string | undefined,
-      size: input.size as string | undefined,
-      quality: input.quality as string | undefined,
-      voice: input.voice as string | undefined,
-    },
-    metadata: (input.metadata as Record<string, unknown> | undefined),
-  }
+  return parseArtifactRequest(input)
 }
 
 export function createArtifactProviderFromEnv(opts: ArtifactProviderFromEnvOptions = {}): ArtifactProviderSelection {
@@ -628,41 +618,6 @@ function failedJob(node: ArtifactGraphNode, error: string): ArtifactJob {
 
 function artifactToPromptBlock(ref: ArtifactRef): PromptContentBlock {
   return { type: 'ref', uri: ref.uri, mediaType: ref.mediaType, label: ref.label }
-}
-
-function normalizeArtifactInputs(input: Record<string, unknown>): PromptContentBlock[] | undefined {
-  const blocks: PromptContentBlock[] = []
-  if (Array.isArray(input.inputs)) {
-    for (const item of input.inputs) {
-      if (isPromptBlock(item)) blocks.push(item)
-      else if (typeof item === 'string') blocks.push({ type: 'ref', uri: item })
-    }
-  }
-  for (const item of normalizeRefList(input.refs ?? input.ref ?? input.sourceArtifactIds)) {
-    blocks.push(typeof item === 'string' ? { type: 'ref', uri: item } : artifactToPromptBlock(item))
-  }
-  return blocks.length ? blocks : undefined
-}
-
-function normalizeRefList(value: unknown): Array<string | ArtifactRef> {
-  if (!value) return []
-  const raw = Array.isArray(value) ? value : [value]
-  const refs: Array<string | ArtifactRef> = []
-  for (const item of raw) {
-    if (typeof item === 'string' || isArtifactRef(item)) refs.push(item)
-  }
-  return refs
-}
-
-function isArtifactRef(value: unknown): value is ArtifactRef {
-  return !!value && typeof value === 'object'
-    && typeof (value as ArtifactRef).uri === 'string'
-    && typeof (value as ArtifactRef).kind === 'string'
-    && typeof (value as ArtifactRef).mediaType === 'string'
-}
-
-function isPromptBlock(value: unknown): value is PromptContentBlock {
-  return !!value && typeof value === 'object' && typeof (value as PromptContentBlock).type === 'string'
 }
 
 function cloneJob(job: ArtifactJob): ArtifactJob {

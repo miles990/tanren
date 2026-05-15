@@ -189,6 +189,10 @@ All providers support native tool_use (multi-turn feedback rounds):
 | Provider registry | `createProviderFromEnv()` | auto |
 | Fallback chain | `createFallbackProvider(a, b)` | auto |
 
+Provider adapters can be added without editing Tanren core by calling
+`registerProviderFactory(name, factory, metadata)`. `createProvider()` and
+`createProviderFromEnv()` resolve registered factories through the same provider seam.
+
 Wrap any provider with `wrapProviderWithUsageLedger(provider, { stateDir, provider, model, cloud })`
 to persist `llm-usage.jsonl` and `llm-usage-summary.json` for cloud/token auditing.
 
@@ -206,18 +210,31 @@ artifact providers. Standard HTTP endpoints:
 
 - `POST /artifacts` — submit an artifact job and return its final job envelope.
 - `POST /artifacts/stream` — submit and receive SSE progress events.
+- `GET /artifacts` — list persisted jobs.
 - `GET /artifacts/:jobId` — read a job by id.
+- `GET /artifacts/:jobId/file` — serve a local artifact file.
 - `GET /artifacts/:jobId/stream` — replay or follow provider artifact events.
+- `DELETE /artifacts/:jobId` — cancel a job and persist cancelled status.
+- `GET /policy/events` — read blocked LLM/artifact policy events.
 
 Artifact action inputs accept `inputs` prompt blocks plus `refs`/`ref`/`sourceArtifactIds`, so
 provider extensions can reuse prior images, audio, files, or graph outputs without inventing a
 new action schema.
+
+Use `parseArtifactRequest()` for shared validation, `routeArtifactRequest()` for capability and
+policy-aware provider selection, and `ArtifactController`/`ArtifactFileServer` for HTTP-facing
+job operations.
 
 Artifact providers also support their own cloud guard and job persistence. Set
 `TANREN_ALLOW_ARTIFACT_CLOUD=0` to disable cloud artifact calls before a request is sent, and
 `TANREN_DAILY_ARTIFACT_CALL_CAP=N` to cap daily persisted artifact jobs. Job envelopes are stored
 under `memory/artifacts/jobs/YYYY-MM-DD/*.json`, so `/artifacts/:jobId` can survive process
 restarts when the provider is configured with the file job store.
+
+`createRuntimeLayers()` exposes the provider, artifact, MCP, and capability layers before the
+full `createAgentRuntimePreset()` composition, so an agent can override one layer without
+forking the whole preset. `createGenerationIO()` is the common model/artifact generation seam
+for future multimodal workflows.
 
 ### Orchestration
 
