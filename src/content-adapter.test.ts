@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { promptToText, toAnthropic, toGemini, toOpenAI } from './content-adapter.js'
+import { extractGeminiOutputs, extractOpenAIOutputs, promptToText, toAnthropic, toGemini, toOpenAI } from './content-adapter.js'
 import type { PromptContentBlock } from './types.js'
 
 describe('content adapter', () => {
@@ -28,5 +28,13 @@ describe('content adapter', () => {
   it('converts image blocks for Gemini', () => {
     const parts = toGemini(prompt)
     assert.deepEqual(parts[1], { inline_data: { mime_type: 'image/png', data: 'abc123' } })
+  })
+
+  it('extracts multimodal outputs from provider responses', () => {
+    const openAIOutputs = extractOpenAIOutputs({ output: [{ type: 'file', file_id: 'file_123' }] })
+    assert.deepEqual(openAIOutputs[0], { type: 'ref', uri: 'openai:file:file_123' })
+
+    const geminiOutputs = extractGeminiOutputs([{ inlineData: { mimeType: 'image/png', data: 'abc123' } }])
+    assert.deepEqual(geminiOutputs[0], { type: 'media', mediaType: 'image/png', source: { type: 'base64', data: 'abc123' } })
   })
 })

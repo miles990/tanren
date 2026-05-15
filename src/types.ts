@@ -151,11 +151,43 @@ export interface StructuredResponse {
 }
 
 export interface StreamChunk {
-  type: 'text_delta' | 'content_block' | 'tool_use' | 'done' | 'error'
+  type: 'text_delta' | 'structured_delta' | 'content_block' | 'media_delta' | 'tool_use' | 'tool_call_delta' | 'done' | 'error'
   text?: string
   content?: PromptContentBlock
   metadata?: Record<string, unknown>
   error?: string
+}
+
+export interface ProviderCapabilities {
+  input: {
+    text: boolean
+    image: boolean
+    audio: boolean
+    pdf: boolean
+    file: boolean
+    url: boolean
+    streamRef: boolean
+  }
+  output: {
+    text: boolean
+    image: boolean
+    audio: boolean
+    file: boolean
+    structured: boolean
+  }
+  streaming: {
+    text: boolean
+    structured: boolean
+    toolCalls: boolean
+    media: boolean
+  }
+  tools: {
+    native: boolean
+    parallel: boolean
+  }
+  state: {
+    sessions: boolean
+  }
 }
 
 export interface LLMProvider {
@@ -198,6 +230,8 @@ export interface LLMProvider {
   thinkStructured?(prompt: Prompt, systemPrompt: string): Promise<StructuredResponse>
   /** Optional streaming seam. */
   thinkStream?(prompt: Prompt, systemPrompt: string): AsyncIterable<StreamChunk>
+  /** Declarative capability matrix for routing and UI decisions. */
+  capabilities?: ProviderCapabilities
 }
 
 /** LLM provider with native session management (e.g. Agent SDK).

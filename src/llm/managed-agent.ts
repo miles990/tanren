@@ -6,7 +6,8 @@
  */
 
 import type { LLMProvider, Prompt } from '../types.js'
-import { toAnthropic } from '../content-adapter.js'
+import { extractAnthropicOutputs, toAnthropic } from '../content-adapter.js'
+import { MANAGED_AGENT_CAPABILITIES } from '../provider-capabilities.js'
 
 export interface ManagedAgentProviderOptions {
   model?: string
@@ -55,6 +56,8 @@ export function createManagedAgentProvider(opts?: ManagedAgentProviderOptions): 
     })
 
   return {
+    capabilities: MANAGED_AGENT_CAPABILITIES,
+
     async think(context: string, systemPrompt: string): Promise<string> {
       return (await this.thinkStructured!(context, systemPrompt)).text
     },
@@ -102,7 +105,23 @@ export function createManagedAgentProvider(opts?: ManagedAgentProviderOptions): 
       if (data.container?.id) activeContainerId = data.container.id
       return {
         text: data.content.filter(b => b.type === 'text' && b.text).map(b => b.text).join('\n'),
+        outputs: extractAnthropicOutputs(data.content as unknown as Array<Record<string, unknown>>),
         metadata: { model, usage: data.usage, containerId: activeContainerId },
+      }
+    },
+
+    async *thinkStream(prompt: Prompt, systemPrompt: string) {
+      if (!apiKey) {
+        yield { type: 'error', error: 'ANTHROPIC_API_KEY not set for Managed Agent provider' }
+        return
+      }
+      try {
+        const response = await this.thinkStructured!(prompt, systemPrompt)
+        if (response.text) yield { type: 'text_delta', text: response.text }
+        for (const output of response.outputs ?? []) yield { type: 'content_block', content: output }
+        yield { type: 'done', metadata: response.metadata }
+      } catch (err) {
+        yield { type: 'error', error: err instanceof Error ? err.message : String(err) }
       }
     },
   }

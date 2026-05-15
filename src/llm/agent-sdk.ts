@@ -15,6 +15,7 @@
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk'
 import type { LLMProvider, Prompt, SessionAwareLLMProvider } from '../types.js'
 import { promptToText } from '../content-adapter.js'
+import { AGENT_SDK_CAPABILITIES } from '../provider-capabilities.js'
 
 export interface AgentSdkOptions {
   /** Model override (default: determined by Claude Code) */
@@ -74,6 +75,7 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): SessionAwareLLMP
   let resumeSessionId: string | null = null
 
   return {
+    capabilities: AGENT_SDK_CAPABILITIES,
     skipFeedbackLoop: true,
     getSessionId() { return currentSessionId },
     setResumeSession(id: string | null) { resumeSessionId = id },
@@ -164,6 +166,15 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): SessionAwareLLMP
 
     async thinkStructured(prompt: Prompt, systemPrompt: string) {
       return { text: await this.think(promptToText(prompt), systemPrompt), metadata: { degradedToText: true } }
+    },
+    async *thinkStream(prompt: Prompt, systemPrompt: string) {
+      try {
+        const text = await this.think(promptToText(prompt), systemPrompt)
+        if (text) yield { type: 'text_delta', text }
+        yield { type: 'done', metadata: { degradedToText: true, sessionId: currentSessionId } }
+      } catch (err) {
+        yield { type: 'error', error: err instanceof Error ? err.message : String(err) }
+      }
     },
   }
 }

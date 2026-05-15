@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process'
 import type { LLMProvider, Prompt } from '../types.js'
 import { promptToText } from '../content-adapter.js'
+import { TEXT_ONLY_CAPABILITIES } from '../provider-capabilities.js'
 
 export interface ClaudeCliOptions {
   model?: string
@@ -88,6 +89,8 @@ export function createClaudeCliProvider(opts?: ClaudeCliOptions): LLMProvider {
   }
 
   return {
+    capabilities: TEXT_ONLY_CAPABILITIES,
+
     // Legacy text-only interface
     async think(context: string, systemPrompt: string): Promise<string> {
       // Identity layer → --system-prompt (override) or --append-system-prompt (inherit).
@@ -106,6 +109,16 @@ export function createClaudeCliProvider(opts?: ClaudeCliOptions): LLMProvider {
 
     async thinkStructured(prompt: Prompt, systemPrompt: string) {
       return { text: await this.think(promptToText(prompt), systemPrompt), metadata: { degradedToText: true } }
+    },
+
+    async *thinkStream(prompt: Prompt, systemPrompt: string) {
+      try {
+        const text = await this.think(promptToText(prompt), systemPrompt)
+        if (text) yield { type: 'text_delta', text }
+        yield { type: 'done', metadata: { degradedToText: true } }
+      } catch (err) {
+        yield { type: 'error', error: err instanceof Error ? err.message : String(err) }
+      }
     },
 
     // CLI is text-only — loop.ts handles action parsing via text-based feedback path.

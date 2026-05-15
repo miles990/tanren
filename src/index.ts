@@ -183,7 +183,9 @@ export { createGoogleProvider, type GoogleProviderOptions } from './llm/google.j
 export { createManagedAgentProvider, type ManagedAgentProviderOptions } from './llm/managed-agent.js'
 export { createProvider, createProviderFromEnv, listProviders, type ProviderConfig, type ProviderKey, type ProviderSelection, type ProviderFromEnvOptions } from './provider-registry.js'
 export { decideProviderUse, type ProviderPolicy, type ProviderPolicyDecision, type TaskRisk } from './provider-policy.js'
-export { promptToText, toAnthropic, toOpenAI, toGemini } from './content-adapter.js'
+export { promptToText, toAnthropic, toOpenAI, toGemini, extractOpenAIOutputs, extractAnthropicOutputs, extractGeminiOutputs } from './content-adapter.js'
+export { createModelIO, collectStream, type ModelIO, type ModelRequest, type ModelResponse } from './model-io.js'
+export { TEXT_ONLY_CAPABILITIES, ANTHROPIC_CAPABILITIES, OPENAI_COMPAT_CAPABILITIES, GEMINI_CAPABILITIES, MANAGED_AGENT_CAPABILITIES, AGENT_SDK_CAPABILITIES } from './provider-capabilities.js'
 
 // Working Memory
 export { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'

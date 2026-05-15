@@ -7,7 +7,8 @@
  */
 
 import type { LLMProvider, ToolUseLLMProvider, ToolDefinition, ConversationMessage, ContentBlock, ToolUseResponse, Prompt } from '../types.js'
-import { toOpenAI } from '../content-adapter.js'
+import { extractOpenAIOutputs, toOpenAI } from '../content-adapter.js'
+import { OPENAI_COMPAT_CAPABILITIES } from '../provider-capabilities.js'
 
 export type OnStreamText = (text: string) => void
 
@@ -120,6 +121,7 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): ToolUseLLMPro
     onStreamText: undefined,
     cost,
     toolCallOptions: undefined,
+    capabilities: OPENAI_COMPAT_CAPABILITIES,
 
     async think(context: string, systemPrompt: string): Promise<string> {
       const model = provider.activeModel ?? defaultModel
@@ -189,8 +191,74 @@ export function createOpenAIProvider(opts: OpenAIProviderOptions): ToolUseLLMPro
         trackUsage(data.usage)
         return {
           text: (data.choices[0]?.message?.content ?? '').trim(),
+          outputs: extractOpenAIOutputs(data),
           metadata: { model, usage: data.usage },
         }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+
+    async *thinkStream(prompt: Prompt, systemPrompt: string) {
+      const model = provider.activeModel ?? defaultModel
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      const messages: Array<Record<string, unknown>> = []
+      if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
+      messages.push({ role: 'user', content: typeof prompt === 'string' ? prompt : toOpenAI(prompt) })
+      try {
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${opts.apiKey}` },
+          body: JSON.stringify({ model, max_tokens: maxTokens, messages, stream: true, stream_options: { include_usage: true }, ...opts.extraBody }),
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          const text = await response.text().catch(() => '')
+          throw new Error(`OpenAI API ${response.status}: ${text.slice(0, 500)}`)
+        }
+
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let sseBuffer = ''
+        let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined
+        const toolBuilders = new Map<number, { id: string; name: string; args: string }>()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop()!
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (!data || data === '[DONE]') continue
+            let parsed: Record<string, unknown>
+            try { parsed = JSON.parse(data) } catch { continue }
+            usage = (parsed.usage as typeof usage) ?? usage
+            const choice = (parsed.choices as Array<{ delta?: { content?: string; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }> | undefined)?.[0]
+            const delta = choice?.delta
+            if (delta?.content) {
+              provider.onStreamText?.(delta.content)
+              yield { type: 'text_delta', text: delta.content }
+            }
+            for (const tc of delta?.tool_calls ?? []) {
+              const idx = tc.index ?? 0
+              const current = toolBuilders.get(idx) ?? { id: '', name: '', args: '' }
+              if (tc.id) current.id = tc.id
+              if (tc.function?.name) current.name = tc.function.name
+              if (tc.function?.arguments) {
+                current.args += tc.function.arguments
+                yield { type: 'tool_call_delta', text: tc.function.arguments, metadata: { index: idx, id: current.id, name: current.name } }
+              }
+              toolBuilders.set(idx, current)
+            }
+          }
+        }
+        trackUsage(usage)
+        yield { type: 'done', metadata: { model, usage } }
+      } catch (err) {
+        yield { type: 'error', error: err instanceof Error ? err.message : String(err) }
       } finally {
         clearTimeout(timer)
       }
@@ -348,6 +416,7 @@ export function createFallbackProvider(
     get cost() { return primary.cost },
     get toolCallOptions() { return primary.toolCallOptions },
     set toolCallOptions(v) { primary.toolCallOptions = v },
+    get capabilities() { return primary.capabilities },
 
     async think(context: string, systemPrompt: string): Promise<string> {
       try {
@@ -368,6 +437,21 @@ export function createFallbackProvider(
           systemPrompt,
         )
         return { text, metadata: { fallback: true } }
+      }
+    },
+
+    async *thinkStream(prompt, systemPrompt) {
+      try {
+        yield* primary.thinkStream!(prompt, systemPrompt)
+      } catch (err) {
+        console.warn(`[${label}] Primary thinkStream failed (${err instanceof Error ? err.message : err}), falling back`)
+        if (secondary.thinkStream) {
+          yield* secondary.thinkStream(prompt, systemPrompt)
+        } else {
+          const text = await secondary.think(typeof prompt === 'string' ? prompt : prompt.map(block => JSON.stringify(block)).join('\n'), systemPrompt)
+          yield { type: 'text_delta', text }
+          yield { type: 'done', metadata: { fallback: true } }
+        }
       }
     },
 

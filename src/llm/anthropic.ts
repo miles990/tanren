@@ -6,7 +6,8 @@
  */
 
 import type { ToolUseLLMProvider, ToolDefinition, ConversationMessage, ToolUseResponse, Prompt } from '../types.js'
-import { toAnthropic } from '../content-adapter.js'
+import { extractAnthropicOutputs, toAnthropic } from '../content-adapter.js'
+import { ANTHROPIC_CAPABILITIES } from '../provider-capabilities.js'
 
 export interface AnthropicProviderOptions {
   apiKey: string
@@ -98,6 +99,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
 
   return {
     cost,
+    capabilities: ANTHROPIC_CAPABILITIES,
 
     // Legacy text-only interface (LLMProvider compatibility)
     async think(context: string, systemPrompt: string): Promise<string> {
@@ -125,7 +127,74 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
           .map(b => b.text ?? '')
           .join('\n')
           .trim(),
+        outputs: extractAnthropicOutputs(data.content as Array<Record<string, unknown>>),
         metadata: { model: this.activeModel ?? model, usage: data.usage },
+      }
+    },
+
+    async *thinkStream(prompt: Prompt, systemPrompt: string) {
+      const body: Record<string, unknown> = {
+        system: systemPrompt || undefined,
+        messages: [{ role: 'user', content: typeof prompt === 'string' ? prompt : toAnthropic(prompt) }],
+        stream: true,
+      }
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const response = await fetch(`${baseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': opts.apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({ model: this.activeModel ?? model, max_tokens: maxTokens, ...body }),
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          const text = await response.text().catch(() => '')
+          throw new Error(`Anthropic API ${response.status}: ${text.slice(0, 500)}`)
+        }
+
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let sseBuffer = ''
+        let usage = { input_tokens: 0, output_tokens: 0 }
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+          const lines = sseBuffer.split('\n')
+          sseBuffer = lines.pop()!
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (!data || data === '[DONE]') continue
+            let event: Record<string, unknown>
+            try { event = JSON.parse(data) } catch { continue }
+            if (event.type === 'message_start') {
+              const message = event.message as { usage?: { input_tokens?: number } } | undefined
+              usage.input_tokens = message?.usage?.input_tokens ?? usage.input_tokens
+            }
+            if (event.type === 'content_block_delta') {
+              const delta = event.delta as { type?: string; text?: string } | undefined
+              if (delta?.type === 'text_delta' && delta.text) {
+                this.onStreamText?.(delta.text)
+                yield { type: 'text_delta', text: delta.text }
+              }
+            }
+            if (event.type === 'message_delta') {
+              const md = event as { usage?: { output_tokens?: number } }
+              usage.output_tokens = md.usage?.output_tokens ?? usage.output_tokens
+            }
+          }
+        }
+        trackUsage(usage)
+        yield { type: 'done', metadata: { model: this.activeModel ?? model, usage } }
+      } catch (err) {
+        yield { type: 'error', error: err instanceof Error ? err.message : String(err) }
+      } finally {
+        clearTimeout(timer)
       }
     },
 

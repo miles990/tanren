@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import type { LLMProvider, Prompt } from '../types.js'
 import { promptToText } from '../content-adapter.js'
+import { TEXT_ONLY_CAPABILITIES } from '../provider-capabilities.js'
 
 export interface CodexCliOptions {
   model?: string
@@ -103,6 +104,8 @@ export function createCodexCliProvider(opts?: CodexCliOptions): LLMProvider {
   }
 
   return {
+    capabilities: TEXT_ONLY_CAPABILITIES,
+
     async think(context: string, systemPrompt: string): Promise<string> {
       const prompt = systemPrompt
         ? `<system>\n${systemPrompt}\n</system>\n\n<context>\n${context}\n</context>`
@@ -111,6 +114,15 @@ export function createCodexCliProvider(opts?: CodexCliOptions): LLMProvider {
     },
     async thinkStructured(prompt: Prompt, systemPrompt: string) {
       return { text: await this.think(promptToText(prompt), systemPrompt), metadata: { degradedToText: true } }
+    },
+    async *thinkStream(prompt: Prompt, systemPrompt: string) {
+      try {
+        const text = await this.think(promptToText(prompt), systemPrompt)
+        if (text) yield { type: 'text_delta', text }
+        yield { type: 'done', metadata: { degradedToText: true } }
+      } catch (err) {
+        yield { type: 'error', error: err instanceof Error ? err.message : String(err) }
+      }
     },
   }
 }
