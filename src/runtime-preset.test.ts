@@ -43,8 +43,8 @@ describe('RuntimePreset', () => {
         baseDir: dir,
         memoryDir: join(dir, 'memory'),
         messagesDir: join(dir, 'messages'),
-        mode: 'local-review',
-        provider: 'local',
+        mode: 'codex',
+        provider: 'codex',
         enableAgora: false,
         enableKgNotifications: false,
         env: {
@@ -94,6 +94,47 @@ describe('RuntimePreset', () => {
       assert.equal(runtime.providerSelection.mode, 'local-review')
       assert.equal(runtime.providerSelection.providerKey, 'local')
       assert.equal(runtime.providerSelection.model, 'tanren-model')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('exposes model router providers for capability-based routing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-runtime-'))
+    try {
+      const runtime = createAgentRuntimePreset({
+        baseDir: dir,
+        memoryDir: join(dir, 'memory'),
+        messagesDir: join(dir, 'messages'),
+        mode: 'codex',
+        provider: 'codex',
+        enableAgora: false,
+        enableKgNotifications: false,
+        extraModelProviders: {
+          image: {
+            capabilities: {
+              input: { text: true, image: true, audio: false, pdf: false, file: false, url: true, streamRef: false },
+              output: { text: true, image: false, audio: false, file: false, structured: true },
+              streaming: { text: true, structured: false, toolCalls: false, media: false },
+              tools: { native: false, parallel: false },
+              state: { sessions: false },
+            },
+            async think() { return 'image' },
+          },
+        },
+        env: {
+          TANREN_ARTIFACT_PROVIDER: 'none',
+        } as NodeJS.ProcessEnv,
+      })
+
+      assert.equal(runtime.capabilities.routing.modelProviders.length, 2)
+      const routed = runtime.modelRouter.route({
+        prompt: [
+          { type: 'text', text: 'describe' },
+          { type: 'media', mediaType: 'image/png', source: { type: 'url', url: 'https://example.test/a.png' } },
+        ],
+      }, { output: { structured: true } })
+      assert.equal(routed.selected?.name, 'image')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

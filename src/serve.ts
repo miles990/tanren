@@ -16,7 +16,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ChatResult, TickResult, Action, TanrenConfig } from './types.js'
+import type { ChatResult, TickResult, Action, TanrenConfig, PromptContentBlock } from './types.js'
 import type { TanrenAgent } from './index.js'
 import { createAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
@@ -49,6 +49,26 @@ interface AgentPool {
   release(entry: PoolEntry): void
   status(): { active: number; idle: number; total: number; max: number; entries: Array<{ index: number; busy: boolean; discussionId: string | null }> }
   destroy(): void
+}
+
+interface ChatBody {
+  from?: string
+  text?: string
+  sessionId?: string
+  discussionId?: string
+  attachments?: unknown
+}
+
+function guessMediaType(uri: string): string {
+  if (/\.png($|\?)/i.test(uri)) return 'image/png'
+  if (/\.jpe?g($|\?)/i.test(uri)) return 'image/jpeg'
+  if (/\.webp($|\?)/i.test(uri)) return 'image/webp'
+  if (/\.gif($|\?)/i.test(uri)) return 'image/gif'
+  if (/\.mp3($|\?)/i.test(uri)) return 'audio/mpeg'
+  if (/\.wav($|\?)/i.test(uri)) return 'audio/wav'
+  if (/\.mp4($|\?)/i.test(uri)) return 'video/mp4'
+  if (/\.pdf($|\?)/i.test(uri)) return 'application/pdf'
+  return 'application/octet-stream'
 }
 
 function createAgentPool(primaryAgent: TanrenAgent, config: TanrenConfig | undefined, maxSize: number): AgentPool {
@@ -386,6 +406,46 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     return JSON.parse(body) as T
   }
 
+  const normalizeChatAttachments = (value: unknown): PromptContentBlock[] => {
+    if (!Array.isArray(value)) return []
+    return value.flatMap((item): PromptContentBlock[] => {
+      if (!item || typeof item !== 'object') return []
+      const obj = item as Record<string, unknown>
+      if (typeof obj.uri === 'string') {
+        const mediaType = typeof obj.mediaType === 'string' ? obj.mediaType : guessMediaType(obj.uri)
+        const label = typeof obj.label === 'string' ? obj.label : undefined
+        if (/^https?:\/\//.test(obj.uri) || obj.uri.startsWith('data:')) {
+          return [{ type: 'media', mediaType, source: { type: 'url', url: obj.uri }, label }]
+        }
+        if (/^[a-z]+:\/\//i.test(obj.uri)) return [{ type: 'ref', uri: obj.uri, mediaType, label }]
+        return [{ type: 'media', mediaType, source: { type: 'file', path: obj.uri }, label }]
+      }
+      if (typeof obj.url === 'string') {
+        return [{
+          type: 'media',
+          mediaType: typeof obj.mediaType === 'string' ? obj.mediaType : guessMediaType(obj.url),
+          source: { type: 'url', url: obj.url },
+          label: typeof obj.label === 'string' ? obj.label : undefined,
+        }]
+      }
+      return []
+    })
+  }
+
+  const textWithAttachments = (text: string, attachments: PromptContentBlock[]): string => {
+    if (!attachments.length) return text
+    const summaries = attachments.map((attachment, index) => {
+      if (attachment.type === 'media') {
+        const source = attachment.source.type === 'url' ? attachment.source.url : attachment.source.type === 'file' ? attachment.source.path : '[base64]'
+        return `${index + 1}. ${attachment.mediaType} ${source}${attachment.label ? ` (${attachment.label})` : ''}`
+      }
+      if (attachment.type === 'ref') return `${index + 1}. ${attachment.mediaType ?? 'resource'} ${attachment.uri}${attachment.label ? ` (${attachment.label})` : ''}`
+      if (attachment.type === 'stream') return `${index + 1}. ${attachment.mediaType} stream ${attachment.url}${attachment.label ? ` (${attachment.label})` : ''}`
+      return `${index + 1}. text attachment`
+    })
+    return `${text.trim() || 'Please inspect the attached input.'}\n\n[ATTACHMENTS]\n${summaries.join('\n')}`
+  }
+
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${port}`)
 
@@ -455,12 +515,14 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     } else if (url.pathname === '/chat' && req.method === 'POST') {
       let body = ''
       for await (const chunk of req) body += chunk
-      let parsed: { from?: string; text?: string; sessionId?: string; discussionId?: string }
+      let parsed: ChatBody
       try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
       const from = parsed.from ?? 'anonymous'
       const text = parsed.text ?? ''
-      if (!text.trim()) { json(res, 400, { error: 'Empty text' }); return }
+      const attachments = normalizeChatAttachments(parsed.attachments)
+      const chatText = textWithAttachments(text, attachments)
+      if (!chatText.trim()) { json(res, 400, { error: 'Empty text' }); return }
 
       const poolEntry = pool.acquire(parsed.discussionId)
       if (!poolEntry) {
@@ -472,12 +534,13 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
       const tickStart = Date.now()
       try {
-        const result = await handleChat(poolEntry, from, text, parsed.sessionId)
+        const result = await handleChat(poolEntry, from, chatText, parsed.sessionId)
         recordTick(tickCount, Date.now() - tickStart, result.actions ?? [], result.meta?.mode ?? 'unknown')
         const run = chatResultToAnupEnvelope({
           agentId: serviceName,
           from,
-          text,
+          text: chatText,
+          attachments,
           result,
           startedAt: new Date(tickStart).toISOString(),
         })
@@ -495,12 +558,14 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     } else if (url.pathname === '/chat/stream' && req.method === 'POST') {
       let body = ''
       for await (const chunk of req) body += chunk
-      let parsed: { from?: string; text?: string; sessionId?: string; discussionId?: string }
+      let parsed: ChatBody
       try { parsed = JSON.parse(body) } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
       const from = parsed.from ?? 'anonymous'
       const text = parsed.text ?? ''
-      if (!text.trim()) { json(res, 400, { error: 'Empty text' }); return }
+      const attachments = normalizeChatAttachments(parsed.attachments)
+      const chatText = textWithAttachments(text, attachments)
+      if (!chatText.trim()) { json(res, 400, { error: 'Empty text' }); return }
 
       const poolEntry = pool.acquire(parsed.discussionId)
       if (!poolEntry) {
@@ -512,11 +577,12 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
       try {
         const streamStart = Date.now()
-        await handleChatStream(poolEntry, from, text, res, parsed.sessionId, (result) => {
+        await handleChatStream(poolEntry, from, chatText, res, parsed.sessionId, (result) => {
           const run = chatResultToAnupEnvelope({
             agentId: serviceName,
             from,
-            text,
+            text: chatText,
+            attachments,
             result,
             startedAt: new Date(streamStart).toISOString(),
           })
@@ -593,7 +659,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         endpoints: {
           'POST /chat': {
             description: 'Send a message, get a response (blocks until complete). Supports concurrent discussions via discussionId.',
-            body: { from: 'string', text: 'string (required)', discussionId: 'string (optional — routes to dedicated pool agent)' },
+            body: { from: 'string', text: 'string (required unless attachments provided)', discussionId: 'string (optional — routes to dedicated pool agent)', attachments: 'optional [{ uri, mediaType?, label? }]' },
             returns: {
               response: 'string — agent response (human-readable)',
               actions: 'string[] — tools used this tick',
@@ -611,7 +677,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           },
           'POST /chat/stream': {
             description: 'Send a message, get SSE stream (real-time events as agent works)',
-            body: { from: 'string', text: 'string (required)' },
+            body: { from: 'string', text: 'string (required unless attachments provided)', attachments: 'optional [{ uri, mediaType?, label? }]' },
             stream_events: {
               action: '{ tool: string } — tool invocation',
               text: '{ text: string } — partial response text',

@@ -88,6 +88,33 @@ describe('ActionRegistry', () => {
     assert.ok(result.includes('unknown action type'))
   })
 
+  it('blocks execution when approval guard rejects action', async () => {
+    const registry = createActionRegistry()
+    let executed = false
+    registry.register({
+      type: 'shell',
+      async execute() {
+        executed = true
+        return 'ran'
+      },
+    })
+
+    const result = await registry.execute(
+      { type: 'shell', content: 'rm tmp', raw: '' },
+      {
+        memory: {} as any,
+        workDir: '/tmp',
+        filesRead: new Set(),
+        approvalGuard: {
+          async check() { return { approved: false, reason: 'waiting for human approval', approvalId: 'approval-1' } },
+        },
+      },
+    )
+    assert.equal(executed, false)
+    assert.match(result, /blocked/)
+    assert.match(result, /approval-1/)
+  })
+
   it('converts to tool definitions', () => {
     const registry = createActionRegistry()
     registry.register({

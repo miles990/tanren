@@ -260,6 +260,16 @@ contains a task contract, agent state, tool trace, response artifact, and approv
 for high-risk actions such as `shell`, `edit`, and `git`. This makes browser workbench sessions
 observable and replayable without exposing raw chain-of-thought.
 
+For pre-execution safety, pass `enableApprovalGuard: true` to `createAgentRuntimePreset()`
+or provide a custom `approvalGuard` in `TanrenConfig`. When enabled, high-risk actions are
+blocked before their handler runs and an ANUP approval run is persisted under
+`memory/state/anup`. The workbench can record approve/reject/modify responses against that run;
+matching approved actions are allowed on retry, while rejected actions stay blocked.
+Workbench chat also supports lightweight attachment refs by URL/path/media type; these are sent
+as a structured `attachments: [{ uri, mediaType?, label? }]` request field, projected into ANUP
+`media_ref` blocks, and summarized into the current text loop. Hosts with native multimodal
+providers can route the same data as `PromptContentBlock[]`.
+
 ### Resumable Long Tasks
 
 Tanren can turn large review/research/implementation work into persisted DAG jobs instead of

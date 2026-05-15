@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ActionHandler, PerceptionPlugin, TanrenConfig } from './types.js'
+import type { ActionHandler, LLMProvider, PerceptionPlugin, TanrenConfig } from './types.js'
 import { builtinActions } from './actions.js'
 import { createAgoraCollaboration, type AgoraCollaboration } from './agora-collaboration.js'
 import { createAnalysisWithoutActionGate, createOutputGate, createProductivityGate, createSymptomFixGate } from './gates.js'
@@ -21,6 +21,8 @@ import {
   type ArtifactProviderSelection,
 } from './artifact-io.js'
 import { createLongTaskActions, LongTaskController } from './long-task.js'
+import { FileAgentUIStore, createAnupApprovalGuard } from './anup.js'
+import { createModelIO, routeModelRequest, type ModelIO, type ModelRequest, type ModelRouteRequirement } from './model-io.js'
 
 export interface RuntimePresetOptions {
   baseDir?: string
@@ -51,6 +53,7 @@ export interface RuntimePresetOptions {
   artifactPolicy?: ArtifactPolicy
   artifactRequireConfigured?: boolean
   enableLongTasks?: boolean
+  enableApprovalGuard?: boolean
   verifyCommand?: string
   feedbackRounds?: number
   tickInterval?: number
@@ -58,6 +61,7 @@ export interface RuntimePresetOptions {
   extraActions?: ActionHandler[]
   extraHooks?: Hook[]
   extraGates?: Gate[]
+  extraModelProviders?: Record<string, LLMProvider>
 }
 
 export interface RuntimePreset {
@@ -72,6 +76,12 @@ export interface RuntimePreset {
   capabilities: RuntimeCapabilities
   providerPolicyDecision: ProviderPolicyDecision
   providerPolicy?: ProviderPolicy
+  modelRouter: RuntimeModelRouter
+}
+
+export interface RuntimeModelRouter {
+  providers: ModelIO[]
+  route(request: ModelRequest, requirement?: ModelRouteRequirement): ReturnType<typeof routeModelRequest>
 }
 
 export interface RuntimeCapabilities {
@@ -97,6 +107,9 @@ export interface RuntimeCapabilities {
     agora: { enabled: boolean }
     kgNotifications: { enabled: boolean }
     longTasks: { enabled: boolean }
+  }
+  routing: {
+    modelProviders: Array<{ name: string; capabilities: unknown }>
   }
 }
 
@@ -210,6 +223,17 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
   const longTaskActions = longTaskController ? createLongTaskActions(longTaskController) : []
 
   const capabilities = createRuntimeCapabilities({ opts, providerSelection, artifactSelection, mcpConfig, agora })
+  const modelRouter = createRuntimeModelRouter({
+    primaryName: providerSelection.providerKey,
+    primary: llm,
+    extras: opts.extraModelProviders,
+  })
+  const approvalGuard = opts.enableApprovalGuard
+    ? createAnupApprovalGuard({
+      store: new FileAgentUIStore(join(memoryDir, 'state', 'anup')),
+      agentId: serviceName,
+    })
+    : undefined
 
   const config: TanrenConfig = {
     identity: opts.identity ?? './soul.md',
@@ -235,6 +259,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     feedbackRounds: opts.feedbackRounds ?? 5,
     toolDegradation: false,
     tickInterval: opts.tickInterval ?? 300_000,
+    approvalGuard,
   }
 
   return {
@@ -246,6 +271,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     longTaskController,
     mcpConfig,
     capabilities,
+    modelRouter,
     providerPolicyDecision,
     providerPolicy: opts.providerPolicy,
     health: () => ({
@@ -270,6 +296,23 @@ function uniqueArtifactProviders(providers: Record<string, { name: string; capab
     seen.add(provider.name)
     return true
   })
+}
+
+export function createRuntimeModelRouter(opts: {
+  primaryName: string
+  primary: LLMProvider
+  extras?: Record<string, LLMProvider>
+}): RuntimeModelRouter {
+  const providers = [
+    createModelIO(opts.primaryName, opts.primary),
+    ...Object.entries(opts.extras ?? {}).map(([name, provider]) => createModelIO(name, provider)),
+  ]
+  return {
+    providers,
+    route(request, requirement) {
+      return routeModelRequest(providers, request, requirement)
+    },
+  }
 }
 
 export function createProviderLayer(args: {
@@ -376,6 +419,15 @@ export function createRuntimeCapabilities(args: {
       agora: { enabled: Boolean(agora) },
       kgNotifications: { enabled: opts.enableKgNotifications ?? true },
       longTasks: { enabled: opts.enableLongTasks ?? true },
+    },
+    routing: {
+      modelProviders: [
+        { name: providerSelection.providerKey, capabilities: providerSelection.provider.capabilities },
+        ...Object.entries(opts.extraModelProviders ?? {}).map(([name, provider]) => ({
+          name,
+          capabilities: provider.capabilities,
+        })),
+      ],
     },
   }
 }

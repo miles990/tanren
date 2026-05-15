@@ -327,6 +327,19 @@ export interface ActionContext {
    *  in their inputs were actually returned by prior actions, catching the
    *  "single-pass action generation hallucinates a UUID" failure mode. */
   tickResults?: string[]
+  /** Optional pre-execution approval guard. When present, handlers must be
+   * approved before execution; rejected actions return a blocked result. */
+  approvalGuard?: ActionApprovalGuard
+}
+
+export interface ActionApprovalDecision {
+  approved: boolean
+  reason: string
+  approvalId?: string
+}
+
+export interface ActionApprovalGuard {
+  check(action: Action, context: Omit<ActionContext, 'approvalGuard'>): Promise<ActionApprovalDecision>
 }
 
 // === Event-Driven System ===
@@ -387,6 +400,8 @@ export interface TanrenConfig {
 
   /** Callback when an action starts/completes — for live progress display */
   onActionProgress?: (event: { phase: 'start' | 'done' | 'error'; action: Action; result?: string; error?: string }) => void
+  /** Optional guard that can block high-risk actions before execution. */
+  approvalGuard?: ActionApprovalGuard
 
   tickInterval?: number         // ms between ticks (default: 60000)
   maxConcurrentDelegations?: number  // default: 4

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { ArtifactJob, ArtifactKind, ArtifactRef } from './artifact-types.js'
 import type { LongTaskEvent, LongTaskRecord } from './long-task.js'
 import type { PolicyEvent } from './provider-policy.js'
-import type { ChatResult } from './types.js'
+import type { Action, ActionApprovalGuard, ActionContext, ChatResult, PromptContentBlock } from './types.js'
 
 export const ANUP_PROTOCOL = 'anup'
 export const ANUP_VERSION = '0.1.0'
@@ -369,6 +369,7 @@ export function chatResultToAnupEnvelope(input: {
   agentId: string
   from: string
   text: string
+  attachments?: PromptContentBlock[]
   result: ChatResult
   startedAt?: string
   completedAt?: string
@@ -446,6 +447,11 @@ export function chatResultToAnupEnvelope(input: {
     }
   }
 
+  input.attachments?.forEach((attachment, index) => {
+    const media = attachmentToMediaRef(attachment, index)
+    if (media) blocks.push(media)
+  })
+
   return createAgentUIEnvelope({
     runId: input.runId ?? createRunId('chat'),
     agentId: input.agentId,
@@ -458,6 +464,52 @@ export function chatResultToAnupEnvelope(input: {
       sessionId: input.result.sessionId,
     },
   })
+}
+
+function attachmentToMediaRef(block: PromptContentBlock, index: number): MediaRefBlock | null {
+  if (block.type === 'media') {
+    const uri = block.source.type === 'url'
+      ? block.source.url
+      : block.source.type === 'file'
+        ? block.source.path
+        : `data:${block.mediaType};base64,${block.source.data}`
+    return {
+      type: 'media_ref',
+      id: `chat:attachment:${index}`,
+      title: block.label ?? `Attachment ${index + 1}`,
+      source: 'input',
+      kind: mediaKind(block.mediaType),
+      media_type: block.mediaType,
+      uri,
+      label: block.label,
+    }
+  }
+  if (block.type === 'ref') {
+    return {
+      type: 'media_ref',
+      id: `chat:attachment:${index}`,
+      title: block.label ?? `Attachment ${index + 1}`,
+      source: 'input',
+      kind: mediaKind(block.mediaType ?? 'application/octet-stream'),
+      media_type: block.mediaType ?? 'application/octet-stream',
+      uri: block.uri,
+      label: block.label,
+    }
+  }
+  if (block.type === 'stream') {
+    return {
+      type: 'media_ref',
+      id: `chat:attachment:${index}`,
+      title: block.label ?? `Stream ${index + 1}`,
+      source: 'input',
+      kind: 'stream',
+      media_type: block.mediaType,
+      uri: block.url,
+      label: block.label,
+      metadata: { protocol: block.protocol },
+    }
+  }
+  return null
 }
 
 export function createDemoAnupEnvelope(agentId: string): AgentUIEnvelope {
@@ -534,6 +586,84 @@ export function createDemoAnupEnvelope(agentId: string): AgentUIEnvelope {
     ],
     metadata: { projection: 'demo' },
   })
+}
+
+export function createAnupApprovalGuard(opts: {
+  store: FileAgentUIStore
+  agentId: string
+  risk?: (action: Action) => RiskLevel
+}): ActionApprovalGuard {
+  return {
+    async check(action: Action, context: Omit<ActionContext, 'approvalGuard'>) {
+      const risk = opts.risk?.(action) ?? riskLevelForActionType(action.type)
+      if (risk !== 'high' && risk !== 'critical') return { approved: true, reason: 'approval not required' }
+      const requestedAction = {
+        kind: actionTypeToApprovalKind(action.type),
+        target: approvalTarget(action),
+        description: action.content || summarizeUnknown(action.input) || `Approve ${action.type} before execution.`,
+      }
+      const existing = findPriorApproval(opts.store, requestedAction.kind, requestedAction.target)
+      if (existing?.action.action_id === 'approve') {
+        return { approved: true, reason: 'approved by human', approvalId: existing.run.run_id }
+      }
+      if (existing?.action.action_id === 'reject') {
+        return { approved: false, reason: 'rejected by human', approvalId: existing.run.run_id }
+      }
+      const run = createAgentUIEnvelope({
+        runId: createRunId('approval'),
+        agentId: opts.agentId,
+        blocks: [{
+          type: 'approval_request',
+          id: `approval:${action.type}:${Date.now()}`,
+          title: `Approve ${action.type} action`,
+          action: requestedAction,
+          risk_level: risk,
+          requires_confirmation: true,
+          available_actions: [
+            { id: 'approve', label: 'Approve' },
+            { id: 'reject', label: 'Reject' },
+            { id: 'modify', label: 'Modify' },
+          ],
+        }, {
+          type: 'tool_trace',
+          id: `approval:${action.type}:trace`,
+          events: [{
+            time: new Date().toISOString(),
+            tool: action.type,
+            input_summary: action.content || summarizeUnknown(action.input),
+            status: 'started',
+            metadata: { tickCount: context.tickCount },
+          }],
+        }],
+        metadata: { projection: 'approval_guard', actionType: action.type, tickCount: context.tickCount },
+      })
+      opts.store.put(run)
+      opts.store.appendEvent({ event: 'run.started', run_id: run.run_id, timestamp: run.timestamp })
+      return { approved: false, reason: 'waiting for human approval', approvalId: run.run_id }
+    },
+  }
+}
+
+function findPriorApproval(
+  store: FileAgentUIStore,
+  kind: ApprovalRequestBlock['action']['kind'],
+  target: string,
+): { run: AgentUIEnvelope; block: ApprovalRequestBlock; action: HumanAction } | null {
+  for (const run of store.list(100)) {
+    const stored = store.get(run.run_id)
+    if (!stored) continue
+    for (const block of stored.run.blocks) {
+      if (block.type !== 'approval_request') continue
+      if (block.action.kind !== kind || block.action.target !== target) continue
+      const latest = [...stored.actions]
+        .filter(action => action.source_block_id === block.id)
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0]
+      if (latest?.action_id === 'approve' || latest?.action_id === 'reject') {
+        return { run: stored.run, block, action: latest }
+      }
+    }
+  }
+  return null
 }
 
 export function artifactJobToAnupBlocks(job: ArtifactJob): AgentUIBlock[] {
@@ -701,6 +831,13 @@ function artifactKindToMediaKind(kind: ArtifactKind): MediaRefBlock['kind'] {
   return 'file'
 }
 
+function mediaKind(mediaType: string): MediaRefBlock['kind'] {
+  if (mediaType.startsWith('image/')) return 'image'
+  if (mediaType.startsWith('audio/')) return 'audio'
+  if (mediaType.startsWith('video/')) return 'video'
+  return 'file'
+}
+
 function riskLevelForActionType(actionType: string): RiskLevel {
   if (actionType === 'shell' || actionType === 'edit' || actionType === 'git' || actionType === 'deploy') return 'high'
   if (actionType === 'write' || actionType === 'append' || actionType === 'worktree') return 'medium'
@@ -713,6 +850,11 @@ function actionTypeToApprovalKind(actionType: string): ApprovalRequestBlock['act
   if (actionType === 'shell' || actionType === 'git') return 'run_command'
   if (actionType === 'deploy') return 'deploy'
   return 'provider_call'
+}
+
+function approvalTarget(action: Action): string {
+  const input = action.input ?? {}
+  return String(input.path ?? input.command ?? input.url ?? input.target ?? action.content ?? action.type).slice(0, 280)
 }
 
 function browserSafeArtifactUri(ref: ArtifactRef, jobId: string, index: number): string {

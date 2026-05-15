@@ -47,7 +47,14 @@ export function createActionRegistry(): ActionRegistry {
       return parseActions(response)
     },
 
-    execute(action: Action, context: ActionContext): Promise<string> {
+    async execute(action: Action, context: ActionContext): Promise<string> {
+      if (context.approvalGuard) {
+        const { approvalGuard, ...guardContext } = context
+        const decision = await approvalGuard.check(action, guardContext)
+        if (!decision.approved) {
+          return `[${action.type} blocked: ${decision.reason}${decision.approvalId ? ` (${decision.approvalId})` : ''}]`
+        }
+      }
       const handler = handlers.get(action.type)
       if (!handler) {
         return Promise.resolve(`[unknown action type: ${action.type}]`)

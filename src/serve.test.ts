@@ -264,7 +264,10 @@ describe('serve', () => {
 
       const chatUiResponse = await fetch(`http://127.0.0.1:${port}/chat-ui`)
       assert.equal(chatUiResponse.headers.get('content-type')?.startsWith('text/html'), true)
-      assert.match(await chatUiResponse.text(), /Talk To Akari/)
+      const chatUi = await chatUiResponse.text()
+      assert.match(chatUi, /Talk To Akari/)
+      assert.match(chatUi, /attachUri/)
+      assert.match(chatUi, /Optional attachment URL/)
 
       const demoResponse = await fetch(`http://127.0.0.1:${port}/demo/anup`, { method: 'POST' })
       const demo = await demoResponse.json() as { run_id: string; blocks: Array<{ type: string }> }
@@ -296,7 +299,11 @@ describe('serve', () => {
       const chatResponse = await fetch(`http://127.0.0.1:${port}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: 'test', text: 'hello' }),
+        body: JSON.stringify({
+          from: 'test',
+          text: 'hello',
+          attachments: [{ uri: 'https://example.test/image.png', mediaType: 'image/png' }],
+        }),
       })
       assert.equal(chatResponse.status, 200)
 
@@ -305,6 +312,7 @@ describe('serve', () => {
       assert.equal(runs.runs.length, 1)
       assert.ok(runs.runs[0]?.blocks.some(block => block.type === 'tool_trace'))
       assert.ok(runs.runs[0]?.blocks.some(block => block.type === 'approval_request'))
+      assert.ok(runs.runs[0]?.blocks.some(block => block.type === 'media_ref'))
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))

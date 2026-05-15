@@ -138,6 +138,8 @@ export type {
   TickResult,
   ChatResult,
   Action,
+  ActionApprovalDecision,
+  ActionApprovalGuard,
   Observation,
   Gate,
   GateContext,
@@ -274,6 +276,7 @@ export {
   buildAnupOverview,
   capabilitiesToContextSummary,
   chatResultToAnupEnvelope,
+  createAnupApprovalGuard,
   createAgentUIEnvelope,
   createDemoAnupEnvelope,
   createRunId,
@@ -328,7 +331,7 @@ export { loadDotEnvFile, readUsageSummary, type DotEnvLoadOptions } from './env.
 export { loadMcpServersFromConfig, type McpConfigLoadOptions, type McpConfigSelection } from './mcp-config.js'
 export { createPeerBridge, type PeerBridge, type PeerBridgeOptions } from './peer-bridge.js'
 export { createAgoraCollaboration, type AgoraCollaboration, type AgoraCollaborationOptions } from './agora-collaboration.js'
-export { createAgentRuntimePreset, createArtifactLayer, createLongTaskLayer, createProviderLayer, createRuntimeCapabilities, createRuntimeLayers, type RuntimeCapabilities, type RuntimeLayerPipeline, type RuntimePreset, type RuntimePresetOptions } from './runtime-preset.js'
+export { createAgentRuntimePreset, createArtifactLayer, createLongTaskLayer, createProviderLayer, createRuntimeCapabilities, createRuntimeLayers, createRuntimeModelRouter, type RuntimeCapabilities, type RuntimeLayerPipeline, type RuntimeModelRouter, type RuntimePreset, type RuntimePresetOptions } from './runtime-preset.js'
 export { runAgentCli, type RuntimeCliOptions } from './runtime-cli.js'
 export { createDiscussionSessionStore, type DiscussionMessage, type DiscussionSession, type DiscussionSessionStoreOptions } from './discussion-session-store.js'
 export { chatStream, checkAgentHealth, type AgentChatResult, type ChatStreamOptions } from './chat-client.js'

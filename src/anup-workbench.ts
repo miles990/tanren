@@ -21,6 +21,7 @@ export function getAnupWorkbenchHtml(): string {
     button, select { padding:7px 10px; }
     button { cursor:pointer; }
     textarea { width:100%; min-height:92px; padding:10px; resize:vertical; }
+    input { width:100%; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--fg); font:inherit; padding:8px 9px; }
     button.primary { border-color:var(--accent); color:var(--accent); }
     button.danger { border-color:var(--bad); color:var(--bad); }
     .muted { color:var(--muted); }
@@ -82,6 +83,10 @@ export function getAnupWorkbenchHtml(): string {
         <div id="messages" class="messages"></div>
         <div>
           <textarea id="chatInput" placeholder="Ask Akari what to do, what it knows, or what decision it needs from you..."></textarea>
+          <div class="toolbar" style="margin-top:8px">
+            <input id="attachUri" placeholder="Optional attachment URL, file path, or artifact ref">
+            <input id="attachMediaType" placeholder="media type, e.g. image/png">
+          </div>
           <div class="toolbar" style="margin-top:8px">
             <button id="send" class="primary">Send</button>
             <button id="demo">Seed Demo</button>
@@ -190,16 +195,26 @@ export function getAnupWorkbenchHtml(): string {
     async function sendChat() {
       const input = $('chatInput');
       const text = input.value.trim();
-      if (!text) return;
+      const attachment = readAttachment();
+      if (!text && !attachment) return;
       input.value = '';
-      appendMessage('you', text);
+      $('attachUri').value = '';
+      $('attachMediaType').value = '';
+      const messageText = attachment
+        ? text + '\\n\\n[ATTACHMENT]\\nuri: ' + attachment.uri + '\\nmediaType: ' + attachment.mediaType
+        : text;
+      appendMessage('you', messageText);
       const assistant = appendMessage('akari', '');
       $('chatStatus').textContent = 'streaming...';
       try {
         const res = await fetch('/chat/stream', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ from: 'web', text })
+          body: JSON.stringify({
+            from: 'web',
+            text,
+            attachments: attachment ? [attachment] : []
+          })
         });
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -346,6 +361,24 @@ export function getAnupWorkbenchHtml(): string {
       let data = {};
       try { data = JSON.parse((dataLine || 'data:{}').slice(5).trim()); } catch {}
       return { event: (eventLine || 'event:message').slice(6).trim(), data };
+    }
+
+    function readAttachment() {
+      const uri = $('attachUri').value.trim();
+      const mediaType = $('attachMediaType').value.trim() || guessMediaType(uri);
+      if (!uri) return null;
+      return { uri, mediaType };
+    }
+
+    function guessMediaType(uri) {
+      if (/\\.png($|\\?)/i.test(uri)) return 'image/png';
+      if (/\\.jpe?g($|\\?)/i.test(uri)) return 'image/jpeg';
+      if (/\\.webp($|\\?)/i.test(uri)) return 'image/webp';
+      if (/\\.mp3($|\\?)/i.test(uri)) return 'audio/mpeg';
+      if (/\\.wav($|\\?)/i.test(uri)) return 'audio/wav';
+      if (/\\.mp4($|\\?)/i.test(uri)) return 'video/mp4';
+      if (/\\.pdf($|\\?)/i.test(uri)) return 'application/pdf';
+      return 'application/octet-stream';
     }
 
     function block(run, type) { return (run.blocks || []).find(item => item.type === type); }

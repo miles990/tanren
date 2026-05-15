@@ -6,12 +6,17 @@ import {
   buildAnupOverview,
   chatResultToAnupEnvelope,
   createAgentUIEnvelope,
+  createAnupApprovalGuard,
   createDemoAnupEnvelope,
+  FileAgentUIStore,
   longTaskToAnupEnvelope,
   type AgentUIBlock,
 } from './anup.js'
 import type { ArtifactJob } from './artifact-types.js'
 import type { LongTaskRecord } from './long-task.js'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 describe('ANUP', () => {
   it('validates the white-listed block vocabulary', () => {
@@ -137,5 +142,63 @@ describe('ANUP', () => {
     assert.ok(envelope.blocks.some(block => block.type === 'approval_request'))
     assert.ok(envelope.blocks.some(block => block.type === 'tool_trace'))
     assert.ok(envelope.blocks.some(block => block.type === 'media_ref'))
+  })
+
+  it('creates approval runs when high-risk actions are checked before execution', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-anup-approval-'))
+    try {
+      const store = new FileAgentUIStore(dir)
+      const guard = createAnupApprovalGuard({ store, agentId: 'akari' })
+      const decision = await guard.check(
+        { type: 'shell', content: 'rm -rf tmp', raw: '<action:shell>rm -rf tmp</action:shell>' },
+        {
+          memory: {} as never,
+          workDir: '.',
+          filesRead: new Set<string>(),
+        },
+      )
+      assert.equal(decision.approved, false)
+      assert.match(decision.reason, /approval/)
+      assert.equal(store.list().length, 1)
+      assert.ok(store.list()[0]?.blocks.some(block => block.type === 'approval_request'))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a high-risk action after a matching approval response', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-anup-approval-'))
+    try {
+      const store = new FileAgentUIStore(dir)
+      const guard = createAnupApprovalGuard({ store, agentId: 'akari' })
+      const action = { type: 'shell', content: 'pnpm test', raw: '<action:shell>pnpm test</action:shell>' }
+      const first = await guard.check(action, {
+        memory: {} as never,
+        workDir: '.',
+        filesRead: new Set<string>(),
+      })
+      assert.equal(first.approved, false)
+      const run = store.list()[0]
+      const block = run?.blocks.find(candidate => candidate.type === 'approval_request')
+      assert.ok(run)
+      assert.ok(block)
+      store.appendHumanAction({
+        type: 'human_action',
+        run_id: run.run_id,
+        source_block_id: block.id,
+        action_id: 'approve',
+        timestamp: new Date().toISOString(),
+      })
+
+      const second = await guard.check(action, {
+        memory: {} as never,
+        workDir: '.',
+        filesRead: new Set<string>(),
+      })
+      assert.equal(second.approved, true)
+      assert.equal(second.approvalId, run.run_id)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
