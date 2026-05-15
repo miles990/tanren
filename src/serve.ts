@@ -24,6 +24,8 @@ import { handleArtifactHttpRoute } from './artifact-http.js'
 import type { ArtifactProviderSelection } from './artifact-types.js'
 import { handleLongTaskHttpRoute } from './long-task-http.js'
 import type { LongTaskController } from './long-task.js'
+import { handleAnupHttpRoute } from './anup-http.js'
+import { getAnupWorkbenchHtml } from './anup-workbench.js'
 
 const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000
 const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000
@@ -424,6 +426,18 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         json(res, 200, status)
       } catch { json(res, 200, { phase: 'unknown' }) }
 
+    } else if (url.pathname === '/workbench' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.end(getAnupWorkbenchHtml())
+
+    } else if (await handleAnupHttpRoute(req, res, url, {
+      memoryDir,
+      serviceName,
+      longTasks: options.longTasks,
+      artifacts: options.artifacts,
+      capabilities: options.capabilities,
+    })) {
+
     } else if (options.longTasks && await handleLongTaskHttpRoute(req, res, url, { controller: options.longTasks })) {
 
     } else if (await handleArtifactHttpRoute(req, res, url, { artifacts: options.artifacts, memoryDir })) {
@@ -579,6 +593,14 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           },
           'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number', pool: '{ active, idle, total, max }' } },
           'GET /status': { description: 'Live agent status from working memory' },
+          'GET /workbench': { description: 'Human-readable Agent Native UI Protocol workbench' },
+          'GET /anup/overview': { description: 'Project runtime tasks, artifacts, policy, and capabilities into ANUP blocks' },
+          'GET /anup/tasks/:taskId': { description: 'Project one long task into ANUP task/state/trace/artifact blocks' },
+          'GET /anup/runs': { description: 'List persisted ANUP runs' },
+          'POST /anup/runs': { description: 'Persist an ANUP run envelope', body: { agent_id: 'optional', blocks: 'AgentUIBlock[]' } },
+          'POST /anup/runs/:runId/blocks': { description: 'Append or replace one block in a persisted ANUP run' },
+          'POST /anup/runs/:runId/actions': { description: 'Record structured human action for approval/decision blocks' },
+          'GET /anup/approvals': { description: 'List pending approval_request blocks in persisted ANUP runs' },
           'GET /policy/events': { description: 'List blocked provider/artifact policy events', query: { limit: 'default 100', domain: 'llm | artifact optional', provider: 'optional' } },
           'GET /artifacts': { description: 'List persisted artifact jobs', query: { date: 'YYYY-MM-DD optional', provider: 'optional' } },
           'POST /artifacts': { description: 'Submit artifact generation job', body: { type: 'image | audio | file | ...', prompt: 'string', provider: 'optional', refs: 'optional artifact refs or URIs' } },

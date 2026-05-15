@@ -262,6 +262,43 @@ export {
   type LongTaskStore,
 } from './long-task.js'
 export { handleLongTaskHttpRoute, type LongTaskHttpOptions } from './long-task-http.js'
+export {
+  ANUP_PROTOCOL,
+  ANUP_VERSION,
+  FileAgentUIStore,
+  assertAgentUIBlock,
+  assertAgentUIEnvelope,
+  artifactJobToAnupBlocks,
+  artifactJobToMediaRefBlocks,
+  artifactRefToMediaRefBlock,
+  buildAnupOverview,
+  capabilitiesToContextSummary,
+  createAgentUIEnvelope,
+  createRunId,
+  longTaskToAnupEnvelope,
+  policyEventsToConstraintPanel,
+  requiresApproval,
+  type AgentUIBlock,
+  type AgentUIEnvelope,
+  type AgentUIEvent,
+  type AgentStateBlock,
+  type ApprovalRequestBlock,
+  type ArtifactBlock,
+  type ConstraintPanelBlock,
+  type ContextSummaryBlock,
+  type DecisionCardBlock,
+  type DecisionOption,
+  type HumanAction,
+  type ImpactLevel,
+  type MediaRefBlock,
+  type RiskLevel,
+  type StoredAgentUIRun,
+  type TaskContractBlock,
+  type ToolTraceBlock,
+  type ToolTraceEvent,
+} from './anup.js'
+export { handleAnupHttpRoute, type AnupHttpOptions } from './anup-http.js'
+export { getAnupWorkbenchHtml } from './anup-workbench.js'
 export { createKgCollaboration, createKgDiscussionPlugin, createKgNotificationDiscussionPlugin, createKgActions, type KgCollaborationOptions, type KgNotificationDiscussionPluginOptions } from './kg-collaboration.js'
 export { createRoleContractPlugin, type RoleContractPluginOptions } from './role-contract.js'
 

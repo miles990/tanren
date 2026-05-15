@@ -9,6 +9,7 @@ import { serve } from './serve.js'
 import type { TanrenAgent } from './index.js'
 import { FileArtifactJobStore, FileArtifactStore, type ArtifactProvider } from './artifact-io.js'
 import { writePolicyEvent } from './provider-policy.js'
+import { LongTaskController } from './long-task.js'
 
 describe('serve', () => {
   it('exposes declared capabilities on /health', async () => {
@@ -194,6 +195,76 @@ describe('serve', () => {
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('serves ANUP overview, task projection, and HTML workbench', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-anup-'))
+    const file = join(dir, 'out.txt')
+    writeFileSync(file, 'artifact bytes', 'utf-8')
+    const jobStore = new FileArtifactJobStore(dir)
+    await jobStore.put({
+      id: 'job-anup',
+      provider: 'fake-artifacts',
+      status: 'completed',
+      request: { type: 'file', prompt: 'x' },
+      artifacts: [{ id: 'artifact-1', uri: file, kind: 'file', mediaType: 'text/plain' }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })
+    writePolicyEvent(join(dir, 'state'), {
+      domain: 'artifact',
+      provider: 'fake-artifacts',
+      allowed: false,
+      reason: 'blocked in test',
+    })
+    const longTasks = new LongTaskController({ memoryDir: dir, autoStart: false })
+    const task = longTasks.create({
+      goal: 'Expose ANUP state',
+      acceptance: 'Workbench can render the task',
+      start: false,
+    })
+    const handle = serve(createFakeAgent(), {
+      port: 0,
+      serviceName: 'test-agent',
+      memoryDir: dir,
+      longTasks,
+      capabilities: { llm: { provider: 'fake', input: { image: true }, output: { text: true } } },
+      artifacts: {
+        enabled: false,
+        providers: {},
+        store: new FileArtifactStore(dir),
+        jobStore,
+        reason: 'disabled for test',
+      },
+    })
+
+    try {
+      await once(handle.server, 'listening')
+      const address = handle.server.address()
+      assert.ok(address && typeof address === 'object')
+      const port = (address as AddressInfo).port
+
+      const overviewResponse = await fetch(`http://127.0.0.1:${port}/anup/overview`)
+      const overview = await overviewResponse.json() as { protocol: string; blocks: Array<{ type: string }> }
+      assert.equal(overviewResponse.status, 200)
+      assert.equal(overview.protocol, 'anup')
+      assert.ok(overview.blocks.some(block => block.type === 'agent_state'))
+      assert.ok(overview.blocks.some(block => block.type === 'media_ref'))
+
+      const taskResponse = await fetch(`http://127.0.0.1:${port}/anup/tasks/${task.id}`)
+      const taskProjection = await taskResponse.json() as { run_id: string; blocks: Array<{ type: string }> }
+      assert.equal(taskProjection.run_id, `task:${task.id}`)
+      assert.ok(taskProjection.blocks.some(block => block.type === 'tool_trace'))
+
+      const workbenchResponse = await fetch(`http://127.0.0.1:${port}/workbench`)
+      assert.equal(workbenchResponse.headers.get('content-type')?.startsWith('text/html'), true)
+      assert.match(await workbenchResponse.text(), /Tanren Agent Workbench/)
+    } finally {
+      handle.server.closeAllConnections()
+      await new Promise<void>(resolve => handle.server.close(() => resolve()))
+      longTasks.dispose()
       rmSync(dir, { recursive: true, force: true })
     }
   })
