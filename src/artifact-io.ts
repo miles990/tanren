@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { extname, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { basename, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ActionHandler, Prompt, PromptContentBlock, StreamChunk } from './types.js'
 import { promptToText } from './content-adapter.js'
@@ -78,6 +78,7 @@ export interface ArtifactProvider {
   name: string
   capabilities: ArtifactCapabilities
   submit(request: ArtifactRequest): Promise<ArtifactJob>
+  submitStream?(request: ArtifactRequest): AsyncIterable<ArtifactEvent>
   get(jobId: string): Promise<ArtifactJob | null>
   stream?(jobId: string): AsyncIterable<ArtifactEvent>
   cancel?(jobId: string): Promise<void>
@@ -86,6 +87,22 @@ export interface ArtifactProvider {
 export interface ArtifactStore {
   put(artifact: ArtifactBlob): Promise<ArtifactRef>
   get(ref: ArtifactRef): Promise<ArtifactBlob>
+}
+
+export interface ArtifactJobStore {
+  put(job: ArtifactJob): Promise<void>
+  get(jobId: string): Promise<ArtifactJob | null>
+  list?(filter?: { date?: string; provider?: string }): Promise<ArtifactJob[]>
+}
+
+export interface ArtifactPolicy {
+  allowCloud?: boolean
+  dailyCloudCallCap?: number
+}
+
+export interface ArtifactPolicyDecision {
+  allowed: boolean
+  reason: string
 }
 
 export interface ArtifactGraphNode {
@@ -146,12 +163,50 @@ export class FileArtifactStore implements ArtifactStore {
   }
 }
 
+export class FileArtifactJobStore implements ArtifactJobStore {
+  constructor(private rootDir: string) {}
+
+  async put(job: ArtifactJob): Promise<void> {
+    const day = job.createdAt.slice(0, 10)
+    const dir = resolve(this.rootDir, 'jobs', day)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${safeFileName(job.id)}.json`), JSON.stringify(job, null, 2), 'utf-8')
+  }
+
+  async get(jobId: string): Promise<ArtifactJob | null> {
+    const root = resolve(this.rootDir, 'jobs')
+    if (!existsSync(root)) return null
+    for (const day of readdirSync(root)) {
+      const path = join(root, day, `${safeFileName(jobId)}.json`)
+      if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf-8')) as ArtifactJob
+    }
+    return null
+  }
+
+  async list(filter: { date?: string; provider?: string } = {}): Promise<ArtifactJob[]> {
+    const root = resolve(this.rootDir, 'jobs')
+    if (!existsSync(root)) return []
+    const days = filter.date ? [filter.date] : readdirSync(root)
+    const jobs: ArtifactJob[] = []
+    for (const day of days) {
+      const dir = join(root, day)
+      if (!existsSync(dir)) continue
+      for (const file of readdirSync(dir).filter(file => file.endsWith('.json'))) {
+        const job = JSON.parse(readFileSync(join(dir, file), 'utf-8')) as ArtifactJob
+        if (!filter.provider || job.provider === filter.provider) jobs.push(job)
+      }
+    }
+    return jobs
+  }
+}
+
 export interface OpenAIArtifactProviderOptions {
   apiKey?: string
   baseUrl?: string
   imageModel?: string
   audioModel?: string
   store: ArtifactStore
+  jobStore?: ArtifactJobStore
 }
 
 export interface ArtifactProviderFromEnvOptions {
@@ -161,12 +216,15 @@ export interface ArtifactProviderFromEnvOptions {
   provider?: 'openai' | 'none'
   defaultProvider?: 'openai' | 'none'
   requireConfigured?: boolean
+  artifactPolicy?: ArtifactPolicy
 }
 
 export interface ArtifactProviderSelection {
   providers: Record<string, ArtifactProvider>
   defaultProvider?: string
   store: ArtifactStore
+  jobStore: ArtifactJobStore
+  policyDecision?: ArtifactPolicyDecision
   enabled: boolean
   reason?: string
 }
@@ -176,6 +234,7 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
   const baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '')
   const imageModel = opts.imageModel ?? 'gpt-image-1.5'
   const audioModel = opts.audioModel ?? 'gpt-4o-mini-tts'
+  const jobStore = opts.jobStore
   const jobs = new Map<string, ArtifactJob>()
   const eventHistory = new Map<string, ArtifactEvent[]>()
   const waiters = new Map<string, Array<(event: ArtifactEvent) => void>>()
@@ -191,13 +250,27 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
     },
 
     async submit(request: ArtifactRequest): Promise<ArtifactJob> {
+      let finalJob: ArtifactJob | null = null
+      for await (const event of provider.submitStream!(request)) {
+        if ('job' in event) finalJob = event.job
+      }
+      if (!finalJob) throw new Error('artifact provider returned no job')
+      return finalJob
+    },
+
+    async *submitStream(request: ArtifactRequest): AsyncIterable<ArtifactEvent> {
       if (!apiKey) throw new Error('OPENAI_API_KEY not set')
       const job = createJob(provider.name, request)
       jobs.set(job.id, job)
-      emit(job.id, { type: 'job.started', job: cloneJob(job) })
+      const started = { type: 'job.started', job: cloneJob(job) } satisfies ArtifactEvent
+      emit(job.id, started)
+      yield started
       job.status = 'running'
       job.updatedAt = new Date().toISOString()
-      emit(job.id, { type: 'job.running', job: cloneJob(job) })
+      await saveJob(jobStore, job)
+      const running = { type: 'job.running', job: cloneJob(job) } satisfies ArtifactEvent
+      emit(job.id, running)
+      yield running
       try {
         if (request.type === 'image') {
           job.artifacts = await generateOpenAIImage(request)
@@ -207,22 +280,32 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
           throw new Error(`OpenAI artifact provider does not support ${request.type}`)
         }
         job.status = 'completed'
+        job.updatedAt = new Date().toISOString()
+        await saveJob(jobStore, job)
         job.artifacts.forEach((artifact, index) => {
-          emit(job.id, { type: 'artifact.partial', jobId: job.id, artifact, index })
+          const event = { type: 'artifact.partial', jobId: job.id, artifact, index } satisfies ArtifactEvent
+          emit(job.id, event)
         })
-        emit(job.id, { type: 'artifact.completed', job: cloneJob(job) })
+        for (const event of eventHistory.get(job.id)?.filter(event => event.type === 'artifact.partial') ?? []) yield event
+        const completed = { type: 'artifact.completed', job: cloneJob(job) } satisfies ArtifactEvent
+        emit(job.id, completed)
+        yield completed
       } catch (err) {
         job.status = 'failed'
         job.error = err instanceof Error ? err.message : String(err)
-        emit(job.id, { type: 'job.failed', job: cloneJob(job), error: job.error })
+        job.updatedAt = new Date().toISOString()
+        await saveJob(jobStore, job)
+        const failed = { type: 'job.failed', job: cloneJob(job), error: job.error } satisfies ArtifactEvent
+        emit(job.id, failed)
+        yield failed
       }
       job.updatedAt = new Date().toISOString()
       jobs.set(job.id, job)
-      return job
+      await saveJob(jobStore, job)
     },
 
     async get(jobId: string) {
-      return jobs.get(jobId) ?? null
+      return jobs.get(jobId) ?? await jobStore?.get(jobId) ?? null
     },
 
     async *stream(jobId: string) {
@@ -232,8 +315,12 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
         yield event
       }
       while (true) {
-        const job = jobs.get(jobId)
-        if (!job || isTerminal(job.status)) return
+        const job = jobs.get(jobId) ?? await jobStore?.get(jobId) ?? null
+        if (!job) return
+        if (isTerminal(job.status)) {
+          if (seen === 0) yield* streamCompletedJob(job)
+          return
+        }
         const event = await waitForEvent(jobId)
         const history = eventHistory.get(jobId) ?? []
         for (const next of history.slice(seen)) {
@@ -436,6 +523,51 @@ export function createArtifactActions(opts: { providers: Record<string, Artifact
   ]
 }
 
+export function decideArtifactProviderUse(
+  selection: Pick<ArtifactProviderSelection, 'enabled' | 'jobStore'>,
+  opts: { policy?: ArtifactPolicy; provider?: string } = {},
+): ArtifactPolicyDecision {
+  const policy = opts.policy ?? {}
+  if (!selection.enabled) return { allowed: true, reason: 'artifact provider disabled' }
+  if (policy.allowCloud === false) return { allowed: false, reason: 'artifact cloud providers disabled by policy' }
+  if (policy.dailyCloudCallCap !== undefined && selection.jobStore.list) {
+    const today = new Date().toISOString().slice(0, 10)
+    // Synchronous callers get a conservative decision from persisted jobs loaded elsewhere.
+    return { allowed: true, reason: `daily artifact cap configured (${policy.dailyCloudCallCap}); enforced by guarded provider` }
+  }
+  return { allowed: true, reason: 'policy allowed' }
+}
+
+export function wrapArtifactProviderWithPolicy(
+  provider: ArtifactProvider,
+  opts: { policy?: ArtifactPolicy; jobStore?: ArtifactJobStore },
+): ArtifactProvider {
+  const guard = async () => {
+    const policy = opts.policy ?? {}
+    if (policy.allowCloud === false) throw new Error('Artifact provider blocked by policy: artifact cloud providers disabled by policy')
+    if (policy.dailyCloudCallCap !== undefined && opts.jobStore?.list) {
+      const today = new Date().toISOString().slice(0, 10)
+      const calls = (await opts.jobStore.list({ date: today, provider: provider.name })).length
+      if (calls >= policy.dailyCloudCallCap) {
+        throw new Error(`Artifact provider blocked by policy: daily artifact call cap reached (${calls}/${policy.dailyCloudCallCap})`)
+      }
+    }
+  }
+
+  return {
+    ...provider,
+    async submit(request) {
+      await guard()
+      return provider.submit(request)
+    },
+    async *submitStream(request) {
+      await guard()
+      if (provider.submitStream) yield* provider.submitStream(request)
+      else yield* streamCompletedJob(await provider.submit(request))
+    },
+  }
+}
+
 export function createArtifactRequestFromInput(input: Record<string, unknown>): ArtifactRequest {
   return {
     type: String(input.type ?? input.kind ?? 'image') as ArtifactKind,
@@ -458,25 +590,30 @@ export function createArtifactProviderFromEnv(opts: ArtifactProviderFromEnvOptio
   const providerKey = opts.provider ?? (env.TANREN_ARTIFACT_PROVIDER as 'openai' | 'none' | undefined) ?? opts.defaultProvider ?? 'openai'
   const artifactDir = opts.artifactDir ?? env.TANREN_ARTIFACT_DIR ?? join(cwd, 'memory', 'artifacts')
   const store = new FileArtifactStore(artifactDir)
+  const jobStore = new FileArtifactJobStore(artifactDir)
+  const artifactPolicy = opts.artifactPolicy ?? readArtifactPolicyFromEnv(env)
+  const policyDecision = decideArtifactProviderUse({ enabled: providerKey !== 'none', jobStore }, { policy: artifactPolicy })
 
-  if (providerKey === 'none') return { providers: {}, store, enabled: false, reason: 'artifact provider disabled' }
+  if (!policyDecision.allowed) return { providers: {}, store, jobStore, policyDecision, enabled: false, reason: policyDecision.reason }
+  if (providerKey === 'none') return { providers: {}, store, jobStore, policyDecision, enabled: false, reason: 'artifact provider disabled' }
   if (providerKey !== 'openai') {
     if (opts.requireConfigured) throw new Error(`Unknown TANREN_ARTIFACT_PROVIDER="${providerKey}"`)
-    return { providers: {}, store, enabled: false, reason: `unknown provider: ${providerKey}` }
+    return { providers: {}, store, jobStore, policyDecision, enabled: false, reason: `unknown provider: ${providerKey}` }
   }
   if (!env.OPENAI_API_KEY) {
     if (opts.requireConfigured) throw new Error('TANREN_ARTIFACT_PROVIDER=openai requires OPENAI_API_KEY')
-    return { providers: {}, store, enabled: false, reason: 'OPENAI_API_KEY not set' }
+    return { providers: {}, store, jobStore, policyDecision, enabled: false, reason: 'OPENAI_API_KEY not set' }
   }
 
-  const provider = createOpenAIArtifactProvider({
+  const provider = wrapArtifactProviderWithPolicy(createOpenAIArtifactProvider({
     store,
+    jobStore,
     apiKey: env.OPENAI_API_KEY,
     baseUrl: env.OPENAI_BASE_URL,
     imageModel: env.TANREN_IMAGE_MODEL,
     audioModel: env.TANREN_AUDIO_MODEL,
-  })
-  return { providers: { [provider.name]: provider, openai: provider }, defaultProvider: provider.name, store, enabled: true }
+  }), { policy: artifactPolicy, jobStore })
+  return { providers: { [provider.name]: provider, openai: provider }, defaultProvider: provider.name, store, jobStore, policyDecision, enabled: true }
 }
 
 export function createArtifactActionsFromEnv(opts: ArtifactProviderFromEnvOptions = {}): ActionHandler[] {
@@ -488,6 +625,30 @@ export function createArtifactActionsFromEnv(opts: ArtifactProviderFromEnvOption
 function createJob(provider: string, request: ArtifactRequest): ArtifactJob {
   const now = new Date().toISOString()
   return { id: `job-${Date.now()}-${randomUUID().slice(0, 8)}`, provider, status: 'queued', request, artifacts: [], createdAt: now, updatedAt: now }
+}
+
+async function saveJob(store: ArtifactJobStore | undefined, job: ArtifactJob): Promise<void> {
+  if (store) await store.put(cloneJob(job))
+}
+
+async function* streamCompletedJob(job: ArtifactJob): AsyncIterable<ArtifactEvent> {
+  yield { type: 'job.started', job }
+  if (job.status === 'running') yield { type: 'job.running', job }
+  for (const [index, artifact] of job.artifacts.entries()) yield { type: 'artifact.partial', jobId: job.id, artifact, index }
+  if (job.status === 'completed') yield { type: 'artifact.completed', job }
+  if (job.status === 'failed') yield { type: 'job.failed', job, error: job.error ?? 'failed' }
+  if (job.status === 'cancelled') yield { type: 'job.cancelled', job }
+}
+
+function readArtifactPolicyFromEnv(env: NodeJS.ProcessEnv): ArtifactPolicy | undefined {
+  const policy: ArtifactPolicy = {}
+  if (env.TANREN_ALLOW_ARTIFACT_CLOUD != null) policy.allowCloud = env.TANREN_ALLOW_ARTIFACT_CLOUD === '1'
+  if (env.TANREN_DAILY_ARTIFACT_CALL_CAP) policy.dailyCloudCallCap = parseInt(env.TANREN_DAILY_ARTIFACT_CALL_CAP, 10)
+  return Object.keys(policy).length ? policy : undefined
+}
+
+function safeFileName(name: string): string {
+  return basename(name).replace(/[^a-zA-Z0-9._-]/g, '_')
 }
 
 function failedJob(node: ArtifactGraphNode, error: string): ArtifactJob {

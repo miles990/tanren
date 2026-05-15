@@ -16,6 +16,7 @@ import type { Gate } from './types.js'
 import {
   createArtifactActions,
   createArtifactProviderFromEnv,
+  type ArtifactPolicy,
   type ArtifactProviderFromEnvOptions,
   type ArtifactProviderSelection,
 } from './artifact-io.js'
@@ -46,6 +47,7 @@ export interface RuntimePresetOptions {
   enableArtifacts?: boolean
   artifactProvider?: ArtifactProviderFromEnvOptions['provider']
   artifactDir?: string
+  artifactPolicy?: ArtifactPolicy
   artifactRequireConfigured?: boolean
   verifyCommand?: string
   feedbackRounds?: number
@@ -147,6 +149,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
         env,
         artifactDir: opts.artifactDir,
         provider: opts.artifactProvider,
+        artifactPolicy: opts.artifactPolicy,
         requireConfigured: opts.artifactRequireConfigured,
       })
     : createArtifactProviderFromEnv({ env, provider: 'none' })

@@ -218,6 +218,23 @@ export interface ServeOptions {
   artifacts?: ArtifactProviderSelection
 }
 
+export interface TanrenHealth {
+  status: 'ok' | 'degraded'
+  service: string
+  ticking: boolean
+  tickCount: number
+  uptime: number
+  errors: number
+  errorRate: string
+  avgTickDuration: string
+  recentTicks: Array<{ tick: number; timestamp: string; duration: number; actions: string[]; mode: string; error?: string }>
+  pool: ReturnType<AgentPool['status']>
+  autonomous: { busy: boolean }
+  agent?: Record<string, unknown>
+  capabilities?: unknown
+  unit: { unit_id: string; available_modes: readonly string[]; current_mode: string | null }
+}
+
 export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   const port = options.port ?? parseInt(process.env.PORT ?? '3000', 10)
   const serviceName = options.serviceName ?? 'tanren-agent'
@@ -390,7 +407,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         },
       }
       const poolStatus = pool.status()
-      json(res, 200, {
+      const health: TanrenHealth = {
         status: errorRate > 50 ? 'degraded' : 'ok',
         service: serviceName,
         ticking: poolStatus.active > 0 || autonomousBusy,
@@ -405,7 +422,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         ...(options.health ? { agent: options.health() } : {}),
         ...(options.capabilities ? { capabilities: options.capabilities } : {}),
         ...unitNamespace,
-      })
+      }
+      json(res, 200, health)
 
     } else if (url.pathname === '/status' && req.method === 'GET') {
       try {
@@ -435,12 +453,14 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         const parsed = await readJsonBody(req)
         const provider = selectArtifactProvider(parsed.provider)
         sse(res, 'job.submitted', { provider: provider.name })
-        const job = await provider.submit(createArtifactRequestFromInput(parsed))
-        for (const [index, artifact] of job.artifacts.entries()) {
-          sse(res, 'artifact.partial', { jobId: job.id, artifact, index })
+        const request = createArtifactRequestFromInput(parsed)
+        let finalJob: ArtifactJob | null = null
+        const stream = provider.submitStream?.(request) ?? streamCompletedJob(await provider.submit(request))
+        for await (const event of stream) {
+          if ('job' in event) finalJob = event.job
+          sse(res, event.type, event)
         }
-        sse(res, job.status === 'failed' ? 'job.failed' : 'artifact.completed', job.status === 'failed' ? { job, error: job.error } : { job })
-        sse(res, 'done', { jobId: job.id, status: job.status })
+        sse(res, 'done', { jobId: finalJob?.id, status: finalJob?.status ?? 'unknown' })
       } catch (err) {
         sse(res, 'error', { error: err instanceof Error ? err.message : String(err) })
       } finally {

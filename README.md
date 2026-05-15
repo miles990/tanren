@@ -213,6 +213,12 @@ Artifact action inputs accept `inputs` prompt blocks plus `refs`/`ref`/`sourceAr
 provider extensions can reuse prior images, audio, files, or graph outputs without inventing a
 new action schema.
 
+Artifact providers also support their own cloud guard and job persistence. Set
+`TANREN_ALLOW_ARTIFACT_CLOUD=0` to disable cloud artifact calls before a request is sent, and
+`TANREN_DAILY_ARTIFACT_CALL_CAP=N` to cap daily persisted artifact jobs. Job envelopes are stored
+under `memory/artifacts/jobs/YYYY-MM-DD/*.json`, so `/artifacts/:jobId` can survive process
+restarts when the provider is configured with the file job store.
+
 ### Orchestration
 
 Tanren also exports reusable worker orchestration modules:

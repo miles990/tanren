@@ -189,12 +189,15 @@ export { createModelIO, collectStream, type ModelIO, type ModelRequest, type Mod
 export { TEXT_ONLY_CAPABILITIES, ANTHROPIC_CAPABILITIES, OPENAI_COMPAT_CAPABILITIES, GEMINI_CAPABILITIES, MANAGED_AGENT_CAPABILITIES, AGENT_SDK_CAPABILITIES } from './provider-capabilities.js'
 export {
   FileArtifactStore,
+  FileArtifactJobStore,
   createOpenAIArtifactProvider,
   createArtifactGraphExecutor,
   createArtifactActions,
   createArtifactProviderFromEnv,
   createArtifactActionsFromEnv,
   createArtifactRequestFromInput,
+  decideArtifactProviderUse,
+  wrapArtifactProviderWithPolicy,
   type ArtifactKind,
   type ArtifactStatus,
   type ArtifactRef,
@@ -204,9 +207,12 @@ export {
   type ArtifactEvent,
   type ArtifactCapabilities,
   type ArtifactProvider,
+  type ArtifactPolicy,
+  type ArtifactPolicyDecision,
   type ArtifactProviderFromEnvOptions,
   type ArtifactProviderSelection,
   type ArtifactStore,
+  type ArtifactJobStore,
   type ArtifactGraphNode,
   type ArtifactGraph,
   type ArtifactGraphResult,
@@ -254,7 +260,7 @@ export { loadSkills, selectSkills, formatSkillsForPrompt, clearSkillCache, type 
 export { createHookSystem, builtinHooks, createAutoVerifyHook, createClaimVerificationHook, type Hook, type HookPhase, type HookContext } from './hooks.js'
 export { classifyError, formatErrorForAgent, type ClassifiedError, type ErrorType } from './error-classification.js'
 export { writeHandoff, readPendingHandoffs, updateHandoffStatus, formatHandoffsForContext, type Handoff } from './handoff.js'
-export { serve, type ServeOptions, type ServeHandle } from './serve.js'
+export { serve, type ServeOptions, type ServeHandle, type TanrenHealth } from './serve.js'
 export { createAgentSdkProvider, type AgentSdkOptions } from './llm/agent-sdk.js'
 export { safeJsonLoad, safeReadFile, safeJsonlLoad } from './safe-io.js'
 export { saveSession, loadSession, listSessions, forkSession, formatSessionsForContext, type SessionSnapshot } from './session.js'

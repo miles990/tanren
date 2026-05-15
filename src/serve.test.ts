@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { describe, it } from 'node:test'
 import { serve } from './serve.js'
 import type { TanrenAgent } from './index.js'
-import { FileArtifactStore, type ArtifactProvider } from './artifact-io.js'
+import { FileArtifactJobStore, FileArtifactStore, type ArtifactProvider } from './artifact-io.js'
 
 describe('serve', () => {
   it('exposes declared capabilities on /health', async () => {
@@ -81,6 +81,7 @@ describe('serve', () => {
         defaultProvider: 'fake-artifacts',
         providers: { 'fake-artifacts': provider },
         store: new FileArtifactStore('/tmp/tanren-test-artifacts'),
+        jobStore: new FileArtifactJobStore('/tmp/tanren-test-artifacts'),
       },
     })
 

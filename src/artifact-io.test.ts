@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import {
+  FileArtifactJobStore,
   FileArtifactStore,
   createArtifactActions,
   createArtifactActionsFromEnv,
   createArtifactRequestFromInput,
   createArtifactProviderFromEnv,
   createArtifactGraphExecutor,
+  wrapArtifactProviderWithPolicy,
   type ArtifactProvider,
   type ArtifactRequest,
 } from './artifact-io.js'
@@ -101,5 +103,40 @@ describe('ArtifactIO', () => {
     const selection = createArtifactProviderFromEnv({ env: { TANREN_ARTIFACT_PROVIDER: 'openai' } as NodeJS.ProcessEnv })
     assert.equal(selection.enabled, false)
     assert.deepEqual(createArtifactActionsFromEnv({ env: { TANREN_ARTIFACT_PROVIDER: 'openai' } as NodeJS.ProcessEnv }), [])
+  })
+
+  it('persists artifact jobs for later lookup', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-artifact-jobs-'))
+    try {
+      const store = new FileArtifactJobStore(dir)
+      const job = {
+        id: 'job-persisted',
+        provider: 'fake',
+        status: 'completed' as const,
+        request: { type: 'image' as const, prompt: 'x' },
+        artifacts: [{ id: 'artifact-1', uri: '/tmp/a.png', kind: 'image' as const, mediaType: 'image/png' }],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      await store.put(job)
+      assert.equal((await store.get(job.id))?.artifacts[0]?.uri, '/tmp/a.png')
+      assert.equal((await store.list({ provider: 'fake' })).length, 1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks artifact provider calls before cloud spend when policy disallows cloud', async () => {
+    const provider: ArtifactProvider = {
+      name: 'fake',
+      capabilities: { kinds: ['image'], streaming: false, input: { image: false, audio: false, video: false, file: false }, output: { base64: true, file: true, url: false } },
+      async submit() { throw new Error('provider should not be called') },
+      async get() { return null },
+    }
+    const guarded = wrapArtifactProviderWithPolicy(provider, { policy: { allowCloud: false } })
+    await assert.rejects(
+      () => guarded.submit({ type: 'image', prompt: 'x' }),
+      /artifact cloud providers disabled by policy/,
+    )
   })
 })
