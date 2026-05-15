@@ -8,7 +8,7 @@ import { createAutoVerifyHook, createClaimVerificationHook, type Hook } from './
 import { createKgNotificationDiscussionPlugin } from './kg-collaboration.js'
 import { loadMcpServersFromConfig, type McpConfigSelection } from './mcp-config.js'
 import { createPeerBridge, type PeerBridge } from './peer-bridge.js'
-import { createProviderFromEnv, type ProviderSelection, type ProviderKey } from './provider-registry.js'
+import { createProviderFromEnv, readScopedEnv, type ProviderSelection, type ProviderKey } from './provider-registry.js'
 import { createRoleContractPlugin } from './role-contract.js'
 import { readUsageSummary } from './env.js'
 import type { Gate } from './types.js'
@@ -23,6 +23,7 @@ export interface RuntimePresetOptions {
   baseDir?: string
   env?: NodeJS.ProcessEnv
   serviceName?: string
+  serviceEnvPrefix?: string
   memoryDir?: string
   messagesDir?: string
   identity?: string
@@ -94,10 +95,13 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
   const memoryDir = opts.memoryDir ?? join(baseDir, 'memory')
   const messagesDir = opts.messagesDir ?? join(baseDir, 'messages')
   const serviceName = opts.serviceName ?? 'tanren-agent'
-  const mode = opts.mode ?? env.AKARI_MODE ?? env.TANREN_MODE ?? 'cloud-research'
-  const provider = opts.provider ?? (env.LLM_PROVIDER as ProviderKey | undefined)
+  const serviceEnvPrefix = opts.serviceEnvPrefix ?? serviceName
+  const mode = opts.mode ?? readScopedEnv(env, 'MODE', serviceEnvPrefix) ?? 'cloud-research'
+  const provider = opts.provider
+    ?? (env.TANREN_LLM_PROVIDER as ProviderKey | undefined)
+    ?? (env.LLM_PROVIDER as ProviderKey | undefined)
     ?? (mode === 'local-review' ? 'omlx' : mode === 'codex' ? 'codex' : 'agent-sdk')
-  const cloudFallbackEnabled = opts.cloudFallbackEnabled ?? env.AKARI_CLOUD_FALLBACK === '1'
+  const cloudFallbackEnabled = opts.cloudFallbackEnabled ?? readScopedEnv(env, 'CLOUD_FALLBACK', serviceEnvPrefix) === '1'
 
   const peerBridge = createPeerBridge({
     messagesDir,
@@ -113,6 +117,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     cwd: process.cwd(),
     stateDir: join(memoryDir, 'state'),
     env,
+    serviceEnvPrefix,
     mode,
     provider,
     cloudFallbackEnabled,

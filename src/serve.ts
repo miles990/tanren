@@ -105,6 +105,7 @@ function createAgentPool(primaryAgent: TanrenAgent, config: TanrenConfig | undef
       }
     }
   }, 60_000)
+  cleanupTimer.unref?.()
 
   return {
     acquire,

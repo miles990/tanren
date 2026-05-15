@@ -68,4 +68,34 @@ describe('RuntimePreset', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('prefers framework env names while keeping service-specific fallbacks', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-runtime-'))
+    try {
+      const runtime = createAgentRuntimePreset({
+        baseDir: dir,
+        memoryDir: join(dir, 'memory'),
+        messagesDir: join(dir, 'messages'),
+        serviceName: 'akari',
+        serviceEnvPrefix: 'AKARI',
+        enableAgora: false,
+        enableKgNotifications: false,
+        env: {
+          TANREN_MODE: 'local-review',
+          AKARI_MODE: 'codex',
+          TANREN_LLM_PROVIDER: 'local',
+          TANREN_MODEL: 'tanren-model',
+          AKARI_MODEL: 'akari-model',
+          LOCAL_LLM_URL: 'http://localhost:8000',
+          TANREN_ARTIFACT_PROVIDER: 'none',
+        } as NodeJS.ProcessEnv,
+      })
+
+      assert.equal(runtime.providerSelection.mode, 'local-review')
+      assert.equal(runtime.providerSelection.providerKey, 'local')
+      assert.equal(runtime.providerSelection.model, 'tanren-model')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

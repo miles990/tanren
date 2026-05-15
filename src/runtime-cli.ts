@@ -5,6 +5,7 @@ import type { TanrenAgent } from './index.js'
 import { serve, type ServeOptions } from './serve.js'
 import type { PeerBridge } from './peer-bridge.js'
 import type { TanrenConfig } from './types.js'
+import { readScopedEnv } from './provider-registry.js'
 
 export interface RuntimeCliOptions {
   agent: TanrenAgent
@@ -14,6 +15,8 @@ export interface RuntimeCliOptions {
   memoryDir: string
   messagesDir?: string
   providerName?: string
+  env?: NodeJS.ProcessEnv
+  serviceEnvPrefix?: string
   port?: number
   args?: string[]
   serveOptions?: Partial<ServeOptions>
@@ -22,6 +25,8 @@ export interface RuntimeCliOptions {
 
 export async function runAgentCli(opts: RuntimeCliOptions): Promise<void> {
   const args = opts.args ?? process.argv.slice(2)
+  const env = opts.env ?? process.env
+  const serviceEnvPrefix = opts.serviceEnvPrefix ?? opts.serviceName
   const mode = args.includes('--serve') ? 'serve'
     : args.includes('--chat') ? 'chat'
     : args.includes('--loop') ? 'loop'
@@ -42,8 +47,8 @@ export async function runAgentCli(opts: RuntimeCliOptions): Promise<void> {
   }
 
   if (mode === 'serve') {
-    const port = opts.port ?? parseInt(process.env.AKARI_PORT ?? process.env.AGENT_PORT ?? process.env.PORT ?? '3000', 10)
-    const autonomous = args.includes('--autonomous') || process.env.AKARI_AUTONOMOUS === '1'
+    const port = opts.port ?? parseInt(readScopedEnv(env, 'PORT', serviceEnvPrefix) ?? env.AGENT_PORT ?? env.PORT ?? '3000', 10)
+    const autonomous = args.includes('--autonomous') || readScopedEnv(env, 'AUTONOMOUS', serviceEnvPrefix) === '1'
     let tickCount = 0
     const handle = serve(opts.agent, {
       port,
@@ -147,4 +152,3 @@ export async function runAgentCli(opts: RuntimeCliOptions): Promise<void> {
 
   await runSingleTick()
 }
-

@@ -65,6 +65,7 @@ export interface ProviderFromEnvOptions {
   cwd?: string
   stateDir?: string
   env?: NodeJS.ProcessEnv
+  serviceEnvPrefix?: string
   mode?: string
   provider?: ProviderKey
   defaultMode?: string
@@ -132,8 +133,8 @@ export function listProviders(): Array<{ provider: ProviderKey; cloud: boolean; 
 export function createProviderFromEnv(opts: ProviderFromEnvOptions = {}): ProviderSelection {
   const env = opts.env ?? process.env
   const cwd = opts.cwd ?? process.cwd()
-  const mode = opts.mode ?? env.AKARI_MODE ?? env.TANREN_MODE ?? opts.defaultMode ?? 'cloud-research'
-  const rawProvider = opts.provider ?? env.LLM_PROVIDER
+  const mode = opts.mode ?? readScopedEnv(env, 'MODE', opts.serviceEnvPrefix) ?? opts.defaultMode ?? 'cloud-research'
+  const rawProvider = opts.provider ?? env.TANREN_LLM_PROVIDER ?? env.LLM_PROVIDER
   if (rawProvider && !isProviderKey(rawProvider)) {
     throw new Error(`Unknown LLM_PROVIDER="${rawProvider}". Use ${PROVIDER_KEYS.join(', ')}.`)
   }
@@ -143,8 +144,8 @@ export function createProviderFromEnv(opts: ProviderFromEnvOptions = {}): Provid
       : mode === 'codex'
         ? (opts.codexModeProvider ?? 'codex')
         : (opts.defaultProvider ?? 'agent-sdk'))
-  const cloudFallbackEnabled = opts.cloudFallbackEnabled ?? (env.AKARI_CLOUD_FALLBACK === '1')
-  const model = env.AKARI_MODEL || env.TANREN_MODEL
+  const cloudFallbackEnabled = opts.cloudFallbackEnabled ?? (readScopedEnv(env, 'CLOUD_FALLBACK', opts.serviceEnvPrefix) === '1')
+  const model = readScopedEnv(env, 'MODEL', opts.serviceEnvPrefix)
 
   let provider: LLMProvider
   let providerName: string = providerKey
@@ -211,4 +212,17 @@ export function createProviderFromEnv(opts: ProviderFromEnvOptions = {}): Provid
   }
 
   return { provider, providerKey, providerName, model, cloud, cloudFallbackEnabled, mode }
+}
+
+export function readScopedEnv(env: NodeJS.ProcessEnv, key: string, serviceEnvPrefix?: string): string | undefined {
+  const prefix = normalizeEnvPrefix(serviceEnvPrefix)
+  return env[`TANREN_${key}`]
+    ?? (prefix ? env[`${prefix}${key}`] : undefined)
+    ?? env[`AKARI_${key}`]
+}
+
+export function normalizeEnvPrefix(prefix?: string): string | undefined {
+  if (!prefix) return undefined
+  const normalized = prefix.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return normalized ? `${normalized}_` : undefined
 }
