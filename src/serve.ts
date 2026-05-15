@@ -211,7 +211,7 @@ export interface ServeOptions {
   /** Extra health metadata supplied by the concrete agent instance. */
   health?: () => Record<string, unknown>
   /** Declared runtime capabilities exposed under /health.capabilities. */
-  capabilities?: Record<string, unknown>
+  capabilities?: unknown
 }
 
 export function serve(agent: TanrenAgent, options: ServeOptions = {}) {

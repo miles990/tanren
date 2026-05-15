@@ -12,9 +12,16 @@ import { createProviderFromEnv, type ProviderSelection, type ProviderKey } from 
 import { createRoleContractPlugin } from './role-contract.js'
 import { readUsageSummary } from './env.js'
 import type { Gate } from './types.js'
+import {
+  createArtifactActions,
+  createArtifactProviderFromEnv,
+  type ArtifactProviderFromEnvOptions,
+  type ArtifactProviderSelection,
+} from './artifact-io.js'
 
 export interface RuntimePresetOptions {
   baseDir?: string
+  env?: NodeJS.ProcessEnv
   serviceName?: string
   memoryDir?: string
   messagesDir?: string
@@ -32,6 +39,10 @@ export interface RuntimePresetOptions {
   kgUrl?: string
   enableAgora?: boolean
   enableKgNotifications?: boolean
+  enableArtifacts?: boolean
+  artifactProvider?: ArtifactProviderFromEnvOptions['provider']
+  artifactDir?: string
+  artifactRequireConfigured?: boolean
   verifyCommand?: string
   feedbackRounds?: number
   tickInterval?: number
@@ -46,20 +57,47 @@ export interface RuntimePreset {
   peerBridge: PeerBridge
   agora?: AgoraCollaboration
   providerSelection: ProviderSelection
+  artifactSelection: ArtifactProviderSelection
   mcpConfig: McpConfigSelection
   health: () => Record<string, unknown>
-  capabilities: Record<string, unknown>
+  capabilities: RuntimeCapabilities
+}
+
+export interface RuntimeCapabilities {
+  llm: {
+    provider: string
+    providerKey: ProviderKey
+    cloud: boolean
+    cloudFallbackEnabled: boolean
+    model?: string
+    capabilities?: unknown
+  }
+  artifacts: {
+    enabled: boolean
+    defaultProvider?: string
+    providers: Array<{ name: string; capabilities: unknown }>
+    reason?: string
+  }
+  mcp: {
+    servers: string[]
+  }
+  runtime: {
+    peerBridge: { enabled: boolean; peerName: string }
+    agora: { enabled: boolean }
+    kgNotifications: { enabled: boolean }
+  }
 }
 
 export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): RuntimePreset {
+  const env = opts.env ?? process.env
   const baseDir = opts.baseDir ?? '.'
   const memoryDir = opts.memoryDir ?? join(baseDir, 'memory')
   const messagesDir = opts.messagesDir ?? join(baseDir, 'messages')
   const serviceName = opts.serviceName ?? 'tanren-agent'
-  const mode = opts.mode ?? process.env.AKARI_MODE ?? process.env.TANREN_MODE ?? 'cloud-research'
-  const provider = opts.provider ?? (process.env.LLM_PROVIDER as ProviderKey | undefined)
+  const mode = opts.mode ?? env.AKARI_MODE ?? env.TANREN_MODE ?? 'cloud-research'
+  const provider = opts.provider ?? (env.LLM_PROVIDER as ProviderKey | undefined)
     ?? (mode === 'local-review' ? 'omlx' : mode === 'codex' ? 'codex' : 'agent-sdk')
-  const cloudFallbackEnabled = opts.cloudFallbackEnabled ?? process.env.AKARI_CLOUD_FALLBACK === '1'
+  const cloudFallbackEnabled = opts.cloudFallbackEnabled ?? env.AKARI_CLOUD_FALLBACK === '1'
 
   const peerBridge = createPeerBridge({
     messagesDir,
@@ -74,11 +112,21 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
   const providerSelection = createProviderFromEnv({
     cwd: process.cwd(),
     stateDir: join(memoryDir, 'state'),
+    env,
     mode,
     provider,
     cloudFallbackEnabled,
     agentSdk: mcpConfig.mcpServers ? { mcpServers: mcpConfig.mcpServers, mcpToolNames: mcpConfig.mcpToolNames } : undefined,
   })
+  const artifactSelection = opts.enableArtifacts ?? true
+    ? createArtifactProviderFromEnv({
+        cwd: process.cwd(),
+        env,
+        artifactDir: opts.artifactDir,
+        provider: opts.artifactProvider,
+        requireConfigured: opts.artifactRequireConfigured,
+      })
+    : createArtifactProviderFromEnv({ env, provider: 'none' })
 
   const perceptionPlugins: PerceptionPlugin[] = [
     {
@@ -104,22 +152,43 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
 
   if (opts.enableKgNotifications ?? true) {
     perceptionPlugins.push(createKgNotificationDiscussionPlugin({
-      kgUrl: opts.kgUrl ?? process.env.KG_URL ?? 'http://localhost:3300',
+      kgUrl: opts.kgUrl ?? env.KG_URL ?? 'http://localhost:3300',
       eventsDir: join(memoryDir, 'events', 'pending'),
       processedDir: join(memoryDir, 'events', 'processed'),
       sourceAgent: serviceName,
     }))
   }
 
-  const capabilities = {
-    provider: providerSelection.providerName,
-    providerKey: providerSelection.providerKey,
-    providerCloud: providerSelection.cloud,
-    cloudFallbackEnabled: providerSelection.cloudFallbackEnabled,
-    mcpServers: mcpConfig.serverNames,
-    peerBridge: { enabled: true, peerName: opts.peerName ?? 'peer' },
-    agora: { enabled: Boolean(agora) },
-    kgNotifications: { enabled: opts.enableKgNotifications ?? true },
+  const artifactActions = artifactSelection.enabled && artifactSelection.defaultProvider
+    ? createArtifactActions({ providers: artifactSelection.providers, defaultProvider: artifactSelection.defaultProvider })
+    : []
+
+  const capabilities: RuntimeCapabilities = {
+    llm: {
+      provider: providerSelection.providerName,
+      providerKey: providerSelection.providerKey,
+      cloud: providerSelection.cloud,
+      cloudFallbackEnabled: providerSelection.cloudFallbackEnabled,
+      model: providerSelection.model,
+      capabilities: providerSelection.provider.capabilities,
+    },
+    artifacts: {
+      enabled: artifactSelection.enabled,
+      defaultProvider: artifactSelection.defaultProvider,
+      providers: uniqueArtifactProviders(artifactSelection.providers).map(provider => ({
+        name: provider.name,
+        capabilities: provider.capabilities,
+      })),
+      reason: artifactSelection.reason,
+    },
+    mcp: {
+      servers: mcpConfig.serverNames,
+    },
+    runtime: {
+      peerBridge: { enabled: true, peerName: opts.peerName ?? 'peer' },
+      agora: { enabled: Boolean(agora) },
+      kgNotifications: { enabled: opts.enableKgNotifications ?? true },
+    },
   }
 
   const config: TanrenConfig = {
@@ -128,7 +197,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     searchPaths: opts.searchPaths,
     skillsDir: opts.skillsDir,
     perceptionPlugins,
-    actions: [...builtinActions, ...peerBridge.actions, ...(agora?.actions ?? []), ...(opts.extraActions ?? [])],
+    actions: [...builtinActions, ...peerBridge.actions, ...(agora?.actions ?? []), ...artifactActions, ...(opts.extraActions ?? [])],
     llm: providerSelection.provider,
     hooks: [
       ...peerBridge.hooks,
@@ -153,14 +222,30 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     peerBridge,
     agora,
     providerSelection,
+    artifactSelection,
     mcpConfig,
     capabilities,
     health: () => ({
       mode,
+      provider: providerSelection.providerName,
+      providerKey: providerSelection.providerKey,
+      providerCloud: providerSelection.cloud,
+      cloudFallbackEnabled: providerSelection.cloudFallbackEnabled,
+      artifactProvider: artifactSelection.defaultProvider,
+      artifactsEnabled: artifactSelection.enabled,
       ...capabilities,
       usage: readUsageSummary(join(memoryDir, 'state')),
     }),
   }
+}
+
+function uniqueArtifactProviders(providers: Record<string, { name: string; capabilities: unknown }>) {
+  const seen = new Set<string>()
+  return Object.values(providers).filter(provider => {
+    if (seen.has(provider.name)) return false
+    seen.add(provider.name)
+    return true
+  })
 }
 
 function createTickHistoryPlugin(memoryDir: string): PerceptionPlugin {
