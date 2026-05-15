@@ -236,6 +236,33 @@ full `createAgentRuntimePreset()` composition, so an agent can override one laye
 forking the whole preset. `createGenerationIO()` is the common model/artifact generation seam
 for future multimodal workflows.
 
+### Resumable Long Tasks
+
+Tanren can turn large review/research/implementation work into persisted DAG jobs instead of
+forcing one LLM call to finish inside a tick. `LongTaskController` stores state under
+`memory/tasks/{taskId}/`:
+
+- `task.json` / `plan.json` — task envelope and ActionPlan.
+- `events.jsonl` — step dispatch/completion/retry/cancel events.
+- `checkpoints/*.json` — completed step results for resume.
+- `result.md` / `result.json` — final digest.
+
+Runtime presets enable long-task actions by default:
+
+- `long_task_create` — create a generic ActionPlan-backed job.
+- `review_task_create` — split long review work into intake, focused reviews, and synthesis.
+- `long_task_status`, `long_task_resume`, `long_task_cancel`.
+
+The built-in HTTP server exposes the same controller:
+
+- `GET /tasks`
+- `POST /tasks`
+- `GET /tasks/:taskId`
+- `DELETE /tasks/:taskId`
+- `POST /tasks/:taskId/resume`
+- `GET /tasks/:taskId/events`
+- `GET /tasks/:taskId/result`
+
 ### Orchestration
 
 Tanren also exports reusable worker orchestration modules:

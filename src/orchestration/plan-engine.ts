@@ -235,6 +235,15 @@ export class PlanEngine {
     return false;
   }
 
+  /** Cancel all currently running steps. */
+  cancelAll(): number {
+    let cancelled = 0;
+    for (const stepId of [...this.abortControllers.keys()]) {
+      if (this.cancelStep(stepId)) cancelled++;
+    }
+    return cancelled;
+  }
+
   // ─── Validation ───
 
   validate(plan: ActionPlan, availableWorkers: Set<string>): string[] {
@@ -307,7 +316,7 @@ export class PlanEngine {
 
   // ─── Execute ───
 
-  async execute(plan: ActionPlan): Promise<PlanResult> {
+  async execute(plan: ActionPlan, initialResults: Iterable<StepResult> = []): Promise<PlanResult> {
     // Confirmation gate
     if (this.opts.confirmationGate) {
       const risks = plan.steps.map(step => ({ step, risk: classifyStepRisk(step) }));
@@ -324,9 +333,10 @@ export class PlanEngine {
 
     const start = Date.now();
     const results = new Map<string, StepResult>();
+    for (const result of initialResults) results.set(result.id, result);
     const running = new Set<string>();
     const retryCounts = new Map<string, number>();
-    let dispatchOrder = 0;
+    let dispatchOrder = results.size;
     let aborted = false;
     let convergenceIterations = 0;
     const workerRunning = new Map<string, number>();
@@ -334,6 +344,13 @@ export class PlanEngine {
     return new Promise<PlanResult>((resolve) => {
       const tryDispatch = () => {
         if (aborted) return;
+
+        if (results.size === plan.steps.length && running.size === 0) {
+          const finalResult = buildResult(plan, results, start, convergenceIterations);
+          this.emit({ type: 'plan.completed', result: finalResult });
+          resolve(finalResult);
+          return;
+        }
 
         for (const step of plan.steps) {
           if (results.has(step.id) || running.has(step.id)) continue;

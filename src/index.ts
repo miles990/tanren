@@ -248,6 +248,20 @@ export { PresetManager, type WorkerPreset } from './orchestration/presets.js'
 export { createPlanningBrain, createBrain, brainPlan, brainDigest, type BrainConfig, type WorkerInfo } from './orchestration/brain.js'
 export { createOrchestrationMiddleware, createOrchestrationRouter, type OrchestrationMiddleware, type OrchestrationMiddlewareConfig } from './orchestration/router.js'
 export { createOrchestrationMcpServer, startOrchestrationMcpServer, type OrchestrationMcpOptions } from './orchestration/mcp-server.js'
+export {
+  FileLongTaskStore,
+  LongTaskController,
+  createLongTaskActions,
+  createLongTaskPlan,
+  type LongTaskControllerOptions,
+  type LongTaskCreateInput,
+  type LongTaskEvent,
+  type LongTaskKind,
+  type LongTaskRecord,
+  type LongTaskStatus,
+  type LongTaskStore,
+} from './long-task.js'
+export { handleLongTaskHttpRoute, type LongTaskHttpOptions } from './long-task-http.js'
 export { createKgCollaboration, createKgDiscussionPlugin, createKgNotificationDiscussionPlugin, createKgActions, type KgCollaborationOptions, type KgNotificationDiscussionPluginOptions } from './kg-collaboration.js'
 export { createRoleContractPlugin, type RoleContractPluginOptions } from './role-contract.js'
 
@@ -275,7 +289,7 @@ export { loadDotEnvFile, readUsageSummary, type DotEnvLoadOptions } from './env.
 export { loadMcpServersFromConfig, type McpConfigLoadOptions, type McpConfigSelection } from './mcp-config.js'
 export { createPeerBridge, type PeerBridge, type PeerBridgeOptions } from './peer-bridge.js'
 export { createAgoraCollaboration, type AgoraCollaboration, type AgoraCollaborationOptions } from './agora-collaboration.js'
-export { createAgentRuntimePreset, createArtifactLayer, createProviderLayer, createRuntimeCapabilities, createRuntimeLayers, type RuntimeCapabilities, type RuntimeLayerPipeline, type RuntimePreset, type RuntimePresetOptions } from './runtime-preset.js'
+export { createAgentRuntimePreset, createArtifactLayer, createLongTaskLayer, createProviderLayer, createRuntimeCapabilities, createRuntimeLayers, type RuntimeCapabilities, type RuntimeLayerPipeline, type RuntimePreset, type RuntimePresetOptions } from './runtime-preset.js'
 export { runAgentCli, type RuntimeCliOptions } from './runtime-cli.js'
 export { createDiscussionSessionStore, type DiscussionMessage, type DiscussionSession, type DiscussionSessionStoreOptions } from './discussion-session-store.js'
 export { chatStream, checkAgentHealth, type AgentChatResult, type ChatStreamOptions } from './chat-client.js'

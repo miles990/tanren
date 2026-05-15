@@ -22,6 +22,8 @@ import { createAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
 import { handleArtifactHttpRoute } from './artifact-http.js'
 import type { ArtifactProviderSelection } from './artifact-types.js'
+import { handleLongTaskHttpRoute } from './long-task-http.js'
+import type { LongTaskController } from './long-task.js'
 
 const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000
 const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000
@@ -217,6 +219,8 @@ export interface ServeOptions {
   capabilities?: unknown
   /** Artifact providers exposed through /artifacts endpoints. */
   artifacts?: ArtifactProviderSelection
+  /** Resumable long task controller exposed through /tasks endpoints. */
+  longTasks?: LongTaskController
 }
 
 export interface TanrenHealth {
@@ -419,6 +423,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         const status = JSON.parse(readFileSync(statusPath, 'utf-8'))
         json(res, 200, status)
       } catch { json(res, 200, { phase: 'unknown' }) }
+
+    } else if (options.longTasks && await handleLongTaskHttpRoute(req, res, url, { controller: options.longTasks })) {
 
     } else if (await handleArtifactHttpRoute(req, res, url, { artifacts: options.artifacts, memoryDir })) {
 

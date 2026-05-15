@@ -20,6 +20,7 @@ import {
   type ArtifactProviderFromEnvOptions,
   type ArtifactProviderSelection,
 } from './artifact-io.js'
+import { createLongTaskActions, LongTaskController } from './long-task.js'
 
 export interface RuntimePresetOptions {
   baseDir?: string
@@ -49,6 +50,7 @@ export interface RuntimePresetOptions {
   artifactDir?: string
   artifactPolicy?: ArtifactPolicy
   artifactRequireConfigured?: boolean
+  enableLongTasks?: boolean
   verifyCommand?: string
   feedbackRounds?: number
   tickInterval?: number
@@ -64,6 +66,7 @@ export interface RuntimePreset {
   agora?: AgoraCollaboration
   providerSelection: ProviderSelection
   artifactSelection: ArtifactProviderSelection
+  longTaskController?: LongTaskController
   mcpConfig: McpConfigSelection
   health: () => Record<string, unknown>
   capabilities: RuntimeCapabilities
@@ -93,12 +96,14 @@ export interface RuntimeCapabilities {
     peerBridge: { enabled: boolean; peerName: string }
     agora: { enabled: boolean }
     kgNotifications: { enabled: boolean }
+    longTasks: { enabled: boolean }
   }
 }
 
 export interface RuntimeLayerPipeline {
   provider: ReturnType<typeof createProviderLayer>
   artifacts: ReturnType<typeof createArtifactLayer>
+  longTasks?: ReturnType<typeof createLongTaskLayer>
   capabilities: RuntimeCapabilities
   mcpConfig: McpConfigSelection
 }
@@ -122,9 +127,11 @@ export function createRuntimeLayers(opts: RuntimePresetOptions = {}): RuntimeLay
   })
   const providerLayer = createProviderLayer({ opts, env, serviceEnvPrefix, mode, provider, cloudFallbackEnabled, memoryDir, mcpConfig })
   const artifactLayer = createArtifactLayer({ opts, env, memoryDir })
+  const longTaskLayer = createLongTaskLayer({ opts, memoryDir, baseDir })
   return {
     provider: providerLayer,
     artifacts: artifactLayer,
+    longTasks: longTaskLayer,
     mcpConfig,
     capabilities: createRuntimeCapabilities({
       opts,
@@ -163,6 +170,8 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
   const { providerSelection, providerPolicyDecision, llm } = providerLayer
   const artifactLayer = createArtifactLayer({ opts, env, memoryDir })
   const { artifactSelection } = artifactLayer
+  const longTaskLayer = createLongTaskLayer({ opts, memoryDir, baseDir })
+  const { longTaskController } = longTaskLayer
 
   const perceptionPlugins: PerceptionPlugin[] = [
     {
@@ -198,6 +207,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
   const artifactActions = artifactSelection.enabled && artifactSelection.defaultProvider
     ? createArtifactActions({ providers: artifactSelection.providers, defaultProvider: artifactSelection.defaultProvider })
     : []
+  const longTaskActions = longTaskController ? createLongTaskActions(longTaskController) : []
 
   const capabilities = createRuntimeCapabilities({ opts, providerSelection, artifactSelection, mcpConfig, agora })
 
@@ -207,7 +217,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     searchPaths: opts.searchPaths,
     skillsDir: opts.skillsDir,
     perceptionPlugins,
-    actions: [...builtinActions, ...peerBridge.actions, ...(agora?.actions ?? []), ...artifactActions, ...(opts.extraActions ?? [])],
+    actions: [...builtinActions, ...peerBridge.actions, ...(agora?.actions ?? []), ...artifactActions, ...longTaskActions, ...(opts.extraActions ?? [])],
     llm,
     hooks: [
       ...peerBridge.hooks,
@@ -233,6 +243,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     agora,
     providerSelection,
     artifactSelection,
+    longTaskController,
     mcpConfig,
     capabilities,
     providerPolicyDecision,
@@ -319,6 +330,18 @@ export function createArtifactLayer(args: {
   return { artifactSelection }
 }
 
+export function createLongTaskLayer(args: {
+  opts: RuntimePresetOptions
+  memoryDir: string
+  baseDir: string
+}) {
+  const { opts, memoryDir, baseDir } = args
+  const longTaskController = opts.enableLongTasks ?? true
+    ? new LongTaskController({ memoryDir, cwd: baseDir })
+    : undefined
+  return { longTaskController }
+}
+
 export function createRuntimeCapabilities(args: {
   opts: RuntimePresetOptions
   providerSelection: ProviderSelection
@@ -352,6 +375,7 @@ export function createRuntimeCapabilities(args: {
       peerBridge: { enabled: true, peerName: opts.peerName ?? 'peer' },
       agora: { enabled: Boolean(agora) },
       kgNotifications: { enabled: opts.enableKgNotifications ?? true },
+      longTasks: { enabled: opts.enableLongTasks ?? true },
     },
   }
 }
