@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { ArtifactJob, ArtifactKind, ArtifactRef } from './artifact-types.js'
 import type { LongTaskEvent, LongTaskRecord } from './long-task.js'
 import type { PolicyEvent } from './provider-policy.js'
+import type { ChatResult } from './types.js'
 
 export const ANUP_PROTOCOL = 'anup'
 export const ANUP_VERSION = '0.1.0'
@@ -363,6 +364,178 @@ export function longTaskToAnupEnvelope(
   })
 }
 
+export function chatResultToAnupEnvelope(input: {
+  runId?: string
+  agentId: string
+  from: string
+  text: string
+  result: ChatResult
+  startedAt?: string
+  completedAt?: string
+}): AgentUIEnvelope {
+  const completedAt = input.completedAt ?? new Date().toISOString()
+  const blocks: AgentUIBlock[] = [
+    {
+      type: 'task_contract',
+      id: 'chat:contract',
+      title: 'Chat request',
+      goal: input.text,
+      inputs: [`from:${input.from}`, 'POST /chat or /chat/stream'],
+      success_criteria: ['Return a response to the user', 'Record visible action trace', 'Surface high-risk actions as approval review blocks'],
+      constraints: ['Do not expose raw chain-of-thought', 'Store response as artifact reference text', 'Keep media as refs'],
+    },
+    {
+      type: 'agent_state',
+      id: 'chat:state',
+      phase: 'completed',
+      status: 'done',
+      current_step: 'Chat completed',
+      completed_steps: [
+        `${input.result.actions.length} action(s) observed`,
+        `${input.result.duration}ms duration`,
+        `quality ${input.result.quality}`,
+      ],
+      next_steps: input.result.actions.some(action => riskLevelForActionType(action) === 'high')
+        ? ['Review high-risk action blocks']
+        : ['Continue conversation'],
+      confidence: 0.9,
+    },
+    {
+      type: 'tool_trace',
+      id: 'chat:trace',
+      events: input.result.actions.map((action, index) => ({
+        time: completedAt,
+        tool: action,
+        input_summary: `${action} action from chat run`,
+        status: 'success',
+        metadata: { index },
+      })),
+    },
+    {
+      type: 'artifact',
+      id: 'chat:response',
+      artifact_type: 'report',
+      title: 'Akari response',
+      format: 'markdown',
+      content_ref: `anup://response/${input.runId ?? 'chat'}`,
+      summary: input.result.response.slice(0, 800),
+      metadata: { sessionId: input.result.sessionId, mode: input.result.meta?.mode },
+    },
+  ]
+
+  for (const action of input.result.actions) {
+    const risk = riskLevelForActionType(action)
+    if (risk === 'high' || risk === 'critical') {
+      blocks.push({
+        type: 'approval_request',
+        id: `chat:approval:${action}`,
+        title: `Review high-risk action: ${action}`,
+        action: {
+          kind: actionTypeToApprovalKind(action),
+          target: action,
+          description: `The chat run executed or attempted a high-risk ${action} action. Review before repeating or automating similar actions.`,
+        },
+        risk_level: risk,
+        requires_confirmation: true,
+        available_actions: [
+          { id: 'approve', label: 'Approve future similar action' },
+          { id: 'reject', label: 'Reject future similar action' },
+          { id: 'modify', label: 'Modify policy' },
+        ],
+      })
+    }
+  }
+
+  return createAgentUIEnvelope({
+    runId: input.runId ?? createRunId('chat'),
+    agentId: input.agentId,
+    blocks,
+    metadata: {
+      projection: 'chat',
+      from: input.from,
+      startedAt: input.startedAt,
+      completedAt,
+      sessionId: input.result.sessionId,
+    },
+  })
+}
+
+export function createDemoAnupEnvelope(agentId: string): AgentUIEnvelope {
+  return createAgentUIEnvelope({
+    runId: createRunId('demo'),
+    agentId,
+    blocks: [
+      {
+        type: 'task_contract',
+        id: 'demo:contract',
+        title: 'Demo agent task',
+        goal: 'Show how Akari communicates state, risk, trace, and multimodal refs to a human.',
+        inputs: ['demo seed', 'runtime capabilities', 'human approval policy'],
+        success_criteria: ['Render decision card', 'Render approval request', 'Render media ref', 'Render tool trace'],
+        constraints: ['No raw HTML from agent', 'Media is referenced, not embedded as executable UI'],
+      },
+      {
+        type: 'agent_state',
+        id: 'demo:state',
+        phase: 'waiting_approval',
+        status: 'blocked',
+        current_step: 'Waiting for human decision on provider/artifact policy.',
+        completed_steps: ['Loaded runtime capabilities', 'Prepared provider route options'],
+        next_steps: ['Approve route', 'Generate artifact', 'Review result'],
+        confidence: 0.82,
+      },
+      {
+        type: 'decision_card',
+        id: 'demo:decision',
+        title: 'How should multimodal output be handled?',
+        summary: 'Use artifact provider extension for generated image/audio, and keep the LLM provider focused on reasoning.',
+        options: [
+          { id: 'llm-only', label: 'Ask text LLM to describe output only', pros: ['No extra provider'], cons: ['No real media output'], risk: 'low', impact: 'low' },
+          { id: 'artifact-provider', label: 'Route media output to artifact provider', pros: ['Real output', 'Provider-specific capability checks'], cons: ['Needs cloud policy approval'], risk: 'medium', impact: 'high', recommended: true },
+          { id: 'free-html', label: 'Let agent generate full HTML', pros: ['Flexible'], cons: ['Unsafe and inconsistent'], risk: 'high', impact: 'medium' },
+        ],
+        rationale: ['Provider capability routing is deterministic', 'Artifact jobs are traceable', 'Human UI renders schema blocks safely'],
+      },
+      {
+        type: 'approval_request',
+        id: 'demo:approval',
+        title: 'Allow artifact provider for this run?',
+        action: {
+          kind: 'artifact_generate',
+          target: 'openai-artifacts:image',
+          description: 'Generate image/audio via artifact provider when policy and credentials allow it.',
+        },
+        risk_level: 'medium',
+        requires_confirmation: true,
+        available_actions: [
+          { id: 'approve', label: 'Approve' },
+          { id: 'reject', label: 'Reject' },
+          { id: 'modify', label: 'Modify' },
+        ],
+      },
+      {
+        type: 'tool_trace',
+        id: 'demo:trace',
+        events: [
+          { time: new Date().toISOString(), tool: 'provider.route', input_summary: 'Check image output support', status: 'success' },
+          { time: new Date().toISOString(), tool: 'artifact.policy', input_summary: 'Check artifact cloud policy', status: 'started' },
+        ],
+      },
+      {
+        type: 'media_ref',
+        id: 'demo:media',
+        title: 'Example image ref',
+        source: 'artifact',
+        kind: 'image',
+        media_type: 'image/svg+xml',
+        uri: 'data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22640%22%20height=%22360%22%3E%3Crect%20width=%22640%22%20height=%22360%22%20fill=%22%23146b5d%22/%3E%3Ctext%20x=%2232%22%20y=%22192%22%20font-size=%2232%22%20font-family=%22sans-serif%22%20fill=%22white%22%3EANUP%20media_ref%3C/text%3E%3C/svg%3E',
+        label: 'ANUP demo media',
+      },
+    ],
+    metadata: { projection: 'demo' },
+  })
+}
+
 export function artifactJobToAnupBlocks(job: ArtifactJob): AgentUIBlock[] {
   const mediaRefs = artifactJobToMediaRefBlocks(job)
   return [
@@ -526,6 +699,20 @@ function artifactKindToFormat(kind: ArtifactKind): ArtifactBlock['format'] {
 function artifactKindToMediaKind(kind: ArtifactKind): MediaRefBlock['kind'] {
   if (kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'file') return kind
   return 'file'
+}
+
+function riskLevelForActionType(actionType: string): RiskLevel {
+  if (actionType === 'shell' || actionType === 'edit' || actionType === 'git' || actionType === 'deploy') return 'high'
+  if (actionType === 'write' || actionType === 'append' || actionType === 'worktree') return 'medium'
+  return 'low'
+}
+
+function actionTypeToApprovalKind(actionType: string): ApprovalRequestBlock['action']['kind'] {
+  if (actionType === 'write') return 'create_file'
+  if (actionType === 'edit') return 'modify_file'
+  if (actionType === 'shell' || actionType === 'git') return 'run_command'
+  if (actionType === 'deploy') return 'deploy'
+  return 'provider_call'
 }
 
 function browserSafeArtifactUri(ref: ArtifactRef, jobId: string, index: number): string {

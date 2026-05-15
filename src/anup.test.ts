@@ -4,7 +4,9 @@ import {
   assertAgentUIBlock,
   artifactJobToAnupBlocks,
   buildAnupOverview,
+  chatResultToAnupEnvelope,
   createAgentUIEnvelope,
+  createDemoAnupEnvelope,
   longTaskToAnupEnvelope,
   type AgentUIBlock,
 } from './anup.js'
@@ -108,5 +110,32 @@ describe('ANUP', () => {
 
     assert.equal(envelope.protocol, 'anup')
     assert.equal(envelope.blocks.length, 1)
+  })
+
+  it('projects chat results into response artifacts and high-risk approvals', () => {
+    const envelope = chatResultToAnupEnvelope({
+      agentId: 'akari',
+      from: 'web',
+      text: 'run a command',
+      result: {
+        response: 'done',
+        thought: 'hidden',
+        actions: ['respond', 'shell'],
+        duration: 25,
+        quality: 3,
+        meta: { mode: 'execution', filesRead: [], filesWritten: [], toolsUsed: ['shell'], hypotheses: 0, contextChars: 10 },
+      },
+    })
+
+    assert.ok(envelope.blocks.some(block => block.type === 'artifact'))
+    assert.ok(envelope.blocks.some(block => block.type === 'approval_request'))
+  })
+
+  it('creates demo runs with decision, approval, trace, and media blocks', () => {
+    const envelope = createDemoAnupEnvelope('akari')
+    assert.ok(envelope.blocks.some(block => block.type === 'decision_card'))
+    assert.ok(envelope.blocks.some(block => block.type === 'approval_request'))
+    assert.ok(envelope.blocks.some(block => block.type === 'tool_trace'))
+    assert.ok(envelope.blocks.some(block => block.type === 'media_ref'))
   })
 })

@@ -236,6 +236,30 @@ full `createAgentRuntimePreset()` composition, so an agent can override one laye
 forking the whole preset. `createGenerationIO()` is the common model/artifact generation seam
 for future multimodal workflows.
 
+Use `supportsModelRequest()` and `routeModelRequest()` to choose a model provider by declared
+multimodal capabilities. The router checks prompt blocks (`text`, `media`, `stream`, `ref`)
+and requested output/streaming capabilities before selecting a provider, so apps can prefer
+Gemini/OpenAI/Anthropic for image/audio/file tasks while keeping text-only providers as safe
+fallbacks.
+
+### Agent Native UI Protocol
+
+Tanren exposes an Agent Native UI Protocol (ANUP) for human-readable agent workbenches:
+
+- `GET /workbench` / `GET /chat-ui` — browser chat plus ANUP state panel.
+- `GET /anup/overview` — project runtime capabilities, tasks, artifacts, and policy events.
+- `GET /anup/tasks/:taskId` — project one long task into task/state/trace/result blocks.
+- `GET /anup/runs` / `GET /anup/runs/:runId` — read persisted ANUP runs.
+- `POST /anup/runs` / `POST /anup/runs/:runId/blocks` — persist agent UI blocks.
+- `POST /anup/runs/:runId/actions` — record structured human approvals or modifications.
+- `GET /anup/approvals` — list pending approval blocks.
+- `POST /demo/anup` — seed a demo decision/approval/trace/media run.
+
+`/chat` and `/chat/stream` automatically persist a chat ANUP run after completion. The run
+contains a task contract, agent state, tool trace, response artifact, and approval review blocks
+for high-risk actions such as `shell`, `edit`, and `git`. This makes browser workbench sessions
+observable and replayable without exposing raw chain-of-thought.
+
 ### Resumable Long Tasks
 
 Tanren can turn large review/research/implementation work into persisted DAG jobs instead of

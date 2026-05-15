@@ -260,11 +260,54 @@ describe('serve', () => {
 
       const workbenchResponse = await fetch(`http://127.0.0.1:${port}/workbench`)
       assert.equal(workbenchResponse.headers.get('content-type')?.startsWith('text/html'), true)
-      assert.match(await workbenchResponse.text(), /Tanren Agent Workbench/)
+      assert.match(await workbenchResponse.text(), /Agent Workbench/)
+
+      const chatUiResponse = await fetch(`http://127.0.0.1:${port}/chat-ui`)
+      assert.equal(chatUiResponse.headers.get('content-type')?.startsWith('text/html'), true)
+      assert.match(await chatUiResponse.text(), /Talk To Akari/)
+
+      const demoResponse = await fetch(`http://127.0.0.1:${port}/demo/anup`, { method: 'POST' })
+      const demo = await demoResponse.json() as { run_id: string; blocks: Array<{ type: string }> }
+      assert.equal(demoResponse.status, 201)
+      assert.ok(demo.blocks.some(block => block.type === 'decision_card'))
+      assert.ok(demo.blocks.some(block => block.type === 'media_ref'))
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))
       longTasks.dispose()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('persists ANUP chat runs from /chat', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-chat-anup-'))
+    const handle = serve(createChatAgent(), {
+      port: 0,
+      serviceName: 'test-agent',
+      memoryDir: dir,
+    })
+
+    try {
+      await once(handle.server, 'listening')
+      const address = handle.server.address()
+      assert.ok(address && typeof address === 'object')
+      const port = (address as AddressInfo).port
+
+      const chatResponse = await fetch(`http://127.0.0.1:${port}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: 'test', text: 'hello' }),
+      })
+      assert.equal(chatResponse.status, 200)
+
+      const runsResponse = await fetch(`http://127.0.0.1:${port}/anup/runs`)
+      const runs = await runsResponse.json() as { runs: Array<{ run_id: string; blocks: Array<{ type: string }> }> }
+      assert.equal(runs.runs.length, 1)
+      assert.ok(runs.runs[0]?.blocks.some(block => block.type === 'tool_trace'))
+      assert.ok(runs.runs[0]?.blocks.some(block => block.type === 'approval_request'))
+    } finally {
+      handle.server.closeAllConnections()
+      await new Promise<void>(resolve => handle.server.close(() => resolve()))
       rmSync(dir, { recursive: true, force: true })
     }
   })
@@ -276,6 +319,40 @@ function createFakeAgent(): TanrenAgent {
     async tick() { throw new Error('not used') },
     async chat() { throw new Error('not used') },
     async runChain() { throw new Error('not used') },
+    start() {},
+    stop() {},
+    isRunning() { return false },
+    getRecentTicks() { return [] },
+    setSessionId(id) { sessionId = id },
+    getSessionId() { return sessionId },
+  }
+}
+
+function createChatAgent(): TanrenAgent {
+  let sessionId: string | null = null
+  return {
+    async tick() { throw new Error('not used') },
+    async chat() { throw new Error('not used') },
+    async runChain() {
+      return [{
+        perception: 'message',
+        thought: '<action:respond>hello</action:respond><action:shell>echo high</action:shell>',
+        actions: [
+          { type: 'respond', content: 'hello', raw: '<action:respond>hello</action:respond>' },
+          { type: 'shell', content: 'echo high', raw: '<action:shell>echo high</action:shell>' },
+        ],
+        observation: {
+          outputExists: true,
+          outputQuality: 3,
+          confidenceCalibration: 0,
+          actionsExecuted: 2,
+          actionsFailed: 0,
+          duration: 12,
+        },
+        timestamp: Date.now(),
+        gateResults: [],
+      }]
+    },
     start() {},
     stop() {},
     isRunning() { return false },

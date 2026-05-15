@@ -33,6 +33,16 @@ export interface GenerationIO {
   generate(request: GenerationRequest): Promise<GenerationResponse>
 }
 
+export interface ModelRouteRequirement {
+  output?: Partial<ProviderCapabilities['output']>
+  streaming?: Partial<ProviderCapabilities['streaming']>
+}
+
+export interface ModelRouteDecision {
+  selected?: ModelIO
+  rejected: Array<{ name: string; reason: string }>
+}
+
 export function createGenerationIO(opts: { name: string; model?: ModelIO; artifactProvider?: ArtifactProvider }): GenerationIO {
   return {
     name: opts.name,
@@ -94,4 +104,46 @@ export async function collectStream(stream: AsyncIterable<StreamChunk>): Promise
   }
 
   return { text, outputs: outputs.length ? outputs : undefined, metadata }
+}
+
+export function supportsModelRequest(model: ModelIO, request: ModelRequest, requirement: ModelRouteRequirement = {}): { ok: boolean; reason: string } {
+  const prompt = Array.isArray(request.prompt) ? request.prompt : [{ type: 'text' as const, text: request.prompt }]
+  for (const block of prompt) {
+    if (block.type === 'text' && !model.capabilities.input.text) return { ok: false, reason: 'text input unsupported' }
+    if (block.type === 'media') {
+      if (block.mediaType.startsWith('image/') && !model.capabilities.input.image) return { ok: false, reason: 'image input unsupported' }
+      if (block.mediaType.startsWith('audio/') && !model.capabilities.input.audio) return { ok: false, reason: 'audio input unsupported' }
+      if (block.mediaType === 'application/pdf' && !model.capabilities.input.pdf) return { ok: false, reason: 'pdf input unsupported' }
+      if (!block.mediaType.startsWith('image/') && !block.mediaType.startsWith('audio/') && block.mediaType !== 'application/pdf' && !model.capabilities.input.file) {
+        return { ok: false, reason: 'file input unsupported' }
+      }
+      if (block.source.type === 'url' && !model.capabilities.input.url) return { ok: false, reason: 'url input unsupported' }
+      if (block.source.type === 'file' && !model.capabilities.input.file) return { ok: false, reason: 'file input unsupported' }
+    }
+    if (block.type === 'stream' && !model.capabilities.input.streamRef) return { ok: false, reason: 'stream input unsupported' }
+    if (block.type === 'ref') {
+      if (block.mediaType?.startsWith('image/') && !model.capabilities.input.image) return { ok: false, reason: 'image ref unsupported' }
+      if (block.mediaType?.startsWith('audio/') && !model.capabilities.input.audio) return { ok: false, reason: 'audio ref unsupported' }
+      if (!model.capabilities.input.url && !model.capabilities.input.file) return { ok: false, reason: 'ref input unsupported' }
+    }
+  }
+
+  for (const [key, required] of Object.entries(requirement.output ?? {}) as Array<[keyof ProviderCapabilities['output'], boolean | undefined]>) {
+    if (required && !model.capabilities.output[key]) return { ok: false, reason: `${key} output unsupported` }
+  }
+  for (const [key, required] of Object.entries(requirement.streaming ?? {}) as Array<[keyof ProviderCapabilities['streaming'], boolean | undefined]>) {
+    if (required && !model.capabilities.streaming[key]) return { ok: false, reason: `${key} streaming unsupported` }
+  }
+
+  return { ok: true, reason: 'supported' }
+}
+
+export function routeModelRequest(models: ModelIO[], request: ModelRequest, requirement: ModelRouteRequirement = {}): ModelRouteDecision {
+  const rejected: ModelRouteDecision['rejected'] = []
+  for (const model of models) {
+    const decision = supportsModelRequest(model, request, requirement)
+    if (decision.ok) return { selected: model, rejected }
+    rejected.push({ name: model.name, reason: decision.reason })
+  }
+  return { rejected }
 }

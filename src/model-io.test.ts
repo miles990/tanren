@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { collectStream, createGenerationIO, createModelIO } from './model-io.js'
-import { TEXT_ONLY_CAPABILITIES } from './provider-capabilities.js'
+import { collectStream, createGenerationIO, createModelIO, routeModelRequest, supportsModelRequest } from './model-io.js'
+import { GEMINI_CAPABILITIES, TEXT_ONLY_CAPABILITIES } from './provider-capabilities.js'
 import type { LLMProvider } from './types.js'
 
 describe('ModelIO', () => {
@@ -55,5 +55,21 @@ describe('ModelIO', () => {
     })
     assert.equal((await generation.generate({ modality: 'model', request: { prompt: 'x' } })).modality, 'model')
     assert.equal((await generation.generate({ modality: 'artifact', request: { type: 'image', prompt: 'x' } })).modality, 'artifact')
+  })
+
+  it('routes model requests by multimodal capabilities', () => {
+    const text = createModelIO('text', { capabilities: TEXT_ONLY_CAPABILITIES, async think() { return 'text' } })
+    const gemini = createModelIO('gemini', { capabilities: GEMINI_CAPABILITIES, async think() { return 'multi' } })
+    const request = {
+      prompt: [
+        { type: 'text' as const, text: 'describe this' },
+        { type: 'media' as const, mediaType: 'image/png', source: { type: 'url' as const, url: 'https://example.test/a.png' } },
+      ],
+    }
+
+    assert.equal(supportsModelRequest(text, request).ok, false)
+    const routed = routeModelRequest([text, gemini], request, { output: { structured: true } })
+    assert.equal(routed.selected?.name, 'gemini')
+    assert.equal(routed.rejected[0]?.reason, 'image input unsupported')
   })
 })

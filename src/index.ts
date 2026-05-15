@@ -185,7 +185,7 @@ export { createManagedAgentProvider, type ManagedAgentProviderOptions } from './
 export { createProvider, createProviderFromEnv, listProviders, readScopedEnv, registerProviderFactory, type BuiltinProviderKey, type ProviderConfig, type ProviderFactory, type ProviderFactoryContext, type ProviderKey, type ProviderSelection, type ProviderFromEnvOptions } from './provider-registry.js'
 export { decideProviderUse, readPolicyEvents, writePolicyEvent, type ProviderPolicy, type ProviderPolicyDecision, type PolicyEvent, type TaskRisk } from './provider-policy.js'
 export { promptToText, toAnthropic, toOpenAI, toGemini, extractOpenAIOutputs, extractAnthropicOutputs, extractGeminiOutputs } from './content-adapter.js'
-export { createGenerationIO, createModelIO, collectStream, type GenerationIO, type GenerationRequest, type GenerationResponse, type ModelIO, type ModelRequest, type ModelResponse } from './model-io.js'
+export { createGenerationIO, createModelIO, collectStream, routeModelRequest, supportsModelRequest, type GenerationIO, type GenerationRequest, type GenerationResponse, type ModelIO, type ModelRequest, type ModelResponse, type ModelRouteDecision, type ModelRouteRequirement } from './model-io.js'
 export { TEXT_ONLY_CAPABILITIES, ANTHROPIC_CAPABILITIES, OPENAI_COMPAT_CAPABILITIES, GEMINI_CAPABILITIES, MANAGED_AGENT_CAPABILITIES, AGENT_SDK_CAPABILITIES } from './provider-capabilities.js'
 export {
   FileArtifactStore,
@@ -273,7 +273,9 @@ export {
   artifactRefToMediaRefBlock,
   buildAnupOverview,
   capabilitiesToContextSummary,
+  chatResultToAnupEnvelope,
   createAgentUIEnvelope,
+  createDemoAnupEnvelope,
   createRunId,
   longTaskToAnupEnvelope,
   policyEventsToConstraintPanel,

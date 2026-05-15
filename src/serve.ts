@@ -26,6 +26,7 @@ import { handleLongTaskHttpRoute } from './long-task-http.js'
 import type { LongTaskController } from './long-task.js'
 import { handleAnupHttpRoute } from './anup-http.js'
 import { getAnupWorkbenchHtml } from './anup-workbench.js'
+import { FileAgentUIStore, chatResultToAnupEnvelope } from './anup.js'
 
 const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000
 const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000
@@ -246,6 +247,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   const port = options.port ?? parseInt(process.env.PORT ?? '3000', 10)
   const serviceName = options.serviceName ?? 'tanren-agent'
   const memoryDir = options.memoryDir ?? './memory'
+  const anupStore = new FileAgentUIStore(join(memoryDir, 'state', 'anup'))
   let tickCount = 0
   let errorCount = 0
   const startTime = Date.now()
@@ -311,7 +313,14 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     return { ...chatResult, tick: tickCount, chainTicks: results.length, ...(resultSessionId ? { sessionId: resultSessionId } : {}) }
   }
 
-  async function handleChatStream(poolEntry: PoolEntry, from: string, text: string, res: ServerResponse, sessionId?: string): Promise<void> {
+  async function handleChatStream(
+    poolEntry: PoolEntry,
+    from: string,
+    text: string,
+    res: ServerResponse,
+    sessionId?: string,
+    onResult?: (result: ChatResult & { chainTicks: number; sessionId?: string }) => void,
+  ): Promise<void> {
     const ag = poolEntry.agent
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -354,6 +363,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       const resultSessionId = ag.getSessionId() ?? undefined
       if (options.onAfterChat) await options.onAfterChat(chatResult)
       recordTick(tickCount, Date.now() - start, chatResult.actions ?? [], chatResult.meta?.mode ?? 'unknown')
+      onResult?.({ ...chatResult, ...(resultSessionId ? { sessionId: resultSessionId } : {}) })
       sse('result', { response: chatResult.response, chainTicks: chatResult.chainTicks, ...(resultSessionId ? { sessionId: resultSessionId } : {}) })
       sse('done', { tick: tickCount, chainTicks: results.length, duration: Date.now() - start, actions: chatResult.actions })
     } catch (err) {
@@ -426,7 +436,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         json(res, 200, status)
       } catch { json(res, 200, { phase: 'unknown' }) }
 
-    } else if (url.pathname === '/workbench' && req.method === 'GET') {
+    } else if ((url.pathname === '/workbench' || url.pathname === '/chat-ui') && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
       res.end(getAnupWorkbenchHtml())
 
@@ -464,6 +474,15 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       try {
         const result = await handleChat(poolEntry, from, text, parsed.sessionId)
         recordTick(tickCount, Date.now() - tickStart, result.actions ?? [], result.meta?.mode ?? 'unknown')
+        const run = chatResultToAnupEnvelope({
+          agentId: serviceName,
+          from,
+          text,
+          result,
+          startedAt: new Date(tickStart).toISOString(),
+        })
+        anupStore.put(run)
+        anupStore.appendEvent({ event: 'run.started', run_id: run.run_id, timestamp: run.timestamp })
         json(res, 200, result)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -492,7 +511,18 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       }
 
       try {
-        await handleChatStream(poolEntry, from, text, res, parsed.sessionId)
+        const streamStart = Date.now()
+        await handleChatStream(poolEntry, from, text, res, parsed.sessionId, (result) => {
+          const run = chatResultToAnupEnvelope({
+            agentId: serviceName,
+            from,
+            text,
+            result,
+            startedAt: new Date(streamStart).toISOString(),
+          })
+          anupStore.put(run)
+          anupStore.appendEvent({ event: 'run.started', run_id: run.run_id, timestamp: run.timestamp })
+        })
       } finally {
         pool.release(poolEntry)
       }
@@ -594,6 +624,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number', pool: '{ active, idle, total, max }' } },
           'GET /status': { description: 'Live agent status from working memory' },
           'GET /workbench': { description: 'Human-readable Agent Native UI Protocol workbench' },
+          'GET /chat-ui': { description: 'Browser chat UI with live ANUP workbench side panel' },
+          'POST /demo/anup': { description: 'Create a demo ANUP run with decision, approval, trace, and media_ref blocks' },
           'GET /anup/overview': { description: 'Project runtime tasks, artifacts, policy, and capabilities into ANUP blocks' },
           'GET /anup/tasks/:taskId': { description: 'Project one long task into ANUP task/state/trace/artifact blocks' },
           'GET /anup/runs': { description: 'List persisted ANUP runs' },

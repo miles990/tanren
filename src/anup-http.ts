@@ -6,6 +6,7 @@ import {
   FileAgentUIStore,
   buildAnupOverview,
   createAgentUIEnvelope,
+  createDemoAnupEnvelope,
   longTaskToAnupEnvelope,
   type AgentUIBlock,
   type AgentUIEnvelope,
@@ -29,6 +30,14 @@ export async function handleAnupHttpRoute(
 ): Promise<boolean> {
   const store = new FileAgentUIStore(join(opts.memoryDir, 'state', 'anup'))
   const agentId = opts.serviceName ?? 'tanren'
+
+  if (url.pathname === '/demo/anup' && req.method === 'POST') {
+    const run = createDemoAnupEnvelope(agentId)
+    store.put(run)
+    store.appendEvent({ event: 'run.started', run_id: run.run_id, timestamp: run.timestamp })
+    json(res, 201, run)
+    return true
+  }
 
   if (url.pathname === '/anup/overview' && req.method === 'GET') {
     try {
