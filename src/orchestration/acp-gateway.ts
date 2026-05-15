@@ -293,7 +293,6 @@ export class ACPGateway extends EventEmitter {
         }
       }
     }, cleanupIntervalMs);
-    this.cleanupTimer.unref?.();
   }
 
   /** Stop gateway */

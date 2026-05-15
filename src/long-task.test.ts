@@ -32,6 +32,7 @@ test('LongTaskController persists checkpoints and resumes from completed steps',
     await new Promise(resolve => setTimeout(resolve, 25))
   }
   assert.equal(controller.get(task.id)?.status, 'completed')
+  controller.dispose()
 })
 
 test('FileLongTaskStore lists records and events', () => {

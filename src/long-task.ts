@@ -161,12 +161,15 @@ export interface LongTaskControllerOptions extends WorkerRuntimeOptions {
 
 export class LongTaskController {
   readonly store: LongTaskStore
-  readonly runtime: WorkerRuntime
+  private runtimeInstance?: WorkerRuntime
   private active = new Map<string, PlanEngine>()
 
   constructor(private opts: LongTaskControllerOptions) {
     this.store = opts.store ?? new FileLongTaskStore(join(opts.memoryDir, 'tasks'))
-    this.runtime = createWorkerRuntime(opts)
+  }
+
+  get runtime(): WorkerRuntime {
+    return this.ensureRuntime()
   }
 
   list(filter: { status?: LongTaskStatus; limit?: number } = {}): LongTaskRecord[] {
@@ -187,6 +190,13 @@ export class LongTaskController {
     return readFileSync(record.resultPath, 'utf-8')
   }
 
+  dispose(): void {
+    this.active.forEach(engine => engine.cancelAll())
+    this.active.clear()
+    this.runtimeInstance?.acpGateway.stop()
+    this.runtimeInstance = undefined
+  }
+
   create(input: LongTaskCreateInput): LongTaskRecord {
     const plan = input.plan ?? createLongTaskPlan(input)
     const kind = input.kind ?? 'generic'
@@ -202,8 +212,9 @@ export class LongTaskController {
     if (this.active.has(id)) return
     if (record.status === 'completed') return
 
-    const engine = new PlanEngine(this.runtime.executeWorker, {
-      getWorkerTimeoutSeconds: workerName => this.runtime.allWorkers()[workerName]?.defaultTimeoutSeconds ?? 120,
+    const runtime = this.ensureRuntime()
+    const engine = new PlanEngine(runtime.executeWorker, {
+      getWorkerTimeoutSeconds: workerName => runtime.allWorkers()[workerName]?.defaultTimeoutSeconds ?? 120,
       onEvent: event => this.handlePlanEvent(id, event),
     })
     this.active.set(id, engine)
@@ -265,6 +276,11 @@ export class LongTaskController {
     const record = this.store.get(id)
     if (!record) return
     this.store.put({ ...record, ...patch, updatedAt: new Date().toISOString() })
+  }
+
+  private ensureRuntime(): WorkerRuntime {
+    this.runtimeInstance ??= createWorkerRuntime(this.opts)
+    return this.runtimeInstance
   }
 }
 
