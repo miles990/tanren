@@ -7,6 +7,7 @@ import {
   FileArtifactStore,
   createArtifactActions,
   createArtifactActionsFromEnv,
+  createArtifactRequestFromInput,
   createArtifactProviderFromEnv,
   createArtifactGraphExecutor,
   type ArtifactProvider,
@@ -77,8 +78,23 @@ describe('ArtifactIO', () => {
     }
     const actions = createArtifactActions({ providers: { fake: fakeProvider }, defaultProvider: 'fake' })
     assert.deepEqual(actions.map(a => a.type), ['artifact_generate', 'image_generate', 'audio_generate'])
-    const output = await actions[1].execute({ type: 'image_generate', content: '', raw: '', input: { prompt: 'x' } }, {} as never)
+    const output = await actions[1].execute({ type: 'image_generate', content: '', raw: '', input: { prompt: 'x', refs: ['/tmp/source.png'] } }, {} as never)
     assert.match(output, /"status": "completed"/)
+  })
+
+  it('normalizes artifact refs and prompt inputs from action input', () => {
+    const request = createArtifactRequestFromInput({
+      type: 'image',
+      prompt: 'variation',
+      refs: [
+        '/tmp/source.png',
+        { id: 'a1', uri: '/tmp/a1.png', kind: 'image', mediaType: 'image/png' },
+      ],
+      inputs: [{ type: 'text', text: 'style: ink' }],
+    })
+
+    assert.equal(request.inputs?.length, 3)
+    assert.deepEqual(request.inputs?.map(input => input.type), ['text', 'ref', 'ref'])
   })
 
   it('keeps env factory disabled when credentials are absent', () => {

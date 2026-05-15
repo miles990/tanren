@@ -5,7 +5,8 @@ import type { TanrenAgent } from './index.js'
 import { serve, type ServeOptions } from './serve.js'
 import type { PeerBridge } from './peer-bridge.js'
 import type { TanrenConfig } from './types.js'
-import { readScopedEnv } from './provider-registry.js'
+import { readScopedEnv, type ProviderSelection } from './provider-registry.js'
+import { decideProviderUse, type ProviderPolicy } from './provider-policy.js'
 
 export interface RuntimeCliOptions {
   agent: TanrenAgent
@@ -15,6 +16,8 @@ export interface RuntimeCliOptions {
   memoryDir: string
   messagesDir?: string
   providerName?: string
+  providerSelection?: Pick<ProviderSelection, 'providerKey' | 'cloud'>
+  providerPolicy?: ProviderPolicy
   env?: NodeJS.ProcessEnv
   serviceEnvPrefix?: string
   port?: number
@@ -65,6 +68,17 @@ export async function runAgentCli(opts: RuntimeCliOptions): Promise<void> {
     const autoIntervalArg = args[args.indexOf('--interval') + 1]
     const autoInterval = autoIntervalArg ? parseInt(autoIntervalArg, 10) : 300_000
     if (autonomous) {
+      if (opts.providerSelection && opts.providerPolicy) {
+        const decision = decideProviderUse(opts.providerSelection, {
+          policy: opts.providerPolicy,
+          autonomous: true,
+          stateDir: join(opts.memoryDir, 'state'),
+        })
+        if (!decision.allowed) {
+          console.error(`[${opts.serviceName}] Autonomous mode blocked by provider policy: ${decision.reason}`)
+          return
+        }
+      }
       console.log(`[${opts.serviceName}] Autonomous mode: tick every ${autoInterval / 1000}s when idle`)
       setInterval(async () => {
         const result = await handle.runExclusive(async () => {

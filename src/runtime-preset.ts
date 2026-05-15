@@ -9,6 +9,7 @@ import { createKgNotificationDiscussionPlugin } from './kg-collaboration.js'
 import { loadMcpServersFromConfig, type McpConfigSelection } from './mcp-config.js'
 import { createPeerBridge, type PeerBridge } from './peer-bridge.js'
 import { createProviderFromEnv, readScopedEnv, type ProviderSelection, type ProviderKey } from './provider-registry.js'
+import { decideProviderUse, wrapProviderWithPolicy, type ProviderPolicy, type ProviderPolicyDecision } from './provider-policy.js'
 import { createRoleContractPlugin } from './role-contract.js'
 import { readUsageSummary } from './env.js'
 import type { Gate } from './types.js'
@@ -35,6 +36,8 @@ export interface RuntimePresetOptions {
   mode?: string
   provider?: ProviderKey
   cloudFallbackEnabled?: boolean
+  providerPolicy?: ProviderPolicy
+  providerPolicyAutonomous?: boolean
   mcpConfigPath?: string
   mcpDefaultPath?: string
   kgUrl?: string
@@ -62,6 +65,8 @@ export interface RuntimePreset {
   mcpConfig: McpConfigSelection
   health: () => Record<string, unknown>
   capabilities: RuntimeCapabilities
+  providerPolicyDecision: ProviderPolicyDecision
+  providerPolicy?: ProviderPolicy
 }
 
 export interface RuntimeCapabilities {
@@ -123,6 +128,19 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     cloudFallbackEnabled,
     agentSdk: mcpConfig.mcpServers ? { mcpServers: mcpConfig.mcpServers, mcpToolNames: mcpConfig.mcpToolNames } : undefined,
   })
+  const providerPolicyDecision = decideProviderUse(providerSelection, {
+    policy: opts.providerPolicy,
+    autonomous: opts.providerPolicyAutonomous,
+    stateDir: join(memoryDir, 'state'),
+  })
+  const llm = opts.providerPolicy
+    ? wrapProviderWithPolicy(providerSelection.provider, {
+        selection: providerSelection,
+        policy: opts.providerPolicy,
+        autonomous: opts.providerPolicyAutonomous,
+        stateDir: join(memoryDir, 'state'),
+      })
+    : providerSelection.provider
   const artifactSelection = opts.enableArtifacts ?? true
     ? createArtifactProviderFromEnv({
         cwd: process.cwd(),
@@ -203,7 +221,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     skillsDir: opts.skillsDir,
     perceptionPlugins,
     actions: [...builtinActions, ...peerBridge.actions, ...(agora?.actions ?? []), ...artifactActions, ...(opts.extraActions ?? [])],
-    llm: providerSelection.provider,
+    llm,
     hooks: [
       ...peerBridge.hooks,
       createAutoVerifyHook(opts.verifyCommand ?? 'npx tsc --noEmit'),
@@ -230,12 +248,15 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     artifactSelection,
     mcpConfig,
     capabilities,
+    providerPolicyDecision,
+    providerPolicy: opts.providerPolicy,
     health: () => ({
       mode,
       provider: providerSelection.providerName,
       providerKey: providerSelection.providerKey,
       providerCloud: providerSelection.cloud,
       cloudFallbackEnabled: providerSelection.cloudFallbackEnabled,
+      providerPolicy: providerPolicyDecision,
       artifactProvider: artifactSelection.defaultProvider,
       artifactsEnabled: artifactSelection.enabled,
       ...capabilities,

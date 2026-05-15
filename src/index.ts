@@ -194,6 +194,7 @@ export {
   createArtifactActions,
   createArtifactProviderFromEnv,
   createArtifactActionsFromEnv,
+  createArtifactRequestFromInput,
   type ArtifactKind,
   type ArtifactStatus,
   type ArtifactRef,

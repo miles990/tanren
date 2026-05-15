@@ -60,9 +60,11 @@ export interface ArtifactJob {
 
 export type ArtifactEvent =
   | { type: 'job.started'; job: ArtifactJob }
+  | { type: 'job.running'; job: ArtifactJob }
   | { type: 'artifact.partial'; jobId: string; artifact: ArtifactRef; index?: number }
   | { type: 'artifact.completed'; job: ArtifactJob }
   | { type: 'job.failed'; job: ArtifactJob; error: string }
+  | { type: 'job.cancelled'; job: ArtifactJob }
 
 export interface ArtifactCapabilities {
   kinds: ArtifactKind[]
@@ -175,6 +177,8 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
   const imageModel = opts.imageModel ?? 'gpt-image-1.5'
   const audioModel = opts.audioModel ?? 'gpt-4o-mini-tts'
   const jobs = new Map<string, ArtifactJob>()
+  const eventHistory = new Map<string, ArtifactEvent[]>()
+  const waiters = new Map<string, Array<(event: ArtifactEvent) => void>>()
 
   const provider: ArtifactProvider = {
     name: 'openai-artifacts',
@@ -190,8 +194,10 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
       if (!apiKey) throw new Error('OPENAI_API_KEY not set')
       const job = createJob(provider.name, request)
       jobs.set(job.id, job)
+      emit(job.id, { type: 'job.started', job: cloneJob(job) })
       job.status = 'running'
       job.updatedAt = new Date().toISOString()
+      emit(job.id, { type: 'job.running', job: cloneJob(job) })
       try {
         if (request.type === 'image') {
           job.artifacts = await generateOpenAIImage(request)
@@ -201,9 +207,14 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
           throw new Error(`OpenAI artifact provider does not support ${request.type}`)
         }
         job.status = 'completed'
+        job.artifacts.forEach((artifact, index) => {
+          emit(job.id, { type: 'artifact.partial', jobId: job.id, artifact, index })
+        })
+        emit(job.id, { type: 'artifact.completed', job: cloneJob(job) })
       } catch (err) {
         job.status = 'failed'
         job.error = err instanceof Error ? err.message : String(err)
+        emit(job.id, { type: 'job.failed', job: cloneJob(job), error: job.error })
       }
       job.updatedAt = new Date().toISOString()
       jobs.set(job.id, job)
@@ -215,15 +226,39 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
     },
 
     async *stream(jobId: string) {
-      const job = jobs.get(jobId)
-      if (!job) return
-      yield { type: 'job.started', job }
-      if (job.status === 'completed') {
-        yield { type: 'artifact.completed', job }
-      } else if (job.status === 'failed') {
-        yield { type: 'job.failed', job, error: job.error ?? 'failed' }
+      let seen = 0
+      for (const event of eventHistory.get(jobId) ?? []) {
+        seen++
+        yield event
+      }
+      while (true) {
+        const job = jobs.get(jobId)
+        if (!job || isTerminal(job.status)) return
+        const event = await waitForEvent(jobId)
+        const history = eventHistory.get(jobId) ?? []
+        for (const next of history.slice(seen)) {
+          seen++
+          yield next
+        }
+        if (isTerminalEvent(event)) return
       }
     },
+  }
+
+  function emit(jobId: string, event: ArtifactEvent) {
+    const history = eventHistory.get(jobId) ?? []
+    history.push(event)
+    eventHistory.set(jobId, history)
+    for (const resolve of waiters.get(jobId) ?? []) resolve(event)
+    waiters.delete(jobId)
+  }
+
+  function waitForEvent(jobId: string): Promise<ArtifactEvent> {
+    return new Promise(resolve => {
+      const list = waiters.get(jobId) ?? []
+      list.push(resolve)
+      waiters.set(jobId, list)
+    })
   }
 
   async function generateOpenAIImage(request: ArtifactRequest): Promise<ArtifactRef[]> {
@@ -337,17 +372,7 @@ export function createArtifactActions(opts: { providers: Record<string, Artifact
     const providerName = String(input.provider ?? defaultProvider)
     const provider = opts.providers[providerName]
     if (!provider) throw new Error(`Unknown artifact provider: ${providerName}`)
-    const request: ArtifactRequest = {
-      type: String(input.type ?? input.kind ?? 'image') as ArtifactKind,
-      prompt: String(input.prompt ?? input.content ?? ''),
-      options: (input.options as ArtifactRequest['options']) ?? {
-        model: input.model as string | undefined,
-        format: input.format as string | undefined,
-        size: input.size as string | undefined,
-        quality: input.quality as string | undefined,
-        voice: input.voice as string | undefined,
-      },
-    }
+    const request = createArtifactRequestFromInput(input)
     const job = await provider.submit(request)
     return JSON.stringify(job, null, 2)
   }
@@ -366,6 +391,8 @@ export function createArtifactActions(opts: { providers: Record<string, Artifact
           size: { type: 'string', description: 'Image/video size' },
           quality: { type: 'string', description: 'Output quality' },
           voice: { type: 'string', description: 'Audio voice' },
+          refs: { type: 'array', description: 'Input artifact refs or URIs to pass to the provider' },
+          inputs: { type: 'array', description: 'Prompt content blocks used as multimodal inputs' },
         },
         required: ['type', 'prompt'],
       },
@@ -382,6 +409,8 @@ export function createArtifactActions(opts: { providers: Record<string, Artifact
           format: { type: 'string', description: 'png, jpeg, webp' },
           size: { type: 'string', description: 'Image size' },
           quality: { type: 'string', description: 'low, medium, high' },
+          refs: { type: 'array', description: 'Input image artifact refs or URIs for edit/variation workflows' },
+          inputs: { type: 'array', description: 'Prompt content blocks used as multimodal inputs' },
         },
         required: ['prompt'],
       },
@@ -397,12 +426,30 @@ export function createArtifactActions(opts: { providers: Record<string, Artifact
           model: { type: 'string', description: 'Audio model override' },
           format: { type: 'string', description: 'mp3, wav, opus' },
           voice: { type: 'string', description: 'Voice name' },
+          refs: { type: 'array', description: 'Input audio/file artifact refs or URIs for transformation workflows' },
+          inputs: { type: 'array', description: 'Prompt content blocks used as multimodal inputs' },
         },
         required: ['prompt'],
       },
       async execute(action) { return executeGenerate({ ...(action.input ?? { prompt: action.content }), type: 'audio' }) },
     },
   ]
+}
+
+export function createArtifactRequestFromInput(input: Record<string, unknown>): ArtifactRequest {
+  return {
+    type: String(input.type ?? input.kind ?? 'image') as ArtifactKind,
+    prompt: String(input.prompt ?? input.content ?? ''),
+    inputs: normalizeArtifactInputs(input),
+    options: (input.options as ArtifactRequest['options']) ?? {
+      model: input.model as string | undefined,
+      format: input.format as string | undefined,
+      size: input.size as string | undefined,
+      quality: input.quality as string | undefined,
+      voice: input.voice as string | undefined,
+    },
+    metadata: (input.metadata as Record<string, unknown> | undefined),
+  }
 }
 
 export function createArtifactProviderFromEnv(opts: ArtifactProviderFromEnvOptions = {}): ArtifactProviderSelection {
@@ -453,6 +500,53 @@ function failedJob(node: ArtifactGraphNode, error: string): ArtifactJob {
 
 function artifactToPromptBlock(ref: ArtifactRef): PromptContentBlock {
   return { type: 'ref', uri: ref.uri, mediaType: ref.mediaType, label: ref.label }
+}
+
+function normalizeArtifactInputs(input: Record<string, unknown>): PromptContentBlock[] | undefined {
+  const blocks: PromptContentBlock[] = []
+  if (Array.isArray(input.inputs)) {
+    for (const item of input.inputs) {
+      if (isPromptBlock(item)) blocks.push(item)
+      else if (typeof item === 'string') blocks.push({ type: 'ref', uri: item })
+    }
+  }
+  for (const item of normalizeRefList(input.refs ?? input.ref ?? input.sourceArtifactIds)) {
+    blocks.push(typeof item === 'string' ? { type: 'ref', uri: item } : artifactToPromptBlock(item))
+  }
+  return blocks.length ? blocks : undefined
+}
+
+function normalizeRefList(value: unknown): Array<string | ArtifactRef> {
+  if (!value) return []
+  const raw = Array.isArray(value) ? value : [value]
+  const refs: Array<string | ArtifactRef> = []
+  for (const item of raw) {
+    if (typeof item === 'string' || isArtifactRef(item)) refs.push(item)
+  }
+  return refs
+}
+
+function isArtifactRef(value: unknown): value is ArtifactRef {
+  return !!value && typeof value === 'object'
+    && typeof (value as ArtifactRef).uri === 'string'
+    && typeof (value as ArtifactRef).kind === 'string'
+    && typeof (value as ArtifactRef).mediaType === 'string'
+}
+
+function isPromptBlock(value: unknown): value is PromptContentBlock {
+  return !!value && typeof value === 'object' && typeof (value as PromptContentBlock).type === 'string'
+}
+
+function cloneJob(job: ArtifactJob): ArtifactJob {
+  return { ...job, artifacts: [...job.artifacts] }
+}
+
+function isTerminal(status: ArtifactStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
+}
+
+function isTerminalEvent(event: ArtifactEvent): boolean {
+  return event.type === 'artifact.completed' || event.type === 'job.failed' || event.type === 'job.cancelled'
 }
 
 function extensionForMediaType(mediaType: string): string {

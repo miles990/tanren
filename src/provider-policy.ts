@@ -9,6 +9,15 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ProviderKey, ProviderSelection } from './provider-registry.js'
+import type {
+  ConversationMessage,
+  LLMProvider,
+  Prompt,
+  SessionAwareLLMProvider,
+  StreamChunk,
+  ToolDefinition,
+  ToolUseLLMProvider,
+} from './types.js'
 
 export type TaskRisk = 'safe' | 'moderate' | 'dangerous'
 
@@ -22,6 +31,14 @@ export interface ProviderPolicy {
 export interface ProviderPolicyDecision {
   allowed: boolean
   reason: string
+}
+
+export interface ProviderPolicyGuardOptions {
+  selection: Pick<ProviderSelection, 'providerKey' | 'cloud'>
+  policy?: ProviderPolicy
+  stateDir?: string
+  autonomous?: boolean
+  risk?: TaskRisk
 }
 
 export function decideProviderUse(
@@ -53,6 +70,67 @@ export function decideProviderUse(
   }
 
   return { allowed: true, reason: 'policy allowed' }
+}
+
+export function wrapProviderWithPolicy(provider: LLMProvider, opts: ProviderPolicyGuardOptions): LLMProvider {
+  const guard = () => {
+    const decision = decideProviderUse(opts.selection, {
+      policy: opts.policy,
+      autonomous: opts.autonomous,
+      stateDir: opts.stateDir,
+      risk: opts.risk,
+    })
+    if (!decision.allowed) throw new Error(`LLM provider blocked by policy: ${decision.reason}`)
+  }
+
+  const wrapped: LLMProvider = {
+    capabilities: provider.capabilities,
+    async think(context: string, systemPrompt: string) {
+      guard()
+      return provider.think(context, systemPrompt)
+    },
+  }
+
+  if (provider.thinkStructured) {
+    wrapped.thinkStructured = async (prompt: Prompt, systemPrompt: string) => {
+      guard()
+      return provider.thinkStructured!(prompt, systemPrompt)
+    }
+  }
+
+  if (provider.thinkStream) {
+    wrapped.thinkStream = async function* (prompt: Prompt, systemPrompt: string): AsyncIterable<StreamChunk> {
+      guard()
+      yield* provider.thinkStream!(prompt, systemPrompt)
+    }
+  }
+
+  if ('thinkWithTools' in provider) {
+    const toolUseProvider = wrapped as ToolUseLLMProvider
+    toolUseProvider.thinkWithTools = async (
+      messages: ConversationMessage[],
+      systemPrompt: string,
+      tools: ToolDefinition[],
+    ) => {
+      guard()
+      return (provider as ToolUseLLMProvider).thinkWithTools(messages, systemPrompt, tools)
+    }
+  }
+
+  if ('skipFeedbackLoop' in provider) {
+    Object.defineProperty(wrapped, 'skipFeedbackLoop', { value: (provider as SessionAwareLLMProvider).skipFeedbackLoop })
+  }
+
+  if ('getSessionId' in provider && 'setResumeSession' in provider) {
+    const sessionProvider = provider as SessionAwareLLMProvider
+    const wrappedSessionProvider = wrapped as SessionAwareLLMProvider
+    wrappedSessionProvider.getSessionId = () => sessionProvider.getSessionId()
+    wrappedSessionProvider.setResumeSession = (id: string | null) => {
+      sessionProvider.setResumeSession(id)
+    }
+  }
+
+  return wrapped
 }
 
 function readTodayCloudCalls(stateDir: string): number {

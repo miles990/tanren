@@ -193,8 +193,25 @@ Wrap any provider with `wrapProviderWithUsageLedger(provider, { stateDir, provid
 to persist `llm-usage.jsonl` and `llm-usage-summary.json` for cloud/token auditing.
 
 `createProviderFromEnv({ stateDir })` centralizes `LLM_PROVIDER`, local-vs-cloud fallback,
-Codex CLI, usage ledger wiring, and health metadata. `decideProviderUse()` can block cloud
-or autonomous cloud calls before tokens are spent.
+Codex CLI, usage ledger wiring, and health metadata. `decideProviderUse()` and
+`wrapProviderWithPolicy()` can block cloud or autonomous cloud calls before tokens are spent;
+`runAgentCli()` also refuses to start autonomous mode when policy disallows autonomous cloud.
+
+### Artifact Providers
+
+Artifact generation is a separate provider layer from text LLM routing. Runtime presets can
+enable `artifact_generate`, `image_generate`, and `audio_generate` actions through
+`createArtifactProviderFromEnv()`, while `/health.capabilities.artifacts` exposes the active
+artifact providers. Standard HTTP endpoints:
+
+- `POST /artifacts` — submit an artifact job and return its final job envelope.
+- `POST /artifacts/stream` — submit and receive SSE progress events.
+- `GET /artifacts/:jobId` — read a job by id.
+- `GET /artifacts/:jobId/stream` — replay or follow provider artifact events.
+
+Artifact action inputs accept `inputs` prompt blocks plus `refs`/`ref`/`sourceArtifactIds`, so
+provider extensions can reuse prior images, audio, files, or graph outputs without inventing a
+new action schema.
 
 ### Orchestration
 

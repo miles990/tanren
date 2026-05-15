@@ -20,6 +20,7 @@ import type { ChatResult, TickResult, Action, TanrenConfig } from './types.js'
 import type { TanrenAgent } from './index.js'
 import { createAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
+import { createArtifactRequestFromInput, type ArtifactProviderSelection, type ArtifactEvent, type ArtifactJob } from './artifact-io.js'
 
 const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000
 const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000
@@ -213,6 +214,8 @@ export interface ServeOptions {
   health?: () => Record<string, unknown>
   /** Declared runtime capabilities exposed under /health.capabilities. */
   capabilities?: unknown
+  /** Artifact providers exposed through /artifacts endpoints. */
+  artifacts?: ArtifactProviderSelection
 }
 
 export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
@@ -343,6 +346,25 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     res.end(JSON.stringify(data))
   }
 
+  const sse = (res: ServerResponse, event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+
+  const readJsonBody = async <T extends Record<string, unknown>>(req: IncomingMessage): Promise<T> => {
+    let body = ''
+    for await (const chunk of req) body += chunk
+    return JSON.parse(body) as T
+  }
+
+  const selectArtifactProvider = (providerName?: unknown) => {
+    const selection = options.artifacts
+    if (!selection?.enabled || !selection.defaultProvider) throw new Error('artifact provider disabled')
+    const name = String(providerName ?? selection.defaultProvider)
+    const provider = selection.providers[name]
+    if (!provider) throw new Error(`Unknown artifact provider: ${name}`)
+    return provider
+  }
+
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${port}`)
 
@@ -391,6 +413,69 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         const status = JSON.parse(readFileSync(statusPath, 'utf-8'))
         json(res, 200, status)
       } catch { json(res, 200, { phase: 'unknown' }) }
+
+    } else if (url.pathname === '/artifacts' && req.method === 'POST') {
+      try {
+        const parsed = await readJsonBody(req)
+        const provider = selectArtifactProvider(parsed.provider)
+        const job = await provider.submit(createArtifactRequestFromInput(parsed))
+        json(res, job.status === 'failed' ? 500 : 200, job)
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) })
+      }
+
+    } else if (url.pathname === '/artifacts/stream' && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      })
+      try {
+        const parsed = await readJsonBody(req)
+        const provider = selectArtifactProvider(parsed.provider)
+        sse(res, 'job.submitted', { provider: provider.name })
+        const job = await provider.submit(createArtifactRequestFromInput(parsed))
+        for (const [index, artifact] of job.artifacts.entries()) {
+          sse(res, 'artifact.partial', { jobId: job.id, artifact, index })
+        }
+        sse(res, job.status === 'failed' ? 'job.failed' : 'artifact.completed', job.status === 'failed' ? { job, error: job.error } : { job })
+        sse(res, 'done', { jobId: job.id, status: job.status })
+      } catch (err) {
+        sse(res, 'error', { error: err instanceof Error ? err.message : String(err) })
+      } finally {
+        res.end()
+      }
+
+    } else if (url.pathname.match(/^\/artifacts\/[^/]+$/) && req.method === 'GET') {
+      try {
+        const jobId = decodeURIComponent(url.pathname.split('/')[2] ?? '')
+        const provider = selectArtifactProvider(url.searchParams.get('provider') ?? undefined)
+        const job = await provider.get(jobId)
+        if (!job) { json(res, 404, { error: 'artifact job not found' }); return }
+        json(res, 200, job)
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) })
+      }
+
+    } else if (url.pathname.match(/^\/artifacts\/[^/]+\/stream$/) && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      })
+      try {
+        const jobId = decodeURIComponent(url.pathname.split('/')[2] ?? '')
+        const provider = selectArtifactProvider(url.searchParams.get('provider') ?? undefined)
+        const stream = provider.stream?.(jobId) ?? streamCompletedJob(await provider.get(jobId))
+        for await (const event of stream) sse(res, event.type, event)
+        sse(res, 'done', { jobId })
+      } catch (err) {
+        sse(res, 'error', { error: err instanceof Error ? err.message : String(err) })
+      } finally {
+        res.end()
+      }
 
     } else if (url.pathname === '/chat' && req.method === 'POST') {
       let body = ''
@@ -543,6 +628,10 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           },
           'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number', pool: '{ active, idle, total, max }' } },
           'GET /status': { description: 'Live agent status from working memory' },
+          'POST /artifacts': { description: 'Submit artifact generation job', body: { type: 'image | audio | file | ...', prompt: 'string', provider: 'optional', refs: 'optional artifact refs or URIs' } },
+          'POST /artifacts/stream': { description: 'Submit artifact generation job and stream SSE artifact events' },
+          'GET /artifacts/:jobId': { description: 'Fetch artifact job by id' },
+          'GET /artifacts/:jobId/stream': { description: 'Replay/follow artifact job events as SSE' },
         },
         capabilities: {
           tools: ['read', 'write', 'edit', 'grep', 'explore', 'shell', 'search', 'web_search', 'web_fetch',
@@ -587,3 +676,14 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 }
 
 export type ServeHandle = ReturnType<typeof serve>
+
+async function* streamCompletedJob(job: ArtifactJob | null): AsyncIterable<ArtifactEvent> {
+  if (!job) return
+  yield { type: 'job.started', job }
+  for (const [index, artifact] of job.artifacts.entries()) {
+    yield { type: 'artifact.partial', jobId: job.id, artifact, index }
+  }
+  if (job.status === 'failed') yield { type: 'job.failed', job, error: job.error ?? 'failed' }
+  else if (job.status === 'cancelled') yield { type: 'job.cancelled', job }
+  else if (job.status === 'completed') yield { type: 'artifact.completed', job }
+}

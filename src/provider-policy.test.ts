@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { decideProviderUse } from './provider-policy.js'
+import { decideProviderUse, wrapProviderWithPolicy } from './provider-policy.js'
 
 describe('ProviderPolicy', () => {
   it('allows local providers when cloud is disabled', () => {
@@ -25,5 +25,21 @@ describe('ProviderPolicy', () => {
       { policy: { allowAutonomousCloud: false }, autonomous: true },
     )
     assert.equal(decision.allowed, false)
+  })
+
+  it('guards provider calls before cloud tokens are spent', async () => {
+    const provider = wrapProviderWithPolicy({
+      async think() {
+        throw new Error('provider should not be called')
+      },
+    }, {
+      selection: { providerKey: 'agent-sdk', cloud: true },
+      policy: { allowCloud: false },
+    })
+
+    await assert.rejects(
+      () => provider.think('context', 'system'),
+      /cloud providers disabled by policy/,
+    )
   })
 })
