@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -11,6 +11,7 @@ import {
   createArtifactRequestFromInput,
   createArtifactProviderFromEnv,
   createArtifactGraphExecutor,
+  createOpenAIArtifactProvider,
   wrapArtifactProviderWithPolicy,
   type ArtifactProvider,
   type ArtifactRequest,
@@ -138,5 +139,37 @@ describe('ArtifactIO', () => {
       () => guarded.submit({ type: 'image', prompt: 'x' }),
       /artifact cloud providers disabled by policy/,
     )
+  })
+
+  it('routes image refs to OpenAI image edits through injectable fetch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-openai-artifacts-'))
+    try {
+      const source = join(dir, 'source.png')
+      writeFileSync(source, Buffer.from('png'))
+      const calls: Array<{ url: string; init?: RequestInit }> = []
+      const fakeFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        calls.push({ url: String(input), init })
+        return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('out').toString('base64') }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      const provider = createOpenAIArtifactProvider({
+        apiKey: 'test',
+        baseUrl: 'https://example.test/v1',
+        store: new FileArtifactStore(dir),
+        fetch: fakeFetch,
+      })
+      const job = await provider.submit({
+        type: 'image',
+        prompt: 'edit it',
+        inputs: [{ type: 'ref', uri: source, mediaType: 'image/png' }],
+      })
+      assert.equal(job.status, 'completed')
+      assert.equal(calls[0].url, 'https://example.test/v1/images/edits')
+      assert.ok(calls[0].init?.body instanceof FormData)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

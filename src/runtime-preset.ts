@@ -150,6 +150,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
         artifactDir: opts.artifactDir,
         provider: opts.artifactProvider,
         artifactPolicy: opts.artifactPolicy,
+        policyStateDir: join(memoryDir, 'state'),
         requireConfigured: opts.artifactRequireConfigured,
       })
     : createArtifactProviderFromEnv({ env, provider: 'none' })

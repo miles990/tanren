@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import { serve } from './serve.js'
 import type { TanrenAgent } from './index.js'
@@ -112,6 +115,55 @@ describe('serve', () => {
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))
+    }
+  })
+
+  it('lists, serves, and cancels persisted artifact jobs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-serve-artifacts-'))
+    const file = join(dir, 'out.txt')
+    writeFileSync(file, 'artifact bytes', 'utf-8')
+    const jobStore = new FileArtifactJobStore(dir)
+    await jobStore.put({
+      id: 'job-persisted',
+      provider: 'fake-artifacts',
+      status: 'completed',
+      request: { type: 'file', prompt: 'x' },
+      artifacts: [{ id: 'artifact-1', uri: file, kind: 'file', mediaType: 'text/plain' }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })
+    const handle = serve(createFakeAgent(), {
+      port: 0,
+      serviceName: 'test-agent',
+      artifacts: {
+        enabled: false,
+        providers: {},
+        store: new FileArtifactStore(dir),
+        jobStore,
+        reason: 'disabled for test',
+      },
+    })
+
+    try {
+      await once(handle.server, 'listening')
+      const address = handle.server.address()
+      assert.ok(address && typeof address === 'object')
+      const port = (address as AddressInfo).port
+
+      const listResponse = await fetch(`http://127.0.0.1:${port}/artifacts`)
+      const list = await listResponse.json() as { jobs: Array<{ id: string }> }
+      assert.equal(list.jobs[0]?.id, 'job-persisted')
+
+      const fileResponse = await fetch(`http://127.0.0.1:${port}/artifacts/job-persisted/file`)
+      assert.equal(await fileResponse.text(), 'artifact bytes')
+
+      const cancelResponse = await fetch(`http://127.0.0.1:${port}/artifacts/job-persisted`, { method: 'DELETE' })
+      const cancelled = await cancelResponse.json() as { status: string }
+      assert.equal(cancelled.status, 'cancelled')
+    } finally {
+      handle.server.closeAllConnections()
+      await new Promise<void>(resolve => handle.server.close(() => resolve()))
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

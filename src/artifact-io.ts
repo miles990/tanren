@@ -3,6 +3,7 @@ import { basename, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ActionHandler, Prompt, PromptContentBlock, StreamChunk } from './types.js'
 import { promptToText } from './content-adapter.js'
+import { writePolicyEvent } from './provider-policy.js'
 
 export type ArtifactKind = 'image' | 'audio' | 'video' | 'file' | 'three_d' | 'embedding' | 'data'
 export type ArtifactStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -105,6 +106,8 @@ export interface ArtifactPolicyDecision {
   reason: string
 }
 
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+
 export interface ArtifactGraphNode {
   id: string
   provider: string
@@ -205,6 +208,7 @@ export interface OpenAIArtifactProviderOptions {
   baseUrl?: string
   imageModel?: string
   audioModel?: string
+  fetch?: FetchLike
   store: ArtifactStore
   jobStore?: ArtifactJobStore
 }
@@ -217,6 +221,7 @@ export interface ArtifactProviderFromEnvOptions {
   defaultProvider?: 'openai' | 'none'
   requireConfigured?: boolean
   artifactPolicy?: ArtifactPolicy
+  policyStateDir?: string
 }
 
 export interface ArtifactProviderSelection {
@@ -234,6 +239,7 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
   const baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '')
   const imageModel = opts.imageModel ?? 'gpt-image-1.5'
   const audioModel = opts.audioModel ?? 'gpt-4o-mini-tts'
+  const fetchImpl = opts.fetch ?? fetch
   const jobStore = opts.jobStore
   const jobs = new Map<string, ArtifactJob>()
   const eventHistory = new Map<string, ArtifactEvent[]>()
@@ -349,7 +355,10 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
   }
 
   async function generateOpenAIImage(request: ArtifactRequest): Promise<ArtifactRef[]> {
-    const response = await fetch(`${baseUrl}/images/generations`, {
+    const imageInputs = collectImageInputs(request)
+    if (imageInputs.length) return editOpenAIImage(request, imageInputs)
+
+    const response = await fetchImpl(`${baseUrl}/images/generations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -381,9 +390,62 @@ export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions
     return refs
   }
 
+  async function editOpenAIImage(request: ArtifactRequest, imageInputs: ImageInput[]): Promise<ArtifactRef[]> {
+    const format = String(request.options?.format ?? 'png')
+    const form = new FormData()
+    form.append('model', String(request.options?.model ?? imageModel))
+    form.append('prompt', promptToText(request.prompt))
+    form.append('size', String(request.options?.size ?? '1024x1024'))
+    form.append('quality', String(request.options?.quality ?? 'medium'))
+    form.append('n', String(request.options?.n ?? 1))
+    form.append('output_format', format)
+    const first = imageInputs[0]
+    form.append('image', new Blob([new Uint8Array(first.bytes)], { type: first.mediaType }), first.name)
+
+    const response = await fetchImpl(`${baseUrl}/images/edits`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: form,
+    })
+    if (!response.ok) throw new Error(`OpenAI image edit API ${response.status}: ${(await response.text()).slice(0, 500)}`)
+    const data = await response.json() as { data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> }
+    const refs: ArtifactRef[] = []
+    for (const item of data.data ?? []) {
+      if (item.b64_json) {
+        refs.push(await opts.store.put({
+          kind: 'image',
+          mediaType: `image/${format}`,
+          data: item.b64_json,
+          encoding: 'base64',
+          extension: `.${format}`,
+          metadata: {
+            provider: provider.name,
+            model: request.options?.model ?? imageModel,
+            revisedPrompt: item.revised_prompt,
+            inputArtifacts: imageInputs.map(input => input.name),
+          },
+        }))
+      } else if (item.url) {
+        refs.push({
+          id: `artifact-${randomUUID().slice(0, 8)}`,
+          uri: item.url,
+          kind: 'image',
+          mediaType: 'image/*',
+          metadata: {
+            provider: provider.name,
+            model: request.options?.model ?? imageModel,
+            revisedPrompt: item.revised_prompt,
+            inputArtifacts: imageInputs.map(input => input.name),
+          },
+        })
+      }
+    }
+    return refs
+  }
+
   async function generateOpenAIAudio(request: ArtifactRequest): Promise<ArtifactRef[]> {
     const format = request.options?.format ?? 'mp3'
-    const response = await fetch(`${baseUrl}/audio/speech`, {
+    const response = await fetchImpl(`${baseUrl}/audio/speech`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -540,15 +602,29 @@ export function decideArtifactProviderUse(
 
 export function wrapArtifactProviderWithPolicy(
   provider: ArtifactProvider,
-  opts: { policy?: ArtifactPolicy; jobStore?: ArtifactJobStore },
+  opts: { policy?: ArtifactPolicy; jobStore?: ArtifactJobStore; policyStateDir?: string },
 ): ArtifactProvider {
   const guard = async () => {
     const policy = opts.policy ?? {}
-    if (policy.allowCloud === false) throw new Error('Artifact provider blocked by policy: artifact cloud providers disabled by policy')
+    if (policy.allowCloud === false) {
+      writePolicyEvent(opts.policyStateDir, {
+        domain: 'artifact',
+        provider: provider.name,
+        allowed: false,
+        reason: 'artifact cloud providers disabled by policy',
+      })
+      throw new Error('Artifact provider blocked by policy: artifact cloud providers disabled by policy')
+    }
     if (policy.dailyCloudCallCap !== undefined && opts.jobStore?.list) {
       const today = new Date().toISOString().slice(0, 10)
       const calls = (await opts.jobStore.list({ date: today, provider: provider.name })).length
       if (calls >= policy.dailyCloudCallCap) {
+        writePolicyEvent(opts.policyStateDir, {
+          domain: 'artifact',
+          provider: provider.name,
+          allowed: false,
+          reason: `daily artifact call cap reached (${calls}/${policy.dailyCloudCallCap})`,
+        })
         throw new Error(`Artifact provider blocked by policy: daily artifact call cap reached (${calls}/${policy.dailyCloudCallCap})`)
       }
     }
@@ -612,7 +688,7 @@ export function createArtifactProviderFromEnv(opts: ArtifactProviderFromEnvOptio
     baseUrl: env.OPENAI_BASE_URL,
     imageModel: env.TANREN_IMAGE_MODEL,
     audioModel: env.TANREN_AUDIO_MODEL,
-  }), { policy: artifactPolicy, jobStore })
+  }), { policy: artifactPolicy, jobStore, policyStateDir: opts.policyStateDir })
   return { providers: { [provider.name]: provider, openai: provider }, defaultProvider: provider.name, store, jobStore, policyDecision, enabled: true }
 }
 
@@ -700,6 +776,62 @@ function isPromptBlock(value: unknown): value is PromptContentBlock {
 
 function cloneJob(job: ArtifactJob): ArtifactJob {
   return { ...job, artifacts: [...job.artifacts] }
+}
+
+interface ImageInput {
+  name: string
+  bytes: Buffer
+  mediaType: string
+}
+
+function collectImageInputs(request: ArtifactRequest): ImageInput[] {
+  const inputs: ImageInput[] = []
+  for (const block of request.inputs ?? []) {
+    const input = imageInputFromBlock(block)
+    if (input) inputs.push(input)
+  }
+  return inputs
+}
+
+function imageInputFromBlock(block: PromptContentBlock): ImageInput | null {
+  if (block.type === 'ref') {
+    if (!isImageMediaType(block.mediaType) && block.mediaType) return null
+    if (!isLocalFile(block.uri) || !existsSync(block.uri)) return null
+    const mediaType = block.mediaType ?? mediaTypeForPath(block.uri)
+    if (!isImageMediaType(mediaType)) return null
+    return { name: basename(block.uri), bytes: readFileSync(block.uri), mediaType }
+  }
+  if (block.type === 'media') {
+    if (!isImageMediaType(block.mediaType)) return null
+    if (block.source.type === 'base64') {
+      return {
+        name: `${block.label ?? 'input'}${extensionForMediaType(block.mediaType)}`,
+        bytes: Buffer.from(block.source.data, 'base64'),
+        mediaType: block.mediaType,
+      }
+    }
+    if (block.source.type === 'file' && existsSync(block.source.path)) {
+      return { name: basename(block.source.path), bytes: readFileSync(block.source.path), mediaType: block.mediaType }
+    }
+  }
+  return null
+}
+
+function isLocalFile(uri: string): boolean {
+  return !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(uri) || uri.startsWith('file:')
+}
+
+function mediaTypeForPath(path: string): string {
+  const ext = extname(path).toLowerCase()
+  if (ext === '.png') return 'image/png'
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.gif') return 'image/gif'
+  return 'application/octet-stream'
+}
+
+function isImageMediaType(mediaType: string | undefined): boolean {
+  return !!mediaType && mediaType.startsWith('image/')
 }
 
 function isTerminal(status: ArtifactStatus): boolean {

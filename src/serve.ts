@@ -14,13 +14,14 @@
  */
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChatResult, TickResult, Action, TanrenConfig } from './types.js'
 import type { TanrenAgent } from './index.js'
 import { createAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
 import { createArtifactRequestFromInput, type ArtifactProviderSelection, type ArtifactEvent, type ArtifactJob } from './artifact-io.js'
+import { writePolicyEvent } from './provider-policy.js'
 
 const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000
 const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000
@@ -375,11 +376,27 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
   const selectArtifactProvider = (providerName?: unknown) => {
     const selection = options.artifacts
-    if (!selection?.enabled || !selection.defaultProvider) throw new Error('artifact provider disabled')
+    if (!selection?.enabled || !selection.defaultProvider) {
+      writePolicyEvent(join(memoryDir, 'state'), {
+        domain: 'artifact',
+        provider: String(providerName ?? 'default'),
+        allowed: false,
+        reason: selection?.reason ?? selection?.policyDecision?.reason ?? 'artifact provider disabled',
+      })
+      throw new Error('artifact provider disabled')
+    }
     const name = String(providerName ?? selection.defaultProvider)
     const provider = selection.providers[name]
     if (!provider) throw new Error(`Unknown artifact provider: ${name}`)
     return provider
+  }
+
+  const getArtifactJob = async (jobId: string, providerName?: string | null): Promise<ArtifactJob | null> => {
+    const selection = options.artifacts
+    const provider = selection?.enabled && selection.defaultProvider
+      ? selection.providers[String(providerName ?? selection.defaultProvider)]
+      : undefined
+    return await provider?.get(jobId) ?? await selection?.jobStore.get(jobId) ?? null
   }
 
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -387,7 +404,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
@@ -432,6 +449,19 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         json(res, 200, status)
       } catch { json(res, 200, { phase: 'unknown' }) }
 
+    } else if (url.pathname === '/artifacts' && req.method === 'GET') {
+      try {
+        const selection = options.artifacts
+        if (!selection?.jobStore.list) { json(res, 200, { jobs: [] }); return }
+        const jobs = await selection.jobStore.list({
+          date: url.searchParams.get('date') ?? undefined,
+          provider: url.searchParams.get('provider') ?? undefined,
+        })
+        json(res, 200, { jobs: jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt)) })
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) })
+      }
+
     } else if (url.pathname === '/artifacts' && req.method === 'POST') {
       try {
         const parsed = await readJsonBody(req)
@@ -470,10 +500,42 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     } else if (url.pathname.match(/^\/artifacts\/[^/]+$/) && req.method === 'GET') {
       try {
         const jobId = decodeURIComponent(url.pathname.split('/')[2] ?? '')
-        const provider = selectArtifactProvider(url.searchParams.get('provider') ?? undefined)
-        const job = await provider.get(jobId)
+        const job = await getArtifactJob(jobId, url.searchParams.get('provider'))
         if (!job) { json(res, 404, { error: 'artifact job not found' }); return }
         json(res, 200, job)
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) })
+      }
+
+    } else if (url.pathname.match(/^\/artifacts\/[^/]+$/) && req.method === 'DELETE') {
+      try {
+        const jobId = decodeURIComponent(url.pathname.split('/')[2] ?? '')
+        const selection = options.artifacts
+        const job = await getArtifactJob(jobId, url.searchParams.get('provider'))
+        if (!job) { json(res, 404, { error: 'artifact job not found' }); return }
+        const provider = selection?.providers[url.searchParams.get('provider') ?? job.provider]
+        await provider?.cancel?.(jobId)
+        const cancelled: ArtifactJob = { ...job, status: 'cancelled', updatedAt: new Date().toISOString() }
+        await selection?.jobStore.put(cancelled)
+        json(res, 200, cancelled)
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) })
+      }
+
+    } else if (url.pathname.match(/^\/artifacts\/[^/]+\/file$/) && req.method === 'GET') {
+      try {
+        const jobId = decodeURIComponent(url.pathname.split('/')[2] ?? '')
+        const job = await getArtifactJob(jobId, url.searchParams.get('provider'))
+        if (!job) { json(res, 404, { error: 'artifact job not found' }); return }
+        const index = parseInt(url.searchParams.get('index') ?? '0', 10)
+        const artifact = job.artifacts[index]
+        if (!artifact) { json(res, 404, { error: 'artifact not found' }); return }
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(artifact.uri) || !existsSync(artifact.uri)) {
+          json(res, 400, { error: 'artifact is not a local file', artifact })
+          return
+        }
+        res.writeHead(200, { 'Content-Type': artifact.mediaType, 'Content-Disposition': `inline; filename="${artifact.id}"` })
+        res.end(readFileSync(artifact.uri))
       } catch (err) {
         json(res, 400, { error: err instanceof Error ? err.message : String(err) })
       }
@@ -648,10 +710,13 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           },
           'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number', pool: '{ active, idle, total, max }' } },
           'GET /status': { description: 'Live agent status from working memory' },
+          'GET /artifacts': { description: 'List persisted artifact jobs', query: { date: 'YYYY-MM-DD optional', provider: 'optional' } },
           'POST /artifacts': { description: 'Submit artifact generation job', body: { type: 'image | audio | file | ...', prompt: 'string', provider: 'optional', refs: 'optional artifact refs or URIs' } },
           'POST /artifacts/stream': { description: 'Submit artifact generation job and stream SSE artifact events' },
           'GET /artifacts/:jobId': { description: 'Fetch artifact job by id' },
           'GET /artifacts/:jobId/stream': { description: 'Replay/follow artifact job events as SSE' },
+          'GET /artifacts/:jobId/file': { description: 'Serve a local artifact file from a completed job', query: { index: 'artifact index, default 0' } },
+          'DELETE /artifacts/:jobId': { description: 'Cancel a job and persist the cancelled status when possible' },
         },
         capabilities: {
           tools: ['read', 'write', 'edit', 'grep', 'explore', 'shell', 'search', 'web_search', 'web_fetch',

@@ -6,7 +6,7 @@
  * happens.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ProviderKey, ProviderSelection } from './provider-registry.js'
 import type {
@@ -31,6 +31,16 @@ export interface ProviderPolicy {
 export interface ProviderPolicyDecision {
   allowed: boolean
   reason: string
+}
+
+export interface PolicyEvent {
+  timestamp: string
+  domain: 'llm' | 'artifact'
+  provider: string
+  allowed: boolean
+  reason: string
+  autonomous?: boolean
+  risk?: TaskRisk
 }
 
 export interface ProviderPolicyGuardOptions {
@@ -80,7 +90,17 @@ export function wrapProviderWithPolicy(provider: LLMProvider, opts: ProviderPoli
       stateDir: opts.stateDir,
       risk: opts.risk,
     })
-    if (!decision.allowed) throw new Error(`LLM provider blocked by policy: ${decision.reason}`)
+    if (!decision.allowed) {
+      writePolicyEvent(opts.stateDir, {
+        domain: 'llm',
+        provider: opts.selection.providerKey,
+        allowed: false,
+        reason: decision.reason,
+        autonomous: opts.autonomous,
+        risk: opts.risk,
+      })
+      throw new Error(`LLM provider blocked by policy: ${decision.reason}`)
+    }
   }
 
   const wrapped: LLMProvider = {
@@ -131,6 +151,20 @@ export function wrapProviderWithPolicy(provider: LLMProvider, opts: ProviderPoli
   }
 
   return wrapped
+}
+
+export function writePolicyEvent(stateDir: string | undefined, event: Omit<PolicyEvent, 'timestamp'>): void {
+  if (!stateDir) return
+  try {
+    mkdirSync(stateDir, { recursive: true })
+    appendFileSync(
+      join(stateDir, 'policy-events.jsonl'),
+      `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`,
+      'utf-8',
+    )
+  } catch {
+    // Policy logs are diagnostic only; enforcement must not depend on disk writes.
+  }
 }
 
 function readTodayCloudCalls(stateDir: string): number {
