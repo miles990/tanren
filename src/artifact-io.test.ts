@@ -6,6 +6,8 @@ import { describe, it } from 'node:test'
 import {
   FileArtifactStore,
   createArtifactActions,
+  createArtifactActionsFromEnv,
+  createArtifactProviderFromEnv,
   createArtifactGraphExecutor,
   type ArtifactProvider,
   type ArtifactRequest,
@@ -77,5 +79,11 @@ describe('ArtifactIO', () => {
     assert.deepEqual(actions.map(a => a.type), ['artifact_generate', 'image_generate', 'audio_generate'])
     const output = await actions[1].execute({ type: 'image_generate', content: '', raw: '', input: { prompt: 'x' } }, {} as never)
     assert.match(output, /"status": "completed"/)
+  })
+
+  it('keeps env factory disabled when credentials are absent', () => {
+    const selection = createArtifactProviderFromEnv({ env: { TANREN_ARTIFACT_PROVIDER: 'openai' } as NodeJS.ProcessEnv })
+    assert.equal(selection.enabled, false)
+    assert.deepEqual(createArtifactActionsFromEnv({ env: { TANREN_ARTIFACT_PROVIDER: 'openai' } as NodeJS.ProcessEnv }), [])
   })
 })

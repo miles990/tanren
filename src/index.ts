@@ -192,6 +192,8 @@ export {
   createOpenAIArtifactProvider,
   createArtifactGraphExecutor,
   createArtifactActions,
+  createArtifactProviderFromEnv,
+  createArtifactActionsFromEnv,
   type ArtifactKind,
   type ArtifactStatus,
   type ArtifactRef,
@@ -201,11 +203,22 @@ export {
   type ArtifactEvent,
   type ArtifactCapabilities,
   type ArtifactProvider,
+  type ArtifactProviderFromEnvOptions,
+  type ArtifactProviderSelection,
   type ArtifactStore,
   type ArtifactGraphNode,
   type ArtifactGraph,
   type ArtifactGraphResult,
 } from './artifact-io.js'
+export {
+  createInboxPlugin,
+  createOutboxHistoryPlugin,
+  createPeerMessagePlugin,
+  createPeerMessageActions,
+  type InboxPluginOptions,
+  type OutboxHistoryPluginOptions,
+  type PeerMessageOptions,
+} from './memory-plugins.js'
 
 // Working Memory
 export { createWorkingMemory, type WorkingMemorySystem } from './working-memory.js'

@@ -152,6 +152,23 @@ export interface OpenAIArtifactProviderOptions {
   store: ArtifactStore
 }
 
+export interface ArtifactProviderFromEnvOptions {
+  env?: NodeJS.ProcessEnv
+  cwd?: string
+  artifactDir?: string
+  provider?: 'openai' | 'none'
+  defaultProvider?: 'openai' | 'none'
+  requireConfigured?: boolean
+}
+
+export interface ArtifactProviderSelection {
+  providers: Record<string, ArtifactProvider>
+  defaultProvider?: string
+  store: ArtifactStore
+  enabled: boolean
+  reason?: string
+}
+
 export function createOpenAIArtifactProvider(opts: OpenAIArtifactProviderOptions): ArtifactProvider {
   const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY
   const baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '')
@@ -386,6 +403,39 @@ export function createArtifactActions(opts: { providers: Record<string, Artifact
       async execute(action) { return executeGenerate({ ...(action.input ?? { prompt: action.content }), type: 'audio' }) },
     },
   ]
+}
+
+export function createArtifactProviderFromEnv(opts: ArtifactProviderFromEnvOptions = {}): ArtifactProviderSelection {
+  const env = opts.env ?? process.env
+  const cwd = opts.cwd ?? process.cwd()
+  const providerKey = opts.provider ?? (env.TANREN_ARTIFACT_PROVIDER as 'openai' | 'none' | undefined) ?? opts.defaultProvider ?? 'openai'
+  const artifactDir = opts.artifactDir ?? env.TANREN_ARTIFACT_DIR ?? join(cwd, 'memory', 'artifacts')
+  const store = new FileArtifactStore(artifactDir)
+
+  if (providerKey === 'none') return { providers: {}, store, enabled: false, reason: 'artifact provider disabled' }
+  if (providerKey !== 'openai') {
+    if (opts.requireConfigured) throw new Error(`Unknown TANREN_ARTIFACT_PROVIDER="${providerKey}"`)
+    return { providers: {}, store, enabled: false, reason: `unknown provider: ${providerKey}` }
+  }
+  if (!env.OPENAI_API_KEY) {
+    if (opts.requireConfigured) throw new Error('TANREN_ARTIFACT_PROVIDER=openai requires OPENAI_API_KEY')
+    return { providers: {}, store, enabled: false, reason: 'OPENAI_API_KEY not set' }
+  }
+
+  const provider = createOpenAIArtifactProvider({
+    store,
+    apiKey: env.OPENAI_API_KEY,
+    baseUrl: env.OPENAI_BASE_URL,
+    imageModel: env.TANREN_IMAGE_MODEL,
+    audioModel: env.TANREN_AUDIO_MODEL,
+  })
+  return { providers: { [provider.name]: provider, openai: provider }, defaultProvider: provider.name, store, enabled: true }
+}
+
+export function createArtifactActionsFromEnv(opts: ArtifactProviderFromEnvOptions = {}): ActionHandler[] {
+  const selection = createArtifactProviderFromEnv(opts)
+  if (!selection.enabled || !selection.defaultProvider) return []
+  return createArtifactActions({ providers: selection.providers, defaultProvider: selection.defaultProvider })
 }
 
 function createJob(provider: string, request: ArtifactRequest): ArtifactJob {

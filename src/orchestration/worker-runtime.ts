@@ -8,6 +8,7 @@
 import { execSync } from 'node:child_process'
 import type { LLMProvider, PromptContentBlock } from '../types.js'
 import { promptToText } from '../content-adapter.js'
+import { createModelIO } from '../model-io.js'
 import { createAgentSdkProvider } from '../llm/agent-sdk.js'
 import { createProvider } from '../provider-registry.js'
 import { createGateway, type ACPGateway } from './acp-gateway.js'
@@ -64,7 +65,7 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
         const maxTurns = def.agent.maxTurns ?? 10
         const safetyTimeout = Math.max(timeoutMs, maxTurns * 120_000)
         return Promise.race([
-          provider.think(promptToText(task), def.agent.prompt ?? ''),
+          createModelIO(worker, provider).generate({ prompt: task, systemPrompt: def.agent.prompt ?? '' }).then(result => result.text),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error(`Worker ${worker} timeout after ${safetyTimeout}ms (maxTurns=${maxTurns})`)), safetyTimeout),
           ),
