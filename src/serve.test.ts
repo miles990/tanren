@@ -295,6 +295,28 @@ describe('serve', () => {
       assert.equal(routePreviewResponse.status, 200)
       assert.equal(routePreview.selected?.name, 'vision-provider')
       assert.equal(routePreview.rejected[0]?.reason, 'image input unsupported')
+
+      const generateResponse = await fetch(`http://127.0.0.1:${port}/model/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'describe', attachments: [{ uri: 'https://example.test/image.png', mediaType: 'image/png' }] }),
+      })
+      const generated = await generateResponse.json() as { selected: { name: string }; response: { text: string; provider: string } }
+      assert.equal(generateResponse.status, 200)
+      assert.equal(generated.selected.name, 'vision-provider')
+      assert.equal(generated.response.provider, 'vision-provider')
+      assert.match(generated.response.text, /vision-provider handled/)
+
+      const streamResponse = await fetch(`http://127.0.0.1:${port}/model/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'stream', attachments: [{ uri: 'https://example.test/image.png', mediaType: 'image/png' }] }),
+      })
+      const streamText = await streamResponse.text()
+      assert.equal(streamResponse.status, 200)
+      assert.match(streamText, /event: route/)
+      assert.match(streamText, /event: chunk/)
+      assert.match(streamText, /event: done/)
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))
@@ -367,8 +389,11 @@ function createFakeModelRouter() {
       tools: { native: false, parallel: false },
       state: { sessions: false },
     },
-    async generate() { return { text: 'ok' } },
-    async *stream() { yield { type: 'text_delta', text: 'ok' } },
+    async generate() { return { text: `${this.name} handled request`, provider: this.name } },
+    async *stream() {
+      yield { type: 'text_delta', text: `${this.name} streamed request` }
+      yield { type: 'done', metadata: { provider: this.name } }
+    },
   }
   const visionProvider: ModelIO = {
     ...textProvider,

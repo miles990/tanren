@@ -64,6 +64,7 @@ interface ModelRoutePreviewBody {
   text?: string
   attachments?: unknown
   requirement?: ModelRouteRequirement
+  systemPrompt?: string
 }
 
 interface ServeModelRouter {
@@ -580,6 +581,26 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     capabilities: model.capabilities,
   } : null
 
+  const createModelRouteRequest = (body: ModelRoutePreviewBody, source: string) => {
+    const text = typeof body.text === 'string' ? body.text : ''
+    const attachments = normalizeChatAttachments(body.attachments)
+    const prompt: PromptContentBlock[] = []
+    if (text.trim()) prompt.push({ type: 'text', text: text.trim() })
+    prompt.push(...attachments)
+    if (!prompt.length) prompt.push({ type: 'text', text: 'Route this request.' })
+    const requirement = body.requirement && typeof body.requirement === 'object' ? body.requirement : undefined
+    const systemPrompt = typeof body.systemPrompt === 'string' ? body.systemPrompt : undefined
+    return {
+      request: {
+        prompt,
+        ...(systemPrompt ? { systemPrompt } : {}),
+        metadata: { source },
+      },
+      requirement,
+      promptSummary: summarizePromptBlocks(prompt),
+    }
+  }
+
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${port}`)
 
@@ -690,33 +711,88 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       let parsed: ModelRoutePreviewBody
       try { parsed = await readJsonBody<Record<string, unknown>>(req) as ModelRoutePreviewBody } catch { json(res, 400, { error: 'Invalid JSON' }); return }
 
-      const text = typeof parsed.text === 'string' ? parsed.text : ''
-      const attachments = normalizeChatAttachments(parsed.attachments)
-      const prompt: PromptContentBlock[] = []
-      if (text.trim()) prompt.push({ type: 'text', text: text.trim() })
-      prompt.push(...attachments)
-      if (!prompt.length) prompt.push({ type: 'text', text: 'Route preview' })
-
-      const requirement = parsed.requirement && typeof parsed.requirement === 'object' ? parsed.requirement : undefined
+      const { request, requirement, promptSummary } = createModelRouteRequest(parsed, 'route-preview')
       if (!options.modelRouter) {
         json(res, 200, {
           selected: null,
           rejected: [],
-          prompt: summarizePromptBlocks(prompt),
+          prompt: promptSummary,
           requirement,
           reason: 'model router unavailable',
         })
         return
       }
 
-      const decision = options.modelRouter.route({ prompt, metadata: { source: 'route-preview' } }, requirement)
+      const decision = options.modelRouter.route(request, requirement)
       json(res, 200, {
         selected: summarizeModel(decision.selected),
         rejected: decision.rejected,
-        prompt: summarizePromptBlocks(prompt),
+        prompt: promptSummary,
         requirement,
         providers: options.modelRouter.providers.map(summarizeModel),
       })
+
+    } else if (url.pathname === '/model/generate' && req.method === 'POST') {
+      let parsed: ModelRoutePreviewBody
+      try { parsed = await readJsonBody<Record<string, unknown>>(req) as ModelRoutePreviewBody } catch { json(res, 400, { error: 'Invalid JSON' }); return }
+      if (!options.modelRouter) { json(res, 503, { error: 'model router unavailable' }); return }
+
+      const { request, requirement, promptSummary } = createModelRouteRequest(parsed, 'model-generate')
+      const decision = options.modelRouter.route(request, requirement)
+      if (!decision.selected) {
+        json(res, 422, { error: 'No model provider supports this request', rejected: decision.rejected, prompt: promptSummary, requirement })
+        return
+      }
+
+      try {
+        const response = await decision.selected.generate(request)
+        json(res, 200, {
+          selected: summarizeModel(decision.selected),
+          rejected: decision.rejected,
+          prompt: promptSummary,
+          response,
+        })
+      } catch (err) {
+        json(res, 500, {
+          selected: summarizeModel(decision.selected),
+          rejected: decision.rejected,
+          prompt: promptSummary,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+
+    } else if (url.pathname === '/model/stream' && req.method === 'POST') {
+      let parsed: ModelRoutePreviewBody
+      try { parsed = await readJsonBody<Record<string, unknown>>(req) as ModelRoutePreviewBody } catch { json(res, 400, { error: 'Invalid JSON' }); return }
+      if (!options.modelRouter) { json(res, 503, { error: 'model router unavailable' }); return }
+
+      const { request, requirement, promptSummary } = createModelRouteRequest(parsed, 'model-stream')
+      const decision = options.modelRouter.route(request, requirement)
+      if (!decision.selected) {
+        json(res, 422, { error: 'No model provider supports this request', rejected: decision.rejected, prompt: promptSummary, requirement })
+        return
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      })
+      const sse = (event: string, data: unknown) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+      }
+      sse('route', { selected: summarizeModel(decision.selected), rejected: decision.rejected, prompt: promptSummary })
+      try {
+        for await (const chunk of decision.selected.stream(request)) {
+          if (chunk.type === 'error') sse('error', { error: chunk.error ?? 'Model stream error' })
+          else sse('chunk', chunk)
+        }
+        sse('done', { selected: decision.selected.name })
+      } catch (err) {
+        sse('error', { error: err instanceof Error ? err.message : String(err) })
+      }
+      res.end()
 
     } else if ((url.pathname === '/workbench' || url.pathname === '/chat-ui') && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -918,6 +994,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           'GET /api/dashboard/learning': { description: 'Learning/action-health/gate/working-memory dashboard state' },
           'GET /api/dashboard/journal': { description: 'Recent journal entries and tick markdown files', query: { limit: 'default 30' } },
           'POST /model/route-preview': { description: 'Preview which model provider can handle a text/multimodal request without invoking an LLM', body: { text: 'optional', attachments: 'optional [{ uri, mediaType?, label? }]', requirement: 'optional output/streaming capability requirement' } },
+          'POST /model/generate': { description: 'Route and execute a model request through the first provider with matching capabilities', body: { text: 'optional', attachments: 'optional [{ uri, mediaType?, label? }]', systemPrompt: 'optional', requirement: 'optional output/streaming capability requirement' } },
+          'POST /model/stream': { description: 'Route and execute a model request as SSE stream events', stream_events: { route: 'selected provider and prompt summary', chunk: 'model StreamChunk', done: 'stream complete', error: 'provider error' } },
           'GET /workbench': { description: 'Human-readable Agent Native UI Protocol workbench' },
           'GET /chat-ui': { description: 'Browser chat UI with live ANUP workbench side panel' },
           'POST /demo/anup': { description: 'Create a demo ANUP run with decision, approval, trace, and media_ref blocks' },

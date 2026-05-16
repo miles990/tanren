@@ -242,7 +242,9 @@ and requested output/streaming capabilities before selecting a provider, so apps
 Gemini/OpenAI/Anthropic for image/audio/file tasks while keeping text-only providers as safe
 fallbacks.
 `serve()` can expose that same router through `POST /model/route-preview`, allowing a UI to show
-which provider would handle a text/media request without spending LLM tokens.
+which provider would handle a text/media request without spending LLM tokens. When the caller
+intentionally wants execution, `POST /model/generate` and `POST /model/stream` use the same
+capability router to select and invoke the matching model provider.
 
 ### Agent Native UI Protocol
 
@@ -256,6 +258,8 @@ Tanren exposes an Agent Native UI Protocol (ANUP) for human-readable agent workb
 - `GET /api/dashboard/learning` — learning/action-health/gate/working-memory state.
 - `GET /api/dashboard/journal` — recent journal entries and tick markdown files.
 - `POST /model/route-preview` — preview provider routing for text/media requests without invoking an LLM.
+- `POST /model/generate` — route and execute a model request through the selected provider.
+- `POST /model/stream` — route and execute a model request as SSE chunks.
 - `GET /anup/overview` — project runtime capabilities, tasks, artifacts, and policy events.
 - `GET /anup/tasks/:taskId` — project one long task into task/state/trace/result blocks.
 - `GET /anup/runs` / `GET /anup/runs/:runId` — read persisted ANUP runs.
