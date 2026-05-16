@@ -14,7 +14,7 @@
  */
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChatResult, TickResult, Action, TanrenConfig, PromptContentBlock } from './types.js'
 import type { TanrenAgent } from './index.js'
@@ -27,6 +27,7 @@ import type { LongTaskController } from './long-task.js'
 import { handleAnupHttpRoute } from './anup-http.js'
 import { getAnupWorkbenchHtml } from './anup-workbench.js'
 import { FileAgentUIStore, chatResultToAnupEnvelope } from './anup.js'
+import type { ModelIO, ModelRequest, ModelRouteDecision, ModelRouteRequirement } from './model-io.js'
 
 const CHAT_WALL_CLOCK_MS = 20 * 60 * 1000
 const STREAM_WALL_CLOCK_MS = 30 * 60 * 1000
@@ -59,6 +60,17 @@ interface ChatBody {
   attachments?: unknown
 }
 
+interface ModelRoutePreviewBody {
+  text?: string
+  attachments?: unknown
+  requirement?: ModelRouteRequirement
+}
+
+interface ServeModelRouter {
+  providers: ModelIO[]
+  route(request: ModelRequest, requirement?: ModelRouteRequirement): ModelRouteDecision
+}
+
 function guessMediaType(uri: string): string {
   if (/\.png($|\?)/i.test(uri)) return 'image/png'
   if (/\.jpe?g($|\?)/i.test(uri)) return 'image/jpeg'
@@ -69,6 +81,113 @@ function guessMediaType(uri: string): string {
   if (/\.mp4($|\?)/i.test(uri)) return 'video/mp4'
   if (/\.pdf($|\?)/i.test(uri)) return 'application/pdf'
   return 'application/octet-stream'
+}
+
+function parsePositiveInt(value: string | null, fallback: number): number {
+  const parsed = value == null ? fallback : Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 1000) : fallback
+}
+
+function readJsonFile(path: string): unknown | null {
+  try {
+    if (!existsSync(path)) return null
+    return JSON.parse(readFileSync(path, 'utf-8')) as unknown
+  } catch {
+    return null
+  }
+}
+
+function readTextSnippet(path: string, maxChars: number): string | null {
+  try {
+    if (!existsSync(path)) return null
+    const text = readFileSync(path, 'utf-8')
+    return text.length > maxChars ? text.slice(0, maxChars) : text
+  } catch {
+    return null
+  }
+}
+
+function readJsonlTail(path: string, limit: number): unknown[] {
+  try {
+    if (!existsSync(path)) return []
+    return readFileSync(path, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .slice(-limit)
+      .map(line => {
+        try { return JSON.parse(line) as unknown } catch { return { raw: line } }
+      })
+  } catch {
+    return []
+  }
+}
+
+function listRecentMarkdown(dir: string, limit: number): Array<{ path: string; name: string; updatedAt: string; excerpt: string }> {
+  try {
+    if (!existsSync(dir)) return []
+    return readdirSync(dir)
+      .filter(name => name.endsWith('.md'))
+      .map(name => {
+        const path = join(dir, name)
+        const stat = statSync(path)
+        return {
+          path,
+          name,
+          updatedAt: stat.mtime.toISOString(),
+          excerpt: readTextSnippet(path, 2000) ?? '',
+        }
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, limit)
+  } catch {
+    return []
+  }
+}
+
+function buildBehaviorDigest(
+  tickEntries: unknown[],
+  inProcessTicks: Array<{ tick: number; timestamp: string; duration: number; actions: string[]; mode: string; error?: string }>,
+) {
+  const actionCounts = new Map<string, number>()
+  const modes = new Map<string, number>()
+  let totalDuration = 0
+  let qualityCount = 0
+  let qualityTotal = 0
+  let errors = 0
+
+  for (const entry of tickEntries) {
+    if (!entry || typeof entry !== 'object') continue
+    const item = entry as Record<string, unknown>
+    const actions = Array.isArray(item.actions)
+      ? item.actions.map(action => typeof action === 'string' ? action : typeof action === 'object' && action ? String((action as Record<string, unknown>).type ?? '') : '').filter(Boolean)
+      : []
+    for (const action of actions) actionCounts.set(action, (actionCounts.get(action) ?? 0) + 1)
+    const mode = typeof item.mode === 'string' ? item.mode : typeof item.contextMode === 'string' ? item.contextMode : 'unknown'
+    modes.set(mode, (modes.get(mode) ?? 0) + 1)
+    const observation = typeof item.observation === 'object' && item.observation ? item.observation as Record<string, unknown> : {}
+    if (typeof observation.duration === 'number') totalDuration += observation.duration
+    const quality = typeof observation.outputQuality === 'number'
+      ? observation.outputQuality
+      : typeof observation.quality === 'number'
+        ? observation.quality
+        : null
+    if (quality != null) {
+      qualityTotal += quality
+      qualityCount++
+    }
+    if (typeof item.error === 'string' || observation.actionsFailed && Number(observation.actionsFailed) > 0) errors++
+  }
+
+  return {
+    tickCount: tickEntries.length,
+    inProcessRecentTicks: inProcessTicks.slice(-20),
+    averageDurationMs: tickEntries.length ? Math.round(totalDuration / tickEntries.length) : 0,
+    averageQuality: qualityCount ? Number((qualityTotal / qualityCount).toFixed(2)) : null,
+    errors,
+    actionCounts: Object.fromEntries([...actionCounts.entries()].sort((a, b) => b[1] - a[1])),
+    modes: Object.fromEntries([...modes.entries()].sort((a, b) => b[1] - a[1])),
+  }
 }
 
 function createAgentPool(primaryAgent: TanrenAgent, config: TanrenConfig | undefined, maxSize: number): AgentPool {
@@ -244,6 +363,8 @@ export interface ServeOptions {
   artifacts?: ArtifactProviderSelection
   /** Resumable long task controller exposed through /tasks endpoints. */
   longTasks?: LongTaskController
+  /** Shared model router used for capability previews without invoking cloud LLM calls. */
+  modelRouter?: ServeModelRouter
 }
 
 export interface TanrenHealth {
@@ -446,6 +567,19 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     return `${text.trim() || 'Please inspect the attached input.'}\n\n[ATTACHMENTS]\n${summaries.join('\n')}`
   }
 
+  const summarizePromptBlocks = (prompt: PromptContentBlock[]) => ({
+    blockTypes: prompt.map(block => block.type),
+    attachmentCount: prompt.filter(block => block.type !== 'text').length,
+    mediaTypes: prompt
+      .map(block => 'mediaType' in block ? block.mediaType : undefined)
+      .filter((mediaType): mediaType is string => typeof mediaType === 'string'),
+  })
+
+  const summarizeModel = (model: ModelIO | undefined) => model ? {
+    name: model.name,
+    capabilities: model.capabilities,
+  } : null
+
   const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${port}`)
 
@@ -495,6 +629,94 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
         const status = JSON.parse(readFileSync(statusPath, 'utf-8'))
         json(res, 200, status)
       } catch { json(res, 200, { phase: 'unknown' }) }
+
+    } else if (url.pathname === '/loop/status' && req.method === 'GET') {
+      const poolStatus = pool.status()
+      json(res, 200, {
+        running: poolStatus.active > 0 || autonomousBusy,
+        ticking: poolStatus.active > 0 || autonomousBusy,
+        tickCount,
+        autonomous: { busy: autonomousBusy, lastWebhookTick },
+        pool: poolStatus,
+        liveStatus: readJsonFile(join(memoryDir, 'state', 'live-status.json')) ?? { phase: 'unknown' },
+        recentTicks: recentTicks.slice(-10),
+      })
+
+    } else if (url.pathname === '/logs' && req.method === 'GET') {
+      const limit = parsePositiveInt(url.searchParams.get('limit'), 50)
+      const tickEntries = readJsonlTail(join(memoryDir, 'journal', 'ticks.jsonl'), limit)
+      const markdownTicks = listRecentMarkdown(join(memoryDir, 'journal', 'ticks'), Math.min(limit, 20))
+      json(res, 200, {
+        recentTicks,
+        tickEntries,
+        markdownTicks,
+        policyEvents: readJsonlTail(join(memoryDir, 'state', 'policy-events.jsonl'), limit),
+      })
+
+    } else if (url.pathname === '/context' && req.method === 'GET') {
+      const topicLimit = parsePositiveInt(url.searchParams.get('topicLimit'), 20)
+      json(res, 200, {
+        memory: readTextSnippet(join(memoryDir, 'memory.md'), 12_000),
+        heartbeat: readTextSnippet(join(memoryDir, 'HEARTBEAT.md'), 8_000),
+        soul: readTextSnippet(join(memoryDir, 'SOUL.md'), 8_000),
+        workingMemory: readJsonFile(join(memoryDir, 'state', 'working-memory.json')),
+        sessionBridge: readJsonFile(join(memoryDir, 'state', 'session-bridge.json')),
+        topics: listRecentMarkdown(join(memoryDir, 'topics'), topicLimit),
+      })
+
+    } else if (url.pathname === '/api/dashboard/behaviors' && req.method === 'GET') {
+      const limit = parsePositiveInt(url.searchParams.get('limit'), 200)
+      const tickEntries = readJsonlTail(join(memoryDir, 'journal', 'ticks.jsonl'), limit)
+      json(res, 200, buildBehaviorDigest(tickEntries, recentTicks))
+
+    } else if (url.pathname === '/api/dashboard/learning' && req.method === 'GET') {
+      json(res, 200, {
+        actionHealth: readJsonFile(join(memoryDir, 'state', 'action-health.json')),
+        gateState: readJsonFile(join(memoryDir, 'state', 'gate-state.json')),
+        crystallization: readJsonFile(join(memoryDir, 'state', 'crystallization.json')),
+        workingMemory: readJsonFile(join(memoryDir, 'state', 'working-memory.json')),
+        usage: readJsonFile(join(memoryDir, 'state', 'usage-summary.json')),
+      })
+
+    } else if (url.pathname === '/api/dashboard/journal' && req.method === 'GET') {
+      const limit = parsePositiveInt(url.searchParams.get('limit'), 30)
+      json(res, 200, {
+        tickEntries: readJsonlTail(join(memoryDir, 'journal', 'ticks.jsonl'), limit),
+        markdownTicks: listRecentMarkdown(join(memoryDir, 'journal', 'ticks'), limit),
+        kgPending: readJsonlTail(join(memoryDir, 'journal', 'kg-pending.jsonl'), limit),
+      })
+
+    } else if (url.pathname === '/model/route-preview' && req.method === 'POST') {
+      let parsed: ModelRoutePreviewBody
+      try { parsed = await readJsonBody<Record<string, unknown>>(req) as ModelRoutePreviewBody } catch { json(res, 400, { error: 'Invalid JSON' }); return }
+
+      const text = typeof parsed.text === 'string' ? parsed.text : ''
+      const attachments = normalizeChatAttachments(parsed.attachments)
+      const prompt: PromptContentBlock[] = []
+      if (text.trim()) prompt.push({ type: 'text', text: text.trim() })
+      prompt.push(...attachments)
+      if (!prompt.length) prompt.push({ type: 'text', text: 'Route preview' })
+
+      const requirement = parsed.requirement && typeof parsed.requirement === 'object' ? parsed.requirement : undefined
+      if (!options.modelRouter) {
+        json(res, 200, {
+          selected: null,
+          rejected: [],
+          prompt: summarizePromptBlocks(prompt),
+          requirement,
+          reason: 'model router unavailable',
+        })
+        return
+      }
+
+      const decision = options.modelRouter.route({ prompt, metadata: { source: 'route-preview' } }, requirement)
+      json(res, 200, {
+        selected: summarizeModel(decision.selected),
+        rejected: decision.rejected,
+        prompt: summarizePromptBlocks(prompt),
+        requirement,
+        providers: options.modelRouter.providers.map(summarizeModel),
+      })
 
     } else if ((url.pathname === '/workbench' || url.pathname === '/chat-ui') && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -689,6 +911,13 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
           },
           'GET /health': { description: 'Health check', returns: { status: 'ok', ticking: 'boolean', tickCount: 'number', pool: '{ active, idle, total, max }' } },
           'GET /status': { description: 'Live agent status from working memory' },
+          'GET /loop/status': { description: 'Loop/pool status plus live-status.json and recent in-process ticks' },
+          'GET /logs': { description: 'Recent tick JSONL entries, markdown tick logs, and policy events', query: { limit: 'default 50' } },
+          'GET /context': { description: 'Human-readable memory/context snapshot from memory files and topics', query: { topicLimit: 'default 20' } },
+          'GET /api/dashboard/behaviors': { description: 'Behavior digest from recent tick history', query: { limit: 'default 200' } },
+          'GET /api/dashboard/learning': { description: 'Learning/action-health/gate/working-memory dashboard state' },
+          'GET /api/dashboard/journal': { description: 'Recent journal entries and tick markdown files', query: { limit: 'default 30' } },
+          'POST /model/route-preview': { description: 'Preview which model provider can handle a text/multimodal request without invoking an LLM', body: { text: 'optional', attachments: 'optional [{ uri, mediaType?, label? }]', requirement: 'optional output/streaming capability requirement' } },
           'GET /workbench': { description: 'Human-readable Agent Native UI Protocol workbench' },
           'GET /chat-ui': { description: 'Browser chat UI with live ANUP workbench side panel' },
           'POST /demo/anup': { description: 'Create a demo ANUP run with decision, approval, trace, and media_ref blocks' },

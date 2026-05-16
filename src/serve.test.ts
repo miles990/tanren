@@ -10,6 +10,7 @@ import type { TanrenAgent } from './index.js'
 import { FileArtifactJobStore, FileArtifactStore, type ArtifactProvider } from './artifact-io.js'
 import { writePolicyEvent } from './provider-policy.js'
 import { LongTaskController } from './long-task.js'
+import type { ModelIO, ModelRequest, ModelRouteRequirement } from './model-io.js'
 
 describe('serve', () => {
   it('exposes declared capabilities on /health', async () => {
@@ -231,6 +232,7 @@ describe('serve', () => {
       memoryDir: dir,
       longTasks,
       capabilities: { llm: { provider: 'fake', input: { image: true }, output: { text: true } } },
+      modelRouter: createFakeModelRouter(),
       artifacts: {
         enabled: false,
         providers: {},
@@ -267,6 +269,7 @@ describe('serve', () => {
       const chatUi = await chatUiResponse.text()
       assert.match(chatUi, /Talk To Akari/)
       assert.match(chatUi, /Provider & Media Capability/)
+      assert.match(chatUi, /Route preview/)
       assert.match(chatUi, /attachUri/)
       assert.match(chatUi, /Optional attachment URL/)
       assert.match(chatUi, /Pending approval/)
@@ -276,6 +279,22 @@ describe('serve', () => {
       assert.equal(demoResponse.status, 201)
       assert.ok(demo.blocks.some(block => block.type === 'decision_card'))
       assert.ok(demo.blocks.some(block => block.type === 'media_ref'))
+
+      for (const path of ['/loop/status', '/logs', '/context', '/api/dashboard/behaviors', '/api/dashboard/learning', '/api/dashboard/journal']) {
+        const response = await fetch(`http://127.0.0.1:${port}${path}`)
+        assert.equal(response.status, 200, `${path} should be available`)
+        assert.equal(response.headers.get('content-type')?.startsWith('application/json'), true)
+      }
+
+      const routePreviewResponse = await fetch(`http://127.0.0.1:${port}/model/route-preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'inspect', attachments: [{ uri: 'https://example.test/image.png', mediaType: 'image/png' }] }),
+      })
+      const routePreview = await routePreviewResponse.json() as { selected: { name: string } | null; rejected: Array<{ name: string; reason: string }> }
+      assert.equal(routePreviewResponse.status, 200)
+      assert.equal(routePreview.selected?.name, 'vision-provider')
+      assert.equal(routePreview.rejected[0]?.reason, 'image input unsupported')
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))
@@ -335,6 +354,45 @@ function createFakeAgent(): TanrenAgent {
     getRecentTicks() { return [] },
     setSessionId(id) { sessionId = id },
     getSessionId() { return sessionId },
+  }
+}
+
+function createFakeModelRouter() {
+  const textProvider: ModelIO = {
+    name: 'text-provider',
+    capabilities: {
+      input: { text: true, image: false, audio: false, pdf: false, file: false, url: true, streamRef: false },
+      output: { text: true, image: false, audio: false, file: false, structured: false },
+      streaming: { text: true, structured: false, toolCalls: false, media: false },
+      tools: { native: false, parallel: false },
+      state: { sessions: false },
+    },
+    async generate() { return { text: 'ok' } },
+    async *stream() { yield { type: 'text_delta', text: 'ok' } },
+  }
+  const visionProvider: ModelIO = {
+    ...textProvider,
+    name: 'vision-provider',
+    capabilities: {
+      ...textProvider.capabilities,
+      input: { ...textProvider.capabilities.input, image: true },
+    },
+  }
+  return {
+    providers: [textProvider, visionProvider],
+    route(request: ModelRequest, _requirement?: ModelRouteRequirement) {
+      const rejected: Array<{ name: string; reason: string }> = []
+      const prompt = Array.isArray(request.prompt) ? request.prompt : [{ type: 'text' as const, text: request.prompt }]
+      for (const provider of [textProvider, visionProvider]) {
+        const hasImage = prompt.some(block => block.type === 'media' && block.mediaType.startsWith('image/'))
+        if (hasImage && !provider.capabilities.input.image) {
+          rejected.push({ name: provider.name, reason: 'image input unsupported' })
+          continue
+        }
+        return { selected: provider, rejected }
+      }
+      return { rejected }
+    },
   }
 }
 

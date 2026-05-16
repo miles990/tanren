@@ -241,12 +241,21 @@ multimodal capabilities. The router checks prompt blocks (`text`, `media`, `stre
 and requested output/streaming capabilities before selecting a provider, so apps can prefer
 Gemini/OpenAI/Anthropic for image/audio/file tasks while keeping text-only providers as safe
 fallbacks.
+`serve()` can expose that same router through `POST /model/route-preview`, allowing a UI to show
+which provider would handle a text/media request without spending LLM tokens.
 
 ### Agent Native UI Protocol
 
 Tanren exposes an Agent Native UI Protocol (ANUP) for human-readable agent workbenches:
 
 - `GET /workbench` / `GET /chat-ui` — browser chat plus ANUP state panel.
+- `GET /loop/status` — live loop/pool status plus `live-status.json`.
+- `GET /logs` — recent tick JSONL entries, markdown tick logs, and policy events.
+- `GET /context` — memory/topic/working-memory snapshot for human inspection.
+- `GET /api/dashboard/behaviors` — behavior digest from recent tick history.
+- `GET /api/dashboard/learning` — learning/action-health/gate/working-memory state.
+- `GET /api/dashboard/journal` — recent journal entries and tick markdown files.
+- `POST /model/route-preview` — preview provider routing for text/media requests without invoking an LLM.
 - `GET /anup/overview` — project runtime capabilities, tasks, artifacts, and policy events.
 - `GET /anup/tasks/:taskId` — project one long task into task/state/trace/result blocks.
 - `GET /anup/runs` / `GET /anup/runs/:runId` — read persisted ANUP runs.
@@ -268,7 +277,9 @@ matching approved actions are allowed on retry, while rejected actions stay bloc
 Workbench chat also supports lightweight attachment refs by URL/path/media type; these are sent
 as a structured `attachments: [{ uri, mediaType?, label? }]` request field, projected into ANUP
 `media_ref` blocks, and summarized into the current text loop. Hosts with native multimodal
-providers can route the same data as `PromptContentBlock[]`.
+providers can route the same data as `PromptContentBlock[]`; the browser workbench calls
+`/model/route-preview` while attachments are being entered so humans can see whether the current
+provider pool will handle the media natively or preserve it as a reference.
 
 ### Resumable Long Tasks
 

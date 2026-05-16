@@ -133,7 +133,7 @@ export function getAnupWorkbenchHtml(): string {
     </section>
   </main>
   <script>
-    const state = { envelope: null, actions: [], selectedSource: '/anup/overview', runs: [], health: null };
+    const state = { envelope: null, actions: [], selectedSource: '/anup/overview', runs: [], health: null, routePreviewSeq: 0 };
     const $ = id => document.getElementById(id);
 
     $('refresh').addEventListener('click', () => refreshAll(false));
@@ -435,7 +435,38 @@ export function getAnupWorkbenchHtml(): string {
       const supported = mediaSupportedByProvider(attachment.mediaType);
       $('attachmentPreview').innerHTML =
         '<span class="pill ' + (supported ? 'ok' : 'warn') + '">' + escapeHtml(attachment.mediaType) + '</span>' +
-        '<span>' + escapeHtml(supported ? 'native-capable provider path available' : 'will be preserved as ANUP media_ref and text summary') + '</span>';
+        '<span>' + escapeHtml(supported ? 'native-capable provider path available' : 'will be preserved as ANUP media_ref and text summary') + '</span>' +
+        '<div id="routePreview" class="meta" style="margin-top:6px">Route preview: checking...</div>';
+      refreshRoutePreview(attachment);
+    }
+
+    async function refreshRoutePreview(attachment) {
+      const seq = ++state.routePreviewSeq;
+      try {
+        const res = await fetch('/model/route-preview', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            text: $('chatInput').value.trim() || 'Route this attachment.',
+            attachments: [attachment]
+          })
+        });
+        const body = await res.json();
+        if (seq !== state.routePreviewSeq) return;
+        const target = $('routePreview');
+        if (!target) return;
+        const selected = body.selected?.name;
+        const rejected = body.rejected || [];
+        target.innerHTML = selected
+          ? 'Route preview: <span class="pill ok">' + escapeHtml(selected) + '</span>'
+          : 'Route preview: <span class="pill warn">no native provider</span>' +
+            (body.reason ? ' ' + escapeHtml(body.reason) : '') +
+            (rejected.length ? '<br>' + escapeHtml(rejected.map(item => item.name + ': ' + item.reason).join(' · ')) : '');
+      } catch (err) {
+        if (seq !== state.routePreviewSeq) return;
+        const target = $('routePreview');
+        if (target) target.textContent = 'Route preview: unavailable';
+      }
     }
 
     function mediaSupportedByProvider(mediaType) {
