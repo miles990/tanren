@@ -462,6 +462,7 @@ export function chatResultToAnupEnvelope(input: {
       startedAt: input.startedAt,
       completedAt,
       sessionId: input.result.sessionId,
+      attachments: input.attachments,
     },
   })
 }

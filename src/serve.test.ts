@@ -266,8 +266,10 @@ describe('serve', () => {
       assert.equal(chatUiResponse.headers.get('content-type')?.startsWith('text/html'), true)
       const chatUi = await chatUiResponse.text()
       assert.match(chatUi, /Talk To Akari/)
+      assert.match(chatUi, /Provider & Media Capability/)
       assert.match(chatUi, /attachUri/)
       assert.match(chatUi, /Optional attachment URL/)
+      assert.match(chatUi, /Pending approval/)
 
       const demoResponse = await fetch(`http://127.0.0.1:${port}/demo/anup`, { method: 'POST' })
       const demo = await demoResponse.json() as { run_id: string; blocks: Array<{ type: string }> }

@@ -46,6 +46,14 @@ export function getAnupWorkbenchHtml(): string {
     .card.bad { border-color:var(--bad); }
     .summary { white-space:pre-wrap; overflow-wrap:anywhere; }
     .pill { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:2px 8px; margin:0 4px 4px 0; color:var(--muted); font-size:12px; }
+    .pill.ok { color:var(--good); border-color:color-mix(in srgb, var(--good) 48%, var(--line)); }
+    .pill.no { color:var(--muted); }
+    .pill.warn { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 48%, var(--line)); }
+    .status { display:inline-flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--line); border-radius:999px; padding:2px 8px; margin-bottom:8px; }
+    .status.pending { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 48%, var(--line)); }
+    .status.approve { color:var(--good); border-color:color-mix(in srgb, var(--good) 48%, var(--line)); }
+    .status.reject { color:var(--bad); border-color:color-mix(in srgb, var(--bad) 48%, var(--line)); }
+    .status.modify { color:var(--accent); border-color:color-mix(in srgb, var(--accent) 48%, var(--line)); }
     .risk-high, .risk-critical { color:var(--bad); }
     .risk-medium { color:var(--warn); }
     .timeline { display:grid; gap:8px; }
@@ -59,6 +67,7 @@ export function getAnupWorkbenchHtml(): string {
     ul { margin:8px 0 0; padding-left:18px; }
     img, video { max-width:min(100%, 760px); border:1px solid var(--line); border-radius:6px; display:block; margin-top:10px; }
     audio { width:min(100%, 760px); margin-top:10px; }
+    .debug-blocks { opacity:.86; }
     @media (max-width: 900px) { main, .top-grid, .cards { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } }
   </style>
 </head>
@@ -87,6 +96,7 @@ export function getAnupWorkbenchHtml(): string {
             <input id="attachUri" placeholder="Optional attachment URL, file path, or artifact ref">
             <input id="attachMediaType" placeholder="media type, e.g. image/png">
           </div>
+          <div id="attachmentPreview" class="meta" style="margin-top:6px"></div>
           <div class="toolbar" style="margin-top:8px">
             <button id="send" class="primary">Send</button>
             <button id="demo">Seed Demo</button>
@@ -106,6 +116,7 @@ export function getAnupWorkbenchHtml(): string {
           <div id="taskPanel" class="card"></div>
           <div id="statePanel" class="card"></div>
         </div>
+        <div id="capabilityPanel" class="card"></div>
         <div class="cards">
           <div id="approvalPanel" class="card"></div>
           <div id="decisionPanel" class="card"></div>
@@ -114,15 +125,15 @@ export function getAnupWorkbenchHtml(): string {
           <div id="timelinePanel" class="card"></div>
           <div id="artifactPanel" class="card"></div>
         </div>
-        <details>
-          <summary>Raw ANUP Blocks</summary>
+        <details class="debug-blocks">
+          <summary>Debug: Raw ANUP Blocks</summary>
           <div id="rawBlocks"></div>
         </details>
       </div>
     </section>
   </main>
   <script>
-    const state = { envelope: null, actions: [], selectedSource: '/anup/overview', runs: [] };
+    const state = { envelope: null, actions: [], selectedSource: '/anup/overview', runs: [], health: null };
     const $ = id => document.getElementById(id);
 
     $('refresh').addEventListener('click', () => refreshAll(false));
@@ -130,6 +141,8 @@ export function getAnupWorkbenchHtml(): string {
     $('send').addEventListener('click', sendChat);
     $('demo').addEventListener('click', seedDemo);
     $('clearChat').addEventListener('click', () => { $('messages').innerHTML = ''; });
+    $('attachUri').addEventListener('input', renderAttachmentPreview);
+    $('attachMediaType').addEventListener('input', renderAttachmentPreview);
     $('chatInput').addEventListener('keydown', event => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) sendChat();
     });
@@ -137,8 +150,18 @@ export function getAnupWorkbenchHtml(): string {
     refreshAll(false);
 
     async function refreshAll(selectLatest) {
+      await loadHealth();
       await loadRuns(selectLatest);
       await loadSource(state.selectedSource);
+    }
+
+    async function loadHealth() {
+      try {
+        const res = await fetch('/health');
+        state.health = res.ok ? await res.json() : null;
+      } catch {
+        state.health = null;
+      }
     }
 
     async function loadRuns(selectLatest) {
@@ -185,6 +208,7 @@ export function getAnupWorkbenchHtml(): string {
       renderRuns();
       renderTask(run);
       renderState(run);
+      renderCapabilities(run);
       renderApprovals(run);
       renderDecisions(run);
       renderTimeline(run);
@@ -200,6 +224,7 @@ export function getAnupWorkbenchHtml(): string {
       input.value = '';
       $('attachUri').value = '';
       $('attachMediaType').value = '';
+      renderAttachmentPreview();
       const messageText = attachment
         ? text + '\\n\\n[ATTACHMENT]\\nuri: ' + attachment.uri + '\\nmediaType: ' + attachment.mediaType
         : text;
@@ -265,6 +290,34 @@ export function getAnupWorkbenchHtml(): string {
         : '<div class="muted">No state block available.</div>');
     }
 
+    function renderCapabilities(run) {
+      const llm = state.health?.agent?.llm || state.health?.capabilities?.llm || {};
+      const routing = state.health?.capabilities?.routing?.modelProviders || [];
+      const input = llm.capabilities?.input || {};
+      const output = llm.capabilities?.output || {};
+      const streaming = llm.capabilities?.streaming || {};
+      const nativeMedia = Boolean(input.image || input.audio || input.pdf || output.image || output.audio || output.file);
+      const attachmentMode = nativeMedia
+        ? 'Provider advertises native media capability; attachments can be routed without changing the UI contract.'
+        : 'Current provider is text/tool-first; attachments are preserved as structured refs and summarized into the text loop.';
+      $('capabilityPanel').innerHTML =
+        '<h2>Provider & Media Capability</h2>' +
+        '<div class="summary">' + escapeHtml(llm.provider || state.health?.agent?.provider || run.agent_id || 'Unknown provider') + '</div>' +
+        '<div style="margin-top:10px">' +
+          capabilityPill('text in', input.text) +
+          capabilityPill('image in', input.image) +
+          capabilityPill('audio in', input.audio) +
+          capabilityPill('pdf in', input.pdf) +
+          capabilityPill('file in', input.file) +
+          capabilityPill('text stream', streaming.text) +
+          capabilityPill('tool calls', llm.capabilities?.tools?.native) +
+          capabilityPill('image out', output.image) +
+          capabilityPill('audio out', output.audio) +
+        '</div>' +
+        '<div class="meta" style="margin-top:8px">' + escapeHtml(attachmentMode) + '</div>' +
+        (routing.length ? '<div class="meta" style="margin-top:8px">Routing pool: ' + escapeHtml(routing.map(provider => provider.name).join(', ')) + '</div>' : '');
+    }
+
     function renderApprovals(run) {
       const approvals = blocks(run, 'approval_request');
       $('approvalPanel').className = 'card' + (approvals.length ? ' urgent' : '');
@@ -302,12 +355,15 @@ export function getAnupWorkbenchHtml(): string {
     }
 
     function renderApproval(item, runId) {
-      const responded = state.actions.some(action => action.source_block_id === item.id);
+      const response = latestAction(item.id);
+      const status = response?.action_id || 'pending';
       return '<div class="panel">' +
         '<h3>' + escapeHtml(item.title || item.id) + '</h3>' +
-        '<div class="risk-' + escapeAttr(item.risk_level) + '">Risk: ' + escapeHtml(item.risk_level) + (responded ? ' · responded' : '') + '</div>' +
+        '<div class="status ' + escapeAttr(status) + '">' + escapeHtml(statusLabel(status)) + '</div>' +
+        '<div class="risk-' + escapeAttr(item.risk_level) + '">Risk: ' + escapeHtml(item.risk_level) + '</div>' +
         '<div><b>' + escapeHtml(item.action?.kind || '') + '</b> ' + escapeHtml(item.action?.target || '') + '</div>' +
         '<p class="muted">' + escapeHtml(item.action?.description || '') + '</p>' +
+        '<p class="meta">' + escapeHtml(approvalReason(item)) + '</p>' +
         '<div class="toolbar">' + (item.available_actions || []).map(action =>
           '<button onclick="sendAction(\\'' + escapeAttr(runId) + '\\',\\'' + escapeAttr(item.id) + '\\',\\'' + escapeAttr(action.id) + '\\')">' + escapeHtml(action.label) + '</button>'
         ).join('') + '</div></div>';
@@ -370,6 +426,26 @@ export function getAnupWorkbenchHtml(): string {
       return { uri, mediaType };
     }
 
+    function renderAttachmentPreview() {
+      const attachment = readAttachment();
+      if (!attachment) {
+        $('attachmentPreview').textContent = '';
+        return;
+      }
+      const supported = mediaSupportedByProvider(attachment.mediaType);
+      $('attachmentPreview').innerHTML =
+        '<span class="pill ' + (supported ? 'ok' : 'warn') + '">' + escapeHtml(attachment.mediaType) + '</span>' +
+        '<span>' + escapeHtml(supported ? 'native-capable provider path available' : 'will be preserved as ANUP media_ref and text summary') + '</span>';
+    }
+
+    function mediaSupportedByProvider(mediaType) {
+      const input = (state.health?.agent?.llm || state.health?.capabilities?.llm || {}).capabilities?.input || {};
+      if (mediaType.startsWith('image/')) return Boolean(input.image);
+      if (mediaType.startsWith('audio/')) return Boolean(input.audio);
+      if (mediaType === 'application/pdf') return Boolean(input.pdf);
+      return Boolean(input.file);
+    }
+
     function guessMediaType(uri) {
       if (/\\.png($|\\?)/i.test(uri)) return 'image/png';
       if (/\\.jpe?g($|\\?)/i.test(uri)) return 'image/jpeg';
@@ -398,6 +474,29 @@ export function getAnupWorkbenchHtml(): string {
     function chips(values, prefix) {
       if (!values || !values.length) return '';
       return '<div style="margin-top:10px">' + values.map(value => '<span class="pill">' + escapeHtml(prefix + ': ' + value) + '</span>').join('') + '</div>';
+    }
+
+    function capabilityPill(label, enabled) {
+      return '<span class="pill ' + (enabled ? 'ok' : 'no') + '">' + escapeHtml(label + ': ' + (enabled ? 'yes' : 'no')) + '</span>';
+    }
+
+    function latestAction(blockId) {
+      return [...state.actions]
+        .filter(action => action.source_block_id === blockId)
+        .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')))[0] || null;
+    }
+
+    function statusLabel(status) {
+      if (status === 'approve') return 'Approved';
+      if (status === 'reject') return 'Rejected';
+      if (status === 'modify') return 'Modify requested';
+      return 'Pending approval';
+    }
+
+    function approvalReason(item) {
+      if (item.risk_level === 'critical' || item.risk_level === 'high') return 'This is gated because it can change files, run commands, deploy, or call an external provider with side effects.';
+      if (item.action?.kind === 'send_message') return 'This is gated because it sends information outside the local workspace.';
+      return 'This request is shown because the agent needs a human decision before continuing.';
     }
 
     function escapeHtml(value) {
