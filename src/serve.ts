@@ -366,6 +366,8 @@ export interface ServeOptions {
   longTasks?: LongTaskController
   /** Shared model router used for capability previews without invoking cloud LLM calls. */
   modelRouter?: ServeModelRouter
+  /** Exit the process when the HTTP server cannot listen. CLI hosts should enable this. */
+  exitOnListenError?: boolean
 }
 
 export interface TanrenHealth {
@@ -1033,6 +1035,12 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
   // ref alive for serve mode; tests clear it by closing the server.
   const keepAliveTimer = setInterval(() => {}, 60 * 60 * 1000)
   server.on('close', () => clearInterval(keepAliveTimer))
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    console.error(`[${serviceName}] Server error: ${err.code ?? err.name}: ${err.message}`)
+    pool.destroy()
+    clearInterval(keepAliveTimer)
+    if (options.exitOnListenError) process.exit(1)
+  })
 
   server.listen(port, () => {
     console.log(`[${serviceName}] Server on port ${port}`)

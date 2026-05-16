@@ -61,6 +61,7 @@ export async function runAgentCli(opts: RuntimeCliOptions): Promise<void> {
       onBeforeChat: async (from, text) => opts.peerBridge.onBeforeChat(from, text),
       onAfterChat: async () => { tickCount++ },
       health: opts.health,
+      exitOnListenError: true,
       ...opts.serveOptions,
     })
     console.log(`[${opts.serviceName}] Provider: ${opts.providerName ?? 'unknown'}`)

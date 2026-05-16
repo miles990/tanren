@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -48,6 +49,29 @@ describe('serve', () => {
     } finally {
       handle.server.closeAllConnections()
       await new Promise<void>(resolve => handle.server.close(() => resolve()))
+    }
+  })
+
+  it('emits a server error instead of leaving listen failures as uncaught exceptions', async () => {
+    const blocker = createHttpServer((_req, res) => res.end('occupied'))
+    blocker.listen(0)
+
+    try {
+      await once(blocker, 'listening')
+      const address = blocker.address()
+      assert.ok(address && typeof address === 'object')
+      const port = (address as AddressInfo).port
+
+      const handle = serve(createFakeAgent(), {
+        port,
+        serviceName: 'test-agent',
+      })
+      const [err] = await once(handle.server, 'error') as [NodeJS.ErrnoException]
+      assert.equal(err.code, 'EADDRINUSE')
+      handle.server.closeAllConnections()
+      handle.server.close()
+    } finally {
+      await new Promise<void>(resolve => blocker.close(() => resolve()))
     }
   })
 
