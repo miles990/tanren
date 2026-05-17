@@ -23,6 +23,13 @@ import {
 import { createLongTaskActions, LongTaskController } from './long-task.js'
 import { FileAgentUIStore, createAnupApprovalGuard } from './anup.js'
 import { createModelIO, routeModelRequest, type ModelIO, type ModelRequest, type ModelRouteRequirement } from './model-io.js'
+import { createProviderHealthState, createResilientProvider, type ResilientProviderState } from './resilient-provider.js'
+import {
+  readRuntimeTaskProfileName,
+  resolveRuntimeTaskProfile,
+  type RuntimeTaskProfile,
+  type RuntimeTaskProfileName,
+} from './task-profile.js'
 
 export interface RuntimePresetOptions {
   baseDir?: string
@@ -62,6 +69,9 @@ export interface RuntimePresetOptions {
   extraHooks?: Hook[]
   extraGates?: Gate[]
   extraModelProviders?: Record<string, LLMProvider>
+  providerRetryAttempts?: number
+  providerRetryDelayMs?: number
+  taskProfile?: RuntimeTaskProfileName | RuntimeTaskProfile
 }
 
 export interface RuntimePreset {
@@ -77,6 +87,8 @@ export interface RuntimePreset {
   providerPolicyDecision: ProviderPolicyDecision
   providerPolicy?: ProviderPolicy
   modelRouter: RuntimeModelRouter
+  providerHealth: ResilientProviderState
+  taskProfile: RuntimeTaskProfile
 }
 
 export interface RuntimeModelRouter {
@@ -111,6 +123,7 @@ export interface RuntimeCapabilities {
   routing: {
     modelProviders: Array<{ name: string; capabilities: unknown }>
   }
+  taskProfile: RuntimeTaskProfile
 }
 
 export interface RuntimeLayerPipeline {
@@ -151,6 +164,7 @@ export function createRuntimeLayers(opts: RuntimePresetOptions = {}): RuntimeLay
       providerSelection: providerLayer.providerSelection,
       artifactSelection: artifactLayer.artifactSelection,
       mcpConfig,
+      taskProfile: providerLayer.taskProfile,
     }),
   }
 }
@@ -180,7 +194,8 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     logger: console,
   })
   const providerLayer = createProviderLayer({ opts, env, serviceEnvPrefix, mode, provider, cloudFallbackEnabled, memoryDir, mcpConfig })
-  const { providerSelection, providerPolicyDecision, llm } = providerLayer
+  const { providerSelection, providerPolicyDecision, llm: primaryLlm } = providerLayer
+  const { taskProfile } = providerLayer
   const artifactLayer = createArtifactLayer({ opts, env, memoryDir })
   const { artifactSelection } = artifactLayer
   const longTaskLayer = createLongTaskLayer({ opts, memoryDir, baseDir })
@@ -222,7 +237,22 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     : []
   const longTaskActions = longTaskController ? createLongTaskActions(longTaskController) : []
 
-  const capabilities = createRuntimeCapabilities({ opts, providerSelection, artifactSelection, mcpConfig, agora })
+  const providerHealth = createProviderHealthState(providerSelection.providerKey)
+  const fallbackChain = Object.entries(opts.extraModelProviders ?? {})
+    .filter(([name]) => name !== providerSelection.providerKey)
+    .map(([name, provider]) => ({ name, provider }))
+  const llm = createResilientProvider({
+    chain: [{ name: providerSelection.providerKey, provider: primaryLlm }, ...fallbackChain],
+    retryAttempts: opts.providerRetryAttempts ?? taskProfile.providerRetryAttempts ?? 2,
+    retryDelayMs: opts.providerRetryDelayMs ?? taskProfile.providerRetryDelayMs ?? 500,
+    stateDir: join(memoryDir, 'state'),
+    state: providerHealth,
+    onFallback: (failed, next, error) => {
+      console.error(`[tanren] provider ${failed} failed (${error.slice(0, 160)}); falling back to ${next}`)
+    },
+  })
+
+  const capabilities = createRuntimeCapabilities({ opts, providerSelection, artifactSelection, mcpConfig, agora, taskProfile })
   const modelRouter = createRuntimeModelRouter({
     primaryName: providerSelection.providerKey,
     primary: llm,
@@ -272,6 +302,7 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
     mcpConfig,
     capabilities,
     modelRouter,
+    providerHealth,
     providerPolicyDecision,
     providerPolicy: opts.providerPolicy,
     health: () => ({
@@ -281,11 +312,13 @@ export function createAgentRuntimePreset(opts: RuntimePresetOptions = {}): Runti
       providerCloud: providerSelection.cloud,
       cloudFallbackEnabled: providerSelection.cloudFallbackEnabled,
       providerPolicy: providerPolicyDecision,
+      providerHealth,
       artifactProvider: artifactSelection.defaultProvider,
       artifactsEnabled: artifactSelection.enabled,
       ...capabilities,
       usage: readUsageSummary(join(memoryDir, 'state')),
     }),
+    taskProfile,
   }
 }
 
@@ -327,6 +360,7 @@ export function createProviderLayer(args: {
 }) {
   const { opts, env, serviceEnvPrefix, mode, provider, cloudFallbackEnabled, memoryDir, mcpConfig } = args
   const stateDir = join(memoryDir, 'state')
+  const taskProfile = resolveRuntimeTaskProfile(opts.taskProfile ?? readRuntimeTaskProfileName(env, serviceEnvPrefix))
   const providerSelection = createProviderFromEnv({
     cwd: process.cwd(),
     stateDir,
@@ -335,7 +369,10 @@ export function createProviderLayer(args: {
     mode,
     provider,
     cloudFallbackEnabled,
-    agentSdk: mcpConfig.mcpServers ? { mcpServers: mcpConfig.mcpServers, mcpToolNames: mcpConfig.mcpToolNames } : undefined,
+    agentSdk: {
+      ...(taskProfile.agentSdk ?? {}),
+      ...(mcpConfig.mcpServers ? { mcpServers: mcpConfig.mcpServers, mcpToolNames: mcpConfig.mcpToolNames } : {}),
+    },
   })
   const providerPolicyDecision = decideProviderUse(providerSelection, {
     policy: opts.providerPolicy,
@@ -350,7 +387,7 @@ export function createProviderLayer(args: {
         stateDir,
       })
     : providerSelection.provider
-  return { providerSelection, providerPolicyDecision, llm }
+  return { providerSelection, providerPolicyDecision, llm, taskProfile }
 }
 
 export function createArtifactLayer(args: {
@@ -391,8 +428,9 @@ export function createRuntimeCapabilities(args: {
   artifactSelection: ArtifactProviderSelection
   mcpConfig: McpConfigSelection
   agora?: AgoraCollaboration
+  taskProfile: RuntimeTaskProfile
 }): RuntimeCapabilities {
-  const { opts, providerSelection, artifactSelection, mcpConfig, agora } = args
+  const { opts, providerSelection, artifactSelection, mcpConfig, agora, taskProfile } = args
   return {
     llm: {
       provider: providerSelection.providerName,
@@ -429,6 +467,7 @@ export function createRuntimeCapabilities(args: {
         })),
       ],
     },
+    taskProfile,
   }
 }
 

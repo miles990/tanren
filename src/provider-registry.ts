@@ -137,12 +137,14 @@ export function createProviderFromEnv(opts: ProviderFromEnvOptions = {}): Provid
   let cloud = !['local', 'omlx'].includes(providerKey)
 
   if (providerKey === 'agent-sdk') {
-    const baseTools = ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent']
+    const { mcpToolNames = [], allowedTools: configuredTools, ...agentSdkOptions } = opts.agentSdk ?? {}
+    const baseTools = configuredTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent']
+    const allowedTools = [...new Set([...baseTools, ...mcpToolNames])]
     provider = createAgentSdkProvider({
       cwd,
       model: model || 'claude-sonnet-4-6',
-      allowedTools: [...baseTools, ...(opts.agentSdk?.mcpToolNames ?? [])],
-      ...opts.agentSdk,
+      ...agentSdkOptions,
+      allowedTools,
     })
     providerName = 'Agent SDK (subscription)'
     cloud = true

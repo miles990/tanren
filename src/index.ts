@@ -327,6 +327,8 @@ export { createAgentSdkProvider, type AgentSdkOptions } from './llm/agent-sdk.js
 export { safeJsonLoad, safeReadFile, safeJsonlLoad } from './safe-io.js'
 export { saveSession, loadSession, listSessions, forkSession, formatSessionsForContext, type SessionSnapshot } from './session.js'
 export { wrapProviderWithUsageLedger, type UsageLedgerOptions, type UsageRecord } from './usage-ledger.js'
+export { createProviderHealthState, createResilientProvider, isTransientProviderError, type ProviderFailure, type ProviderMethod, type ProviderSuccess, type ResilientProviderOptions, type ResilientProviderState } from './resilient-provider.js'
+export { BUILTIN_RUNTIME_TASK_PROFILES, mergeTaskProfile, readRuntimeTaskProfileName, resolveRuntimeTaskProfile, type RuntimeTaskProfile, type RuntimeTaskProfileName } from './task-profile.js'
 export { loadDotEnvFile, readUsageSummary, type DotEnvLoadOptions } from './env.js'
 export { loadMcpServersFromConfig, type McpConfigLoadOptions, type McpConfigSelection } from './mcp-config.js'
 export { createPeerBridge, type PeerBridge, type PeerBridgeOptions } from './peer-bridge.js'

@@ -330,6 +330,15 @@ function aggregateChain(results: TickResult[], mode: string): ChatResult & { cha
   }
 }
 
+function providerErrorFromChatResult(result: ChatResult): string | null {
+  const candidates = [result.response, result.thought]
+  for (const value of candidates) {
+    const match = value.match(/^\[LLM error: ([\s\S]+)\]$/)
+    if (match) return match[1]
+  }
+  return null
+}
+
 export interface ServeOptions {
   port?: number
   serviceName?: string
@@ -451,6 +460,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     const loopWithMode = ag as TanrenAgent & { getCurrentMode?: () => string }
     const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
     const chatResult = aggregateChain(results, mode)
+    const providerError = providerErrorFromChatResult(chatResult)
+    if (providerError) throw new Error(`Provider error: ${providerError}`)
     const resultSessionId = ag.getSessionId() ?? undefined
     if (options.onAfterChat) await options.onAfterChat(chatResult)
 
@@ -504,6 +515,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
       const loopWithMode = ag as TanrenAgent & { getCurrentMode?: () => string }
       const mode = loopWithMode.getCurrentMode?.() ?? 'unknown'
       const chatResult = aggregateChain(results, mode)
+      const providerError = providerErrorFromChatResult(chatResult)
+      if (providerError) throw new Error(`Provider error: ${providerError}`)
       const resultSessionId = ag.getSessionId() ?? undefined
       if (options.onAfterChat) await options.onAfterChat(chatResult)
       recordTick(tickCount, Date.now() - start, chatResult.actions ?? [], chatResult.meta?.mode ?? 'unknown')

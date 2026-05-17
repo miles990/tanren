@@ -48,8 +48,6 @@ describe('RuntimePreset', () => {
         enableAgora: false,
         enableKgNotifications: false,
         env: {
-          LOCAL_LLM_URL: 'http://localhost:8000',
-          LOCAL_LLM_MODEL: 'local-test',
           TANREN_ARTIFACT_PROVIDER: 'openai',
           OPENAI_API_KEY: 'test-key',
         } as NodeJS.ProcessEnv,
@@ -99,6 +97,36 @@ describe('RuntimePreset', () => {
     }
   })
 
+  it('applies task profiles from service env to provider capabilities and health', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-runtime-'))
+    try {
+      const runtime = createAgentRuntimePreset({
+        baseDir: dir,
+        memoryDir: join(dir, 'memory'),
+        messagesDir: join(dir, 'messages'),
+        serviceName: 'akari',
+        serviceEnvPrefix: 'AKARI',
+        mode: 'cloud-research',
+        provider: 'agent-sdk',
+        enableAgora: false,
+        enableKgNotifications: false,
+        env: {
+          AKARI_TASK_PROFILE: 'deep-review',
+          TANREN_ARTIFACT_PROVIDER: 'none',
+        } as NodeJS.ProcessEnv,
+      })
+
+      assert.equal(runtime.taskProfile.name, 'deep-review')
+      assert.equal(runtime.taskProfile.agentSdk?.maxTurns, 48)
+      assert.equal(runtime.taskProfile.agentSdk?.timeoutMs, 900_000)
+      assert.deepEqual(runtime.taskProfile.agentSdk?.allowedTools, ['Read', 'Grep', 'Glob'])
+      assert.equal((runtime.health().taskProfile as { name: string }).name, 'deep-review')
+      assert.equal(runtime.capabilities.taskProfile.name, 'deep-review')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('exposes model router providers for capability-based routing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tanren-runtime-'))
     try {
@@ -135,6 +163,41 @@ describe('RuntimePreset', () => {
         ],
       }, { output: { structured: true } })
       assert.equal(routed.selected?.name, 'image')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('wraps the primary LLM with configured fallback providers and exposes health', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tanren-runtime-'))
+    try {
+      const runtime = createAgentRuntimePreset({
+        baseDir: dir,
+        memoryDir: join(dir, 'memory'),
+        messagesDir: join(dir, 'messages'),
+        mode: 'local-review',
+        provider: 'local',
+        enableAgora: false,
+        enableKgNotifications: false,
+        providerRetryAttempts: 1,
+        extraModelProviders: {
+          fallback: {
+            async think() { return 'fallback ok' },
+          },
+        },
+        env: {
+          LOCAL_LLM_URL: 'http://127.0.0.1:9',
+          LOCAL_LLM_MODEL: 'local-test',
+          TANREN_ARTIFACT_PROVIDER: 'none',
+        } as NodeJS.ProcessEnv,
+      })
+
+      const provider = runtime.config.llm!
+      const text = await provider.think('hello', 'system')
+      assert.equal(text, 'fallback ok')
+      assert.equal(runtime.providerHealth.degraded, true)
+      assert.equal(runtime.providerHealth.activeProvider, 'fallback')
+      assert.equal((runtime.health().providerHealth as { activeProvider: string }).activeProvider, 'fallback')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

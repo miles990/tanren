@@ -665,6 +665,8 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       }
     }
 
+    const llmError = thought.startsWith('[LLM error:')
+
     // 4. Parse actions (structured from tool use, or parsed from text)
     // Constraint Texture: if model returned 0 tool_use blocks but thought has text tags,
     // fall back to text parsing. Empty array ≠ null — [] means "tried tools, used none".
@@ -695,7 +697,15 @@ export function createLoop(config: TanrenConfig): AgentLoop {
 
     // Check for blocks
     const blocks = gateResults.filter(r => r.action === 'block')
-    if (blocks.length > 0) {
+    if (llmError) {
+      tickResult.observation = {
+        ...observation,
+        outputExists: false,
+        environmentFeedback: thought,
+        actionsFailed: 1,
+        duration: Date.now() - tickStart,
+      }
+    } else if (blocks.length > 0) {
       tickResult.observation = {
         ...observation,
         outputExists: false,

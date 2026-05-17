@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { LLMProvider, ToolUseLLMProvider, ToolUseResponse } from './types.js'
+import type { LLMProvider, Prompt, StreamChunk, StructuredResponse, ToolUseLLMProvider, ToolUseResponse } from './types.js'
 
 export interface UsageLedgerOptions {
   stateDir: string
@@ -22,7 +22,7 @@ export interface UsageRecord {
   provider: string
   model?: string
   cloud: boolean
-  method: 'think' | 'thinkWithTools'
+  method: 'think' | 'thinkStructured' | 'thinkStream' | 'thinkWithTools'
   ok: boolean
   durationMs: number
   inputTokens: number
@@ -180,9 +180,89 @@ export function wrapProviderWithUsageLedger<T extends LLMProvider>(provider: T, 
     }
   }
 
+  const wrappedThinkStructured = async (prompt: Prompt, systemPrompt: string): Promise<StructuredResponse> => {
+    const start = Date.now()
+    const before = readCost(target)
+    try {
+      const result = target.thinkStructured
+        ? await target.thinkStructured(prompt, systemPrompt)
+        : { text: await target.think(typeof prompt === 'string' ? prompt : JSON.stringify(prompt), systemPrompt), metadata: { degradedToText: true } }
+      const tokens = tokenDelta(before, readCost(target))
+      writeUsageRecord(opts, {
+        ts: new Date().toISOString(),
+        provider: opts.provider,
+        model: inferModel(target, opts.model),
+        cloud: opts.cloud ?? true,
+        method: 'thinkStructured',
+        ok: true,
+        durationMs: Date.now() - start,
+        ...tokens,
+      })
+      return result
+    } catch (err) {
+      const tokens = tokenDelta(before, readCost(target))
+      writeUsageRecord(opts, {
+        ts: new Date().toISOString(),
+        provider: opts.provider,
+        model: inferModel(target, opts.model),
+        cloud: opts.cloud ?? true,
+        method: 'thinkStructured',
+        ok: false,
+        durationMs: Date.now() - start,
+        ...tokens,
+        error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+      })
+      throw err
+    }
+  }
+
+  const wrappedThinkStream = async function * (prompt: Prompt, systemPrompt: string): AsyncIterable<StreamChunk> {
+    const start = Date.now()
+    const before = readCost(target)
+    try {
+      if (target.thinkStream) {
+        const chunks: StreamChunk[] = []
+        for await (const chunk of target.thinkStream(prompt, systemPrompt)) chunks.push(chunk)
+        const tokens = tokenDelta(before, readCost(target))
+        writeUsageRecord(opts, {
+          ts: new Date().toISOString(),
+          provider: opts.provider,
+          model: inferModel(target, opts.model),
+          cloud: opts.cloud ?? true,
+          method: 'thinkStream',
+          ok: true,
+          durationMs: Date.now() - start,
+          ...tokens,
+        })
+        yield* chunks
+        return
+      }
+      const response = await wrappedThinkStructured(prompt, systemPrompt)
+      if (response.text) yield { type: 'text_delta', text: response.text }
+      for (const output of response.outputs ?? []) yield { type: 'content_block', content: output }
+      yield { type: 'done', metadata: response.metadata }
+    } catch (err) {
+      const tokens = tokenDelta(before, readCost(target))
+      writeUsageRecord(opts, {
+        ts: new Date().toISOString(),
+        provider: opts.provider,
+        model: inferModel(target, opts.model),
+        cloud: opts.cloud ?? true,
+        method: 'thinkStream',
+        ok: false,
+        durationMs: Date.now() - start,
+        ...tokens,
+        error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+      })
+      throw err
+    }
+  }
+
   return new Proxy(target, {
     get(obj, prop, receiver) {
       if (prop === 'think') return wrappedThink
+      if (prop === 'thinkStructured') return wrappedThinkStructured
+      if (prop === 'thinkStream') return wrappedThinkStream
       if (prop === 'thinkWithTools' && typeof obj.thinkWithTools === 'function') return wrappedThinkWithTools
       return Reflect.get(obj, prop, receiver)
     },

@@ -386,6 +386,37 @@ describe('serve', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('treats LLM error tick output as a failed chat request', async () => {
+    const handle = serve(createLlmErrorAgent(), {
+      port: 0,
+      serviceName: 'test-agent',
+    })
+
+    try {
+      await once(handle.server, 'listening')
+      const address = handle.server.address()
+      assert.ok(address && typeof address === 'object')
+      const port = (address as AddressInfo).port
+
+      const chatResponse = await fetch(`http://127.0.0.1:${port}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: 'test', text: 'hello' }),
+      })
+      const failed = await chatResponse.json() as { error: string }
+      assert.equal(chatResponse.status, 500)
+      assert.match(failed.error, /Provider error: upstream failed/)
+
+      const healthResponse = await fetch(`http://127.0.0.1:${port}/health`)
+      const health = await healthResponse.json() as { errors: number; recentTicks: Array<{ error?: string }> }
+      assert.equal(health.errors, 1)
+      assert.match(health.recentTicks.at(-1)?.error ?? '', /Provider error: upstream failed/)
+    } finally {
+      handle.server.closeAllConnections()
+      await new Promise<void>(resolve => handle.server.close(() => resolve()))
+    }
+  })
 })
 
 function createFakeAgent(): TanrenAgent {
@@ -465,6 +496,37 @@ function createChatAgent(): TanrenAgent {
           actionsExecuted: 2,
           actionsFailed: 0,
           duration: 12,
+        },
+        timestamp: Date.now(),
+        gateResults: [],
+      }]
+    },
+    start() {},
+    stop() {},
+    isRunning() { return false },
+    getRecentTicks() { return [] },
+    setSessionId(id) { sessionId = id },
+    getSessionId() { return sessionId },
+  }
+}
+
+function createLlmErrorAgent(): TanrenAgent {
+  let sessionId: string | null = null
+  return {
+    async tick() { throw new Error('not used') },
+    async chat() { throw new Error('not used') },
+    async runChain() {
+      return [{
+        perception: 'message',
+        thought: '[LLM error: upstream failed]',
+        actions: [],
+        observation: {
+          outputExists: false,
+          outputQuality: 0,
+          confidenceCalibration: 0,
+          actionsExecuted: 0,
+          actionsFailed: 1,
+          duration: 10,
         },
         timestamp: Date.now(),
         gateResults: [],
