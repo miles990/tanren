@@ -136,6 +136,30 @@ describe('ANUP', () => {
     assert.ok(envelope.blocks.some(block => block.type === 'approval_request'))
   })
 
+  it('preserves the full chat response in the artifact summary', () => {
+    const longResponse = 'A'.repeat(2400) + '\n\nfinal sentence.'
+    const envelope = chatResultToAnupEnvelope({
+      runId: 'run-123',
+      agentId: 'akari',
+      from: 'web',
+      text: 'write a long answer',
+      result: {
+        response: longResponse,
+        thought: 'hidden',
+        actions: ['respond'],
+        duration: 12,
+        quality: 4,
+        meta: { mode: 'execution', filesRead: [], filesWritten: [], toolsUsed: [], hypotheses: 0, contextChars: 0 },
+      },
+    })
+
+    const artifact = envelope.blocks.find(block => block.type === 'artifact' && block.id === 'chat:response')
+    assert.ok(artifact && artifact.type === 'artifact')
+    assert.equal(artifact.summary, longResponse)
+    assert.ok(artifact.summary.endsWith('final sentence.'))
+    assert.equal(artifact.content_ref, '/anup/runs/run-123')
+  })
+
   it('creates demo runs with decision, approval, trace, and media blocks', () => {
     const envelope = createDemoAnupEnvelope('akari')
     assert.ok(envelope.blocks.some(block => block.type === 'decision_card'))

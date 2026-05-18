@@ -418,8 +418,8 @@ export function chatResultToAnupEnvelope(input: {
       artifact_type: 'report',
       title: 'Akari response',
       format: 'markdown',
-      content_ref: `anup://response/${input.runId ?? 'chat'}`,
-      summary: input.result.response.slice(0, 800),
+      content_ref: input.runId ? `/anup/runs/${encodeURIComponent(input.runId)}` : '/anup/runs',
+      summary: input.result.response,
       metadata: { sessionId: input.result.sessionId, mode: input.result.meta?.mode },
     },
   ]
