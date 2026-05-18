@@ -13,6 +13,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { join, relative, dirname, basename } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import type { MemorySystem, SearchResult } from './types.js'
+import { createWriteQueue, type WriteQueue } from './write-queue.js'
 
 // Intelligent commit state tracking
 interface CommitSession {
@@ -28,6 +29,24 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
   ensureDir(join(memoryDir, 'topics'))
   ensureDir(join(memoryDir, 'daily'))
   ensureDir(join(memoryDir, 'state'))
+
+  // Phase 2 (KG 94c784bd): async write queue with write-through cache.
+  // syncWriter is the underlying disk write — queue consumer calls it on drain;
+  // back-pressure fallback also calls it. read() checks cache first.
+  // asyncMode flips per-tick via setAsyncMode() based on TickPathConfig.
+  // The queue is always constructed (so cache works) but only used for writes when asyncMode=true.
+  const syncWriter = async (path: string, content: string, op: 'write' | 'append'): Promise<void> => {
+    const fullPath = resolvePath(memoryDir, path)
+    ensureDir(dirname(fullPath))
+    if (op === 'write') {
+      await writeFile(fullPath, content, 'utf-8')
+    } else {
+      const suffix = content.endsWith('\n') ? '' : '\n'
+      await appendFile(fullPath, content + suffix, 'utf-8')
+    }
+  }
+  const writeQueue: WriteQueue = createWriteQueue(memoryDir, syncWriter)
+  let asyncMode = false
 
   // Per-instance commit state — two instances do not share session
   let currentSession: CommitSession | null = null
@@ -200,6 +219,10 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
 
   const self: MemorySystem = {
     async read(path: string): Promise<string | null> {
+      // Phase 2: same-tick read-your-own-write via write-through cache.
+      // If we just queued a write to this path, cache returns it before disk catches up.
+      const cached = writeQueue.cacheGet(path)
+      if (cached !== null) return cached
       const fullPath = resolvePath(memoryDir, path)
       try {
         return await readFile(fullPath, 'utf-8')
@@ -208,17 +231,25 @@ export function createMemorySystem(memoryDir: string, searchPaths?: string[]): M
       }
     },
 
-    async write(path: string, content: string): Promise<void> {
-      const fullPath = resolvePath(memoryDir, path)
-      ensureDir(dirname(fullPath))
-      await writeFile(fullPath, content, 'utf-8')
+    async write(path: string, content: string, opts?: { causal_key?: string }): Promise<void> {
+      if (asyncMode) {
+        // Enqueue: fsync persists, consumer drains async, cache returns immediately.
+        await writeQueue.enqueue({ path, op: 'write', content, causal_key: opts?.causal_key })
+        return
+      }
+      await syncWriter(path, content, 'write')
     },
 
-    async append(path: string, line: string): Promise<void> {
-      const fullPath = resolvePath(memoryDir, path)
-      ensureDir(dirname(fullPath))
-      const suffix = line.endsWith('\n') ? '' : '\n'
-      await appendFile(fullPath, line + suffix, 'utf-8')
+    async append(path: string, line: string, opts?: { causal_key?: string }): Promise<void> {
+      if (asyncMode) {
+        await writeQueue.enqueue({ path, op: 'append', content: line, causal_key: opts?.causal_key })
+        return
+      }
+      await syncWriter(path, line, 'append')
+    },
+
+    setAsyncMode(enabled: boolean): void {
+      asyncMode = enabled
     },
 
     async search(query: string): Promise<SearchResult[]> {

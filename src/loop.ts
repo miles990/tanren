@@ -473,6 +473,15 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       setCache(pathConfig?.promptCacheTTL ? { ttl: pathConfig.promptCacheTTL } : null)
     }
 
+    // Phase 2 (KG 94c784bd): toggle memory write queue per-tick.
+    // Reactive path (memoryWriteBlocking=false) → async queue + write-through cache.
+    // Deep path (memoryWriteBlocking=true) or no override → sync writes (current behavior).
+    const setAsync = (memory as { setAsyncMode?: (enabled: boolean) => void }).setAsyncMode
+    if (typeof setAsync === 'function') {
+      const asyncEnabled = pathConfig !== undefined && pathConfig.memoryWriteBlocking === false
+      setAsync(asyncEnabled)
+    }
+
     // Autonomous objective injection: scheduled ticks without a pendingMessage
     // get a synthetic "what to do this tick" objective so the model has a clear
     // signal to act on. Without this, perception + full tool surface + zero

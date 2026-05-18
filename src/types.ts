@@ -88,14 +88,20 @@ export interface MemoryReader {
 }
 
 export interface MemorySystem extends MemoryReader {
-  write(path: string, content: string): Promise<void>
-  append(path: string, line: string): Promise<void>
+  write(path: string, content: string, opts?: { causal_key?: string }): Promise<void>
+  append(path: string, line: string, opts?: { causal_key?: string }): Promise<void>
   remember(content: string, opts?: { topic?: string; tickCount?: number }): Promise<void>
   recall(query: string): Promise<string[]>
   autoCommit(): Promise<boolean>
   /** Rotate memory.md when it exceeds maxBytes — moves old entries to daily/ archive.
    *  Called automatically at tick end. Returns true if rotation occurred. */
   rotate(maxBytes?: number): Promise<boolean>
+  /** Phase 2 (KG 94c784bd): enable/disable async write queue.
+   *  Set by loop per-tick based on TickPathConfig.memoryWriteBlocking.
+   *  - true (deep path): all writes go through sync writeFile (current behavior)
+   *  - false (reactive path): writes enqueue to async queue, fsync persisted,
+   *    consumer drains in background, reads check write-through cache first. */
+  setAsyncMode?(enabled: boolean): void
 }
 
 export interface SearchResult {
