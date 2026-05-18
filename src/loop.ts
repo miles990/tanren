@@ -78,14 +78,15 @@ interface TriggerState {
 // === Agent Loop ===
 
 export interface AgentLoop {
-  tick(mode?: TickMode, triggerEvent?: TriggerEvent): Promise<TickResult>
+  tick(mode?: TickMode, triggerEvent?: TriggerEvent, pathConfig?: import('./types.js').TickPathConfig): Promise<TickResult>
   /** Inject a message for the next tick — perception will include it */
   injectMessage(from: string, text: string): void
   /** Set/clear LLM streaming callback — streams text chunks during think phase */
   setStreamCallback(fn: ((text: string) => void) | null): void
   /** Run a self-paced chain — agent decides when to stop.
-   *  `wallClockMs`: wall-clock cap across all ticks (default: no cap). */
-  runChain(opts?: { wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]>
+   *  `wallClockMs`: wall-clock cap across all ticks (default: no cap).
+   *  `pathConfig`: per-request override (mode-switch — Akari × Hermes hybrid). */
+  runChain(opts?: { wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void>; pathConfig?: import('./types.js').TickPathConfig }): Promise<TickResult[]>
   start(interval?: number): void
   stop(): void
   isRunning(): boolean
@@ -459,11 +460,18 @@ export function createLoop(config: TanrenConfig): AgentLoop {
   const MINIMAL_TOOLS = new Set(['respond', 'remember', 'clear-inbox'])
   const STANDARD_TOOLS = new Set(['respond', 'remember', 'clear-inbox', 'search', 'web_fetch', 'read'])
 
-  async function tick(mode: TickMode = 'scheduled', triggerEvent?: TriggerEvent): Promise<TickResult> {
+  async function tick(mode: TickMode = 'scheduled', triggerEvent?: TriggerEvent, pathConfig?: import('./types.js').TickPathConfig): Promise<TickResult> {
     const tickStart = Date.now()
     tickCount++
     const filesRead = new Set<string>()  // per-tick file tracking for read-before-edit enforcement
     lastResponse = ''  // reset per tick
+
+    // Mode-switch: apply per-tick cache_control hint to provider (KG 620bae11).
+    // Reactive path → {ttl:'5m'}; deep path or no override → null. Provider may ignore.
+    const setCache = (llm as { setCacheControl?: (c: { ttl: '5m' | '1h' } | null) => void }).setCacheControl
+    if (typeof setCache === 'function') {
+      setCache(pathConfig?.promptCacheTTL ? { ttl: pathConfig.promptCacheTTL } : null)
+    }
 
     // Autonomous objective injection: scheduled ticks without a pendingMessage
     // get a synthetic "what to do this tick" objective so the model has a clear
@@ -770,9 +778,14 @@ export function createLoop(config: TanrenConfig): AgentLoop {
       //   - Production convergence (synthesize threshold hit)
       // This gives weak models more room and strong models less waste.
       const providerSkipsFeedback = isSessionAwareProvider(llm) && llm.skipFeedbackLoop
-      const configMax = providerSkipsFeedback ? 0 : (config.feedbackRounds ?? 10)
+      // pathConfig override: reactive path forces single-shot (feedbackRounds=0)
+      // unless provider already skips. Deep path reads from config.feedbackRounds.
+      const configMax = providerSkipsFeedback ? 0
+        : pathConfig !== undefined ? pathConfig.feedbackRounds
+        : (config.feedbackRounds ?? 10)
       const maxFeedbackRounds = providerSkipsFeedback ? 0
         : skipFeedback ? 0
+        : pathConfig?.mode === 'reactive' ? configMax  // reactive: respect override, no "at least 2" boost
         : initialHadNoTools ? Math.max(configMax, 2)  // No tools yet → at least 2 rounds
         : configMax                                     // Environmental signals handle the rest
       currentMaxFeedbackRounds = maxFeedbackRounds
@@ -1136,13 +1149,14 @@ export function createLoop(config: TanrenConfig): AgentLoop {
         (llm as { onStreamText?: ((text: string) => void) | undefined }).onStreamText = fn ?? undefined
       }
     },
-    async runChain(opts?: { wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]> {
+    async runChain(opts?: { wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void>; pathConfig?: import('./types.js').TickPathConfig }): Promise<TickResult[]> {
       const results: TickResult[] = []
       continuation.startChain()
       const chainStart = Date.now()
+      const tickMode: TickMode = opts?.pathConfig?.mode === 'reactive' ? 'reactive' : 'scheduled'
 
       while (true) {
-        const result = await tick()
+        const result = await tick(tickMode, undefined, opts?.pathConfig)
         results.push(result)
         if (opts?.onTick) {
           try { await opts.onTick(result, results.length) } catch { /* ignore stream errors */ }

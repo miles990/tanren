@@ -68,10 +68,53 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
     cost.totalCalls++
   }
 
+  // Prompt-caching state (mode-switch — KG 620bae11).
+  // Set by loop before each tick via setCacheControl(); applied in callApi body assembly.
+  // Hermes 'system_and_3' strategy: 4 cache_control breakpoints (system + last 3 non-system).
+  let cacheControlTTL: '5m' | '1h' | null = null
+
+  /** Apply Hermes-style system_and_3 cache_control markers to body.
+   *  - Converts string system → [{type:'text', text, cache_control}]
+   *  - Adds cache_control to last 3 non-system messages
+   *  Fail-open: structurally invalid inputs return body untouched. */
+  function applyCacheControlToBody(body: Record<string, unknown>): Record<string, unknown> {
+    if (!cacheControlTTL) return body
+    try {
+      const marker = cacheControlTTL === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' }
+      const out: Record<string, unknown> = { ...body }
+
+      // System: convert string → array with cache_control
+      if (typeof out.system === 'string' && out.system.length > 0) {
+        out.system = [{ type: 'text', text: out.system, cache_control: marker }]
+      }
+
+      // Messages: cache_control on last 3 non-system messages
+      const msgs = out.messages as Array<{ role: string; content: unknown }> | undefined
+      if (Array.isArray(msgs) && msgs.length > 0) {
+        const nonSysIdx = msgs.map((m, i) => m.role !== 'system' ? i : -1).filter(i => i >= 0)
+        const tail = nonSysIdx.slice(-3)
+        for (const i of tail) {
+          const m = msgs[i] as { role: string; content: unknown; cache_control?: unknown }
+          if (typeof m.content === 'string') {
+            m.content = [{ type: 'text', text: m.content, cache_control: marker }]
+          } else if (Array.isArray(m.content) && m.content.length > 0) {
+            const last = m.content[m.content.length - 1] as Record<string, unknown>
+            if (last && typeof last === 'object') last.cache_control = marker
+          }
+        }
+      }
+      return out
+    } catch {
+      // Fail-open: any structural issue → ship body without cache_control
+      return body
+    }
+  }
+
   async function callApi(body: Record<string, unknown>, modelOverride?: string): Promise<AnthropicApiResponse> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
 
+    const finalBody = applyCacheControlToBody(body)
     try {
       const response = await fetch(`${baseUrl}/v1/messages`, {
         method: 'POST',
@@ -80,7 +123,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
           'x-api-key': opts.apiKey,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify({ model: modelOverride ?? model, max_tokens: maxTokens, ...body }),
+        body: JSON.stringify({ model: modelOverride ?? model, max_tokens: maxTokens, ...finalBody }),
         signal: controller.signal,
       })
 
@@ -138,6 +181,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
         messages: [{ role: 'user', content: typeof prompt === 'string' ? prompt : toAnthropic(prompt) }],
         stream: true,
       }
+      const finalBody = applyCacheControlToBody(body)
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
       try {
@@ -148,7 +192,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
             'x-api-key': opts.apiKey,
             'anthropic-version': '2023-06-01',
           },
-          body: JSON.stringify({ model: this.activeModel ?? model, max_tokens: maxTokens, ...body }),
+          body: JSON.stringify({ model: this.activeModel ?? model, max_tokens: maxTokens, ...finalBody }),
           signal: controller.signal,
         })
         if (!response.ok) {
@@ -204,6 +248,12 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
     // Dynamic model override — set per tick based on cognitive mode
     activeModel: undefined as string | undefined,
 
+    // Mode-switch cache control (KG 620bae11). Set per-tick by loop.
+    // Reactive: {ttl:'5m'}; deep: null.
+    setCacheControl(config: { ttl: '5m' | '1h' } | null): void {
+      cacheControlTTL = config?.ttl ?? null
+    },
+
     // Native tool use interface (streaming — emits text chunks via onStreamText)
     async thinkWithTools(
       messages: ConversationMessage[],
@@ -220,6 +270,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
         body.tools = tools
       }
 
+      const finalBody = applyCacheControlToBody(body)
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
 
@@ -231,7 +282,7 @@ export function createAnthropicProvider(opts: AnthropicProviderOptions): ToolUse
             'x-api-key': opts.apiKey,
             'anthropic-version': '2023-06-01',
           },
-          body: JSON.stringify({ model: this.activeModel ?? model, max_tokens: maxTokens, ...body }),
+          body: JSON.stringify({ model: this.activeModel ?? model, max_tokens: maxTokens, ...finalBody }),
           signal: controller.signal,
         })
 

@@ -232,6 +232,10 @@ export interface LLMProvider {
   thinkStream?(prompt: Prompt, systemPrompt: string): AsyncIterable<StreamChunk>
   /** Declarative capability matrix for routing and UI decisions. */
   capabilities?: ProviderCapabilities
+  /** Optional per-request cache-control hint (mode-switch — KG 620bae11).
+   *  Reactive path sets {ttl:'5m'} for Anthropic prompt caching; deep path sets null.
+   *  Non-Anthropic providers ignore. Fail-open: provider may ignore on unsupported model. */
+  setCacheControl?(config: { ttl: '5m' | '1h' } | null): void
 }
 
 /** LLM provider with native session management (e.g. Agent SDK).
@@ -361,6 +365,38 @@ export interface TriggerEvent {
 }
 
 export type TickMode = 'scheduled' | 'reactive'
+
+/**
+ * Per-request path config for mode-switch (Akari × Hermes hybrid).
+ *
+ * Passed as per-tick override (not embedded in TanrenConfig — global config
+ * must stay immutable so deep path is structurally guaranteed unchanged).
+ *
+ * Reactive: user-facing /chat — single LLM call, prompt cache, post-turn memory.
+ * Deep: autonomous tick / KG notify — current behavior (5 feedback, in-tick).
+ *
+ * KG discussion 620bae11-dfb0-4c23-bebf-28c28655e279.
+ */
+export interface TickPathConfig {
+  mode: 'reactive' | 'deep'
+  feedbackRounds: number                  // reactive=0, deep=5
+  promptCacheTTL: '5m' | '1h' | null      // reactive='5m', deep=null
+  memoryWriteBlocking: boolean            // reactive=false, deep=true
+}
+
+export const REACTIVE_PATH: TickPathConfig = {
+  mode: 'reactive',
+  feedbackRounds: 0,
+  promptCacheTTL: '5m',
+  memoryWriteBlocking: false,
+}
+
+export const DEEP_PATH: TickPathConfig = {
+  mode: 'deep',
+  feedbackRounds: 5,
+  promptCacheTTL: null,
+  memoryWriteBlocking: true,
+}
 
 // === Cognitive Modes ===
 

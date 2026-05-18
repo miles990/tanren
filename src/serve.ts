@@ -16,7 +16,8 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ChatResult, TickResult, Action, TanrenConfig, PromptContentBlock } from './types.js'
+import type { ChatResult, TickResult, Action, TanrenConfig, PromptContentBlock, TickPathConfig } from './types.js'
+import { REACTIVE_PATH, DEEP_PATH } from './types.js'
 import type { TanrenAgent } from './index.js'
 import { createAgent } from './index.js'
 import { CONTEXT_MODES } from './context-modes.js'
@@ -441,7 +442,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     errorCount++
   })
 
-  async function handleChat(poolEntry: PoolEntry, from: string, text: string, sessionId?: string): Promise<ChatResult & { tick: number; chainTicks: number; sessionId?: string }> {
+  async function handleChat(poolEntry: PoolEntry, from: string, text: string, sessionId?: string, pathConfig: TickPathConfig = REACTIVE_PATH): Promise<ChatResult & { tick: number; chainTicks: number; sessionId?: string }> {
     const ag = poolEntry.agent
     if (options.onBeforeChat) await options.onBeforeChat(from, text, poolEntry.index)
 
@@ -449,8 +450,8 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     else ag.setSessionId(null)
 
     const results = await (ag as TanrenAgent & {
-      runChain(message?: string, options?: { from?: string; wallClockMs?: number }): Promise<TickResult[]>
-    }).runChain(text, { from, wallClockMs: CHAT_WALL_CLOCK_MS })
+      runChain(message?: string, options?: { from?: string; wallClockMs?: number; pathConfig?: TickPathConfig }): Promise<TickResult[]>
+    }).runChain(text, { from, wallClockMs: CHAT_WALL_CLOCK_MS, pathConfig })
 
     if (!results.length) {
       throw new Error('runChain returned no ticks')
@@ -475,6 +476,7 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
     res: ServerResponse,
     sessionId?: string,
     onResult?: (result: ChatResult & { chainTicks: number; sessionId?: string }) => void,
+    pathConfig: TickPathConfig = REACTIVE_PATH,
   ): Promise<void> {
     const ag = poolEntry.agent
     res.writeHead(200, {
@@ -497,10 +499,11 @@ export function serve(agent: TanrenAgent, options: ServeOptions = {}) {
 
     try {
       const results = await (ag as TanrenAgent & {
-        runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]>
+        runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void>; pathConfig?: TickPathConfig }): Promise<TickResult[]>
       }).runChain(text, {
         from,
         wallClockMs: STREAM_WALL_CLOCK_MS,
+        pathConfig,
         onTick: (tickResult, tickNum) => {
           sse('tick-end', {
             tickNum,

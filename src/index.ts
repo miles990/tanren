@@ -13,7 +13,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createLoop, type AgentLoop } from './loop.js'
-import type { TanrenConfig, TickResult, ChatResult } from './types.js'
+import type { TanrenConfig, TickResult, ChatResult, TickPathConfig } from './types.js'
 
 export interface TanrenAgent {
   /** Run one perceive→think→act cycle */
@@ -22,8 +22,9 @@ export interface TanrenAgent {
    *  Optional onStream callback receives text chunks during LLM think phase. */
   chat(message: string, options?: { from?: string; onStream?: (text: string) => void }): Promise<ChatResult>
   /** Run a self-paced chain — agent decides when to stop.
-   *  `wallClockMs`: wall-clock cap across all ticks. `onTick`: per-tick callback (for streaming). */
-  runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]>
+   *  `wallClockMs`: wall-clock cap across all ticks. `onTick`: per-tick callback (for streaming).
+   *  `pathConfig`: per-request override for reactive/deep path (mode-switch — KG 620bae11). */
+  runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void>; pathConfig?: TickPathConfig }): Promise<TickResult[]>
   /** Start the autonomous loop */
   start(interval?: number): void
   /** Stop the loop gracefully */
@@ -109,11 +110,11 @@ export function createAgent(config: TanrenConfig): TanrenAgent {
         },
       }
     },
-    async runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void> }): Promise<TickResult[]> {
+    async runChain(message?: string, options?: { from?: string; wallClockMs?: number; onTick?: (result: TickResult, tickNum: number) => void | Promise<void>; pathConfig?: TickPathConfig }): Promise<TickResult[]> {
       if (message) {
         loop.injectMessage(options?.from ?? 'user', message)
       }
-      return loop.runChain({ wallClockMs: options?.wallClockMs, onTick: options?.onTick })
+      return loop.runChain({ wallClockMs: options?.wallClockMs, onTick: options?.onTick, pathConfig: options?.pathConfig })
     },
     start: (interval) => loop.start(interval ?? config.tickInterval),
     stop: () => loop.stop(),

@@ -72,18 +72,45 @@ export function buildContext(
 
 // ── System prompts ────────────────────────────────────────────────────────────
 
+// LRU memoize for system prompt rebuild (mode-switch — KG 620bae11).
+// buildSystemPrompt is pure: depends only on identity + actions.types/descriptions.
+// Memoizing avoids re-stringify on every tick, complementing Anthropic prompt caching
+// (stable prefix → cache hit). Cap = 10 entries; identity rarely changes per agent.
+const SYSTEM_PROMPT_CACHE_CAP = 10
+const systemPromptCache = new Map<string, string>()
+const toolUseSystemPromptCache = new Map<string, string>()
+
+function lruGetOrCompute(cache: Map<string, string>, key: string, compute: () => string): string {
+  const hit = cache.get(key)
+  if (hit !== undefined) {
+    // LRU touch: re-insert to move to most-recent
+    cache.delete(key)
+    cache.set(key, hit)
+    return hit
+  }
+  const value = compute()
+  cache.set(key, value)
+  while (cache.size > SYSTEM_PROMPT_CACHE_CAP) {
+    const oldest = cache.keys().next().value as string | undefined
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
+  return value
+}
+
 /**
  * Build the text-mode system prompt (used by CLI / non-tool-use LLM providers).
  */
 export function buildSystemPrompt(identity: string, actions: ActionRegistry): string {
   const actionTypes = actions.types()
-
-  const actionLines = actionTypes.map(t => {
-    const desc = actions.getDescription(t)
-    return desc ? `- <action:${t}>...</action:${t}> — ${desc}` : `- <action:${t}>...</action:${t}>`
-  })
-
-  return `${identity}
+  // Cache key: identity + sorted action signatures (deterministic).
+  const cacheKey = `${identity.length}:${identity.slice(0, 64)}|${actionTypes.slice().sort().map(t => `${t}:${actions.getDescription(t) ?? ''}`).join(',')}`
+  return lruGetOrCompute(systemPromptCache, cacheKey, () => {
+    const actionLines = actionTypes.map(t => {
+      const desc = actions.getDescription(t)
+      return desc ? `- <action:${t}>...</action:${t}> — ${desc}` : `- <action:${t}>...</action:${t}>`
+    })
+    return `${identity}
 
 ## Available Actions
 
@@ -96,13 +123,14 @@ You can include multiple actions in a single response. Actions are executed in o
 CRITICAL: Your output MUST contain action tags to produce any effect. Text without action tags is recorded but has no side effects. If you want to respond to a message, you MUST use <action:respond>. If you want to remember something, you MUST use <action:remember>. Analysis without action tags = wasted tick.
 
 IMPORTANT: Action tags are executed by the Tanren framework on your behalf. You do NOT need file access, write permissions, or any external tools. Simply include the action tag in your response and the framework handles all I/O. For example, <action:respond>your message</action:respond> will be delivered to the sender automatically — you don't write to any file yourself. The sender is identified by the "from" attribute in the <message> tag.`
+  })
 }
 
 /**
  * Build the tool-use system prompt (used by Anthropic API / tool-use providers).
  */
 export function buildToolUseSystemPrompt(identity: string): string {
-  return `${identity}
+  return lruGetOrCompute(toolUseSystemPromptCache, `${identity.length}:${identity.slice(0, 64)}`, () => `${identity}
 
 ## How This Works
 
@@ -119,7 +147,7 @@ Act like a senior engineer:
 - After editing .ts: the framework auto-runs tsc. Fix errors in the same tick.
 - Add a field? Handle it EVERYWHERE — constructors, defaults, display, serialization. The framework checks.
 - No dead code. Wire features end-to-end or don't ship them.
-- Each response the user sees should be COMPLETE and ACTIONABLE — not a progress update.`
+- Each response the user sees should be COMPLETE and ACTIONABLE — not a progress update.`)
 }
 
 // ── Message extraction ────────────────────────────────────────────────────────
