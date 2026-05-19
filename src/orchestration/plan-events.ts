@@ -15,6 +15,8 @@ export type PlanLogEvent =
   | { type: 'step.retrying'; planId: string; stepId: string; attempt: number; error: string; timestamp: string }
   | { type: 'lock.acquired'; planId: string; timestamp: string }
   | { type: 'lock.released'; planId: string; timestamp: string }
+  | { type: 'merge.completed'; planId: string; targetBranch: string; method: 'ff' | 'squash'; timestamp: string }
+  | { type: 'merge.failed'; planId: string; error: string; timestamp: string }
 
 export class PlanEventLog {
   private path: string

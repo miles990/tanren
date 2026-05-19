@@ -495,6 +495,14 @@ type TemplatePlanRequest = {
   schedulerLock?: boolean
 }
 
+type MergeRequest = {
+  method?: 'ff' | 'squash'
+  targetBranch?: string
+  commitMessage?: string
+  cleanupWorktree?: boolean
+  requiredGates?: WorkerGate[]
+}
+
 function shouldCleanupWorktree(worktree: WorktreeContext, result: PlanResult): boolean {
   if (worktree.cleanup === 'always') return true
   if (worktree.cleanup === 'on-success') return result.summary.failed === 0
@@ -510,6 +518,27 @@ function worktreeJson(worktree?: WorktreeContext) {
     branchName: worktree.branchName,
     baseRef: worktree.baseRef,
     cleanup: worktree.cleanup,
+  }
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+}
+
+function gateSummary(entry: { plan: ActionPlan }, steps: ReturnType<ResultBuffer['list']>) {
+  const gates = entry.plan.steps
+    .filter(step => step.gate)
+    .map(step => {
+      const status = steps.find(task => task.id === step.id)?.status ?? 'pending'
+      return { gate: step.gate!, stepId: step.id, worker: step.worker, status }
+    })
+  const nextGate = gates.find(gate => gate.status !== 'completed')
+  return {
+    gates,
+    nextGate,
+    mergeReady: ['review', 'qa', 'release'].every(required =>
+      gates.some(gate => gate.gate === required && gate.status === 'completed'),
+    ),
   }
 }
 
@@ -624,6 +653,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       running,
       pending: entry.plan.steps.length - completed - failed - running,
       steps,
+      gateStatus: gateSummary(entry, steps),
       worktree: worktreeJson(entry.worktree),
     })
   })
@@ -751,18 +781,22 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   app.get('/plans', c => c.json({
     plans: [...mw.plans.entries()].map(([planId, entry]) => {
       const steps = mw.buffer.list({ planId })
+      const gates = gateSummary(entry, steps)
       return {
         planId,
         goal: entry.plan.goal,
+        status: entry.status,
         totalSteps: entry.plan.steps.length,
         completed: steps.filter(s => s.status === 'completed').length,
         failed: steps.filter(s => s.status === 'failed' || s.status === 'timeout').length,
         running: steps.filter(s => s.status === 'running').length,
+        gateStatus: gates,
         worktree: worktreeJson(entry.worktree),
         steps: entry.plan.steps.map(s => ({
           id: s.id,
           worker: s.worker,
           label: s.label,
+          gate: s.gate,
           dependsOn: s.dependsOn,
           status: steps.find(t => t.id === s.id)?.status ?? 'pending',
           durationMs: steps.find(t => t.id === s.id)?.durationMs,
@@ -772,6 +806,56 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   }))
 
   app.get('/plan-events', c => c.json({ events: mw.planEvents.readAll() }))
+
+  app.post('/plan/:id/merge', async c => {
+    const planId = c.req.param('id')
+    const entry = mw.plans.get(planId)
+    if (!entry) return c.json({ error: 'not_found' }, 404)
+    if (!entry.worktree) return c.json({ error: 'no_worktree', message: 'Plan has no isolated worktree to merge.' }, 400)
+
+    const body: MergeRequest = await c.req.json<MergeRequest>().catch(() => ({}))
+    const method = body.method ?? 'ff'
+    const requiredGates = body.requiredGates ?? ['review', 'qa', 'release']
+    const steps = mw.buffer.list({ planId })
+    const gates = gateSummary(entry, steps)
+    const missingGates = requiredGates.filter(required =>
+      !gates.gates.some(gate => gate.gate === required && gate.status === 'completed'),
+    )
+    const failed = steps.filter(step => step.status === 'failed' || step.status === 'timeout')
+
+    if (entry.status !== 'completed') {
+      return c.json({ error: 'plan_not_completed', status: entry.status, gateStatus: gates }, 409)
+    }
+    if (failed.length > 0) {
+      return c.json({ error: 'plan_has_failed_steps', failed, gateStatus: gates }, 409)
+    }
+    if (missingGates.length > 0) {
+      return c.json({ error: 'merge_gate_blocked', missingGates, gateStatus: gates }, 409)
+    }
+
+    const dirty = mw.gitStatus(entry.worktree.worktreePath)
+    if (dirty.length > 0) {
+      return c.json({ error: 'worktree_has_uncommitted_changes', dirty, message: 'Commit or discard worktree changes before merge.' }, 409)
+    }
+
+    const targetBranch = body.targetBranch ?? git(entry.worktree.repoRoot, ['branch', '--show-current'])
+    try {
+      git(entry.worktree.repoRoot, ['switch', targetBranch])
+      if (method === 'squash') {
+        git(entry.worktree.repoRoot, ['merge', '--squash', entry.worktree.branchName])
+        git(entry.worktree.repoRoot, ['commit', '-m', body.commitMessage ?? `Merge ${planId}`])
+      } else {
+        git(entry.worktree.repoRoot, ['merge', '--ff-only', entry.worktree.branchName])
+      }
+      if (body.cleanupWorktree) cleanupCycleWorktree(entry.worktree)
+      mw.planEvents.append({ type: 'merge.completed', planId, targetBranch, method })
+      return c.json({ ok: true, planId, targetBranch, method })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      mw.planEvents.append({ type: 'merge.failed', planId, error: message })
+      return c.json({ error: 'merge_failed', message, targetBranch, method }, 409)
+    }
+  })
 
   app.post('/plan/validate', async c => {
     const body = await c.req.json<PlanRequest>()

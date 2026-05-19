@@ -601,8 +601,7 @@ export class PlanEngine {
     try {
       const output = execFileSync('git', ['-C', cwd, 'status', '--porcelain'], { encoding: 'utf-8' });
       return output.split('\n')
-        .map(line => line.trim())
-        .filter(Boolean)
+        .filter(line => line.length >= 3)
         .map(line => line.slice(3).replace(/^"|"$/g, ''))
         .map(line => line.includes(' -> ') ? line.split(' -> ').at(-1)! : line);
     } catch {
