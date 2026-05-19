@@ -9,7 +9,8 @@
  * Does NOT test latency end-to-end — that requires a real LLM (see N5 in plan).
  */
 
-import { describe, expect, it } from 'bun:test'
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
 import { REACTIVE_PATH, DEEP_PATH } from './types.js'
 import { buildSystemPrompt, buildToolUseSystemPrompt } from './prompt-builder.js'
 import type { ActionRegistry } from './actions.js'
@@ -17,17 +18,17 @@ import { createAnthropicProvider } from './llm/anthropic.js'
 
 describe('TickPathConfig constants', () => {
   it('REACTIVE_PATH = latency-optimal preset', () => {
-    expect(REACTIVE_PATH.mode).toBe('reactive')
-    expect(REACTIVE_PATH.feedbackRounds).toBe(0)
-    expect(REACTIVE_PATH.promptCacheTTL).toBe('5m')
-    expect(REACTIVE_PATH.memoryWriteBlocking).toBe(false)
+    assert.equal(REACTIVE_PATH.mode, 'reactive')
+    assert.equal(REACTIVE_PATH.feedbackRounds, 0)
+    assert.equal(REACTIVE_PATH.promptCacheTTL, '5m')
+    assert.equal(REACTIVE_PATH.memoryWriteBlocking, false)
   })
 
   it('DEEP_PATH = coherence-optimal preset', () => {
-    expect(DEEP_PATH.mode).toBe('deep')
-    expect(DEEP_PATH.feedbackRounds).toBe(5)
-    expect(DEEP_PATH.promptCacheTTL).toBe(null)
-    expect(DEEP_PATH.memoryWriteBlocking).toBe(true)
+    assert.equal(DEEP_PATH.mode, 'deep')
+    assert.equal(DEEP_PATH.feedbackRounds, 5)
+    assert.equal(DEEP_PATH.promptCacheTTL, null)
+    assert.equal(DEEP_PATH.memoryWriteBlocking, true)
   })
 })
 
@@ -40,23 +41,23 @@ describe('buildSystemPrompt memoize', () => {
   it('returns identical string on repeated calls (same identity + actions)', () => {
     const a = buildSystemPrompt('agent-identity-1', fakeActions)
     const b = buildSystemPrompt('agent-identity-1', fakeActions)
-    expect(a).toBe(b)
+    assert.equal(a, b)
     // Reference equality proves memoize hit, not just structural equality
-    expect(a === b).toBe(true)
+    assert.equal(a === b, true)
   })
 
   it('invalidates cache when identity changes', () => {
     const a = buildSystemPrompt('identity-A', fakeActions)
     const b = buildSystemPrompt('identity-B', fakeActions)
-    expect(a).not.toBe(b)
-    expect(a).toContain('identity-A')
-    expect(b).toContain('identity-B')
+    assert.notEqual(a, b)
+    assert.ok(a.includes('identity-A'))
+    assert.ok(b.includes('identity-B'))
   })
 
   it('buildToolUseSystemPrompt also memoizes', () => {
     const a = buildToolUseSystemPrompt('tool-identity-1')
     const b = buildToolUseSystemPrompt('tool-identity-1')
-    expect(a === b).toBe(true)
+    assert.equal(a === b, true)
   })
 })
 
@@ -68,19 +69,19 @@ describe('Anthropic setCacheControl + applyCacheControlToBody', () => {
 
   it('exposes setCacheControl setter', () => {
     const provider = createAnthropicProvider({ apiKey: 'dummy-key-for-test' })
-    expect(typeof (provider as { setCacheControl?: unknown }).setCacheControl).toBe('function')
+    assert.equal(typeof (provider as { setCacheControl?: unknown }).setCacheControl, 'function')
   })
 
   it('setCacheControl(null) is safe', () => {
     const provider = createAnthropicProvider({ apiKey: 'dummy-key-for-test' })
     const setter = (provider as { setCacheControl: (c: { ttl: '5m' | '1h' } | null) => void }).setCacheControl
-    expect(() => setter(null)).not.toThrow()
+    assert.doesNotThrow(() => setter(null))
   })
 
   it('setCacheControl({ttl:"5m"}) is safe', () => {
     const provider = createAnthropicProvider({ apiKey: 'dummy-key-for-test' })
     const setter = (provider as { setCacheControl: (c: { ttl: '5m' | '1h' } | null) => void }).setCacheControl
-    expect(() => setter({ ttl: '5m' })).not.toThrow()
-    expect(() => setter({ ttl: '1h' })).not.toThrow()
+    assert.doesNotThrow(() => setter({ ttl: '5m' }))
+    assert.doesNotThrow(() => setter({ ttl: '1h' }))
   })
 })

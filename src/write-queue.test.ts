@@ -8,7 +8,8 @@
  * Plus crash recovery (replay from disk).
  */
 
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
+import { describe, it, beforeEach, afterEach } from 'node:test'
+import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,17 +39,17 @@ describe('Layer 2 — write-through cache', () => {
 
   it('cache returns content immediately after enqueue (same-tick read-your-own-write)', async () => {
     await queue.enqueue({ path: 'memory.md', op: 'write', content: 'hello' })
-    expect(queue.cacheGet('memory.md')).toBe('hello')
+    assert.equal(queue.cacheGet('memory.md'), 'hello')
   })
 
   it('cacheGet returns null for unwritten path', () => {
-    expect(queue.cacheGet('never-written.md')).toBe(null)
+    assert.equal(queue.cacheGet('never-written.md'), null)
   })
 
   it('latest write wins in cache', async () => {
     await queue.enqueue({ path: 'memory.md', op: 'write', content: 'first' })
     await queue.enqueue({ path: 'memory.md', op: 'write', content: 'second' })
-    expect(queue.cacheGet('memory.md')).toBe('second')
+    assert.equal(queue.cacheGet('memory.md'), 'second')
   })
 })
 
@@ -76,30 +77,30 @@ describe('Layer 1 — at-least-once persistence + consumer', () => {
     await queue.enqueue({ path: 'foo.md', op: 'write', content: 'bar' })
     const pendingDir = join(dir, 'state', 'write-queue', 'pending')
     const files = readdirSync(pendingDir)
-    expect(files.length).toBe(1)
+    assert.equal(files.length, 1)
     const content = readFileSync(join(pendingDir, files[0]), 'utf-8')
     const entry = JSON.parse(content.trim())
-    expect(entry.path).toBe('foo.md')
-    expect(entry.content).toBe('bar')
-    expect(entry.op).toBe('write')
-    expect(entry.attempts).toBe(0)
+    assert.equal(entry.path, 'foo.md')
+    assert.equal(entry.content, 'bar')
+    assert.equal(entry.op, 'write')
+    assert.equal(entry.attempts, 0)
   })
 
   it('consumer drains queue → syncWriter called', async () => {
     await queue.enqueue({ path: 'a.md', op: 'write', content: 'A' })
-    expect(queue.depth()).toBe(1)
+    assert.equal(queue.depth(), 1)
     const result = await queue.drain()
-    expect(result.drained).toBe(1)
-    expect(result.failed).toBe(0)
-    expect(writes).toEqual([{ path: 'a.md', content: 'A', op: 'write' }])
-    expect(queue.depth()).toBe(0)
+    assert.equal(result.drained, 1)
+    assert.equal(result.failed, 0)
+    assert.deepEqual(writes, [{ path: 'a.md', content: 'A', op: 'write' }])
+    assert.equal(queue.depth(), 0)
   })
 
   it('removes pending file after successful drain', async () => {
     await queue.enqueue({ path: 'a.md', op: 'write', content: 'A' })
     await queue.drain()
     const pendingDir = join(dir, 'state', 'write-queue', 'pending')
-    expect(readdirSync(pendingDir).length).toBe(0)
+    assert.equal(readdirSync(pendingDir).length, 0)
   })
 
   it('retries failed writes up to maxRetries, then dead-letters', async () => {
@@ -114,11 +115,11 @@ describe('Layer 1 — at-least-once persistence + consumer', () => {
     await queue.drain()
     await queue.drain()
     await queue.drain()
-    expect(attempts).toBe(3)
+    assert.equal(attempts, 3)
     const deadDir = join(dir, 'state', 'write-queue', 'dead')
     const deadFiles = readdirSync(deadDir)
-    expect(deadFiles.length).toBe(1)
-    expect(queue.depth()).toBe(0)
+    assert.equal(deadFiles.length, 1)
+    assert.equal(queue.depth(), 0)
   })
 
   it('back-pressure falls back to sync write when queue full', async () => {
@@ -131,11 +132,11 @@ describe('Layer 1 — at-least-once persistence + consumer', () => {
     )
     await queue.enqueue({ path: 'a.md', op: 'write', content: 'A' })
     await queue.enqueue({ path: 'b.md', op: 'write', content: 'B' })
-    expect(queue.depth()).toBe(2)
-    expect(writes.length).toBe(0)
+    assert.equal(queue.depth(), 2)
+    assert.equal(writes.length, 0)
     await queue.enqueue({ path: 'c.md', op: 'write', content: 'C' })
-    expect(writes).toEqual([{ path: 'c.md', content: 'C', op: 'write' }])
-    expect(queue.depth()).toBe(2)
+    assert.deepEqual(writes, [{ path: 'c.md', content: 'C', op: 'write' }])
+    assert.equal(queue.depth(), 2)
   })
 })
 
@@ -164,22 +165,22 @@ describe('Layer 3 — causal_key FIFO ordering', () => {
     await queue.enqueue({ path: 'a.md', op: 'write', content: '2', causal_key: 'k1' })
     await queue.enqueue({ path: 'a.md', op: 'write', content: '3', causal_key: 'k1' })
     await queue.drain()
-    expect(writes.map(w => w.content)).toEqual(['1', '2', '3'])
+    assert.deepEqual(writes.map(w => w.content), ['1', '2', '3'])
   })
 
   it('different causal_keys drain independently', async () => {
     await queue.enqueue({ path: 'a.md', op: 'write', content: 'A', causal_key: 'k1' })
     await queue.enqueue({ path: 'b.md', op: 'write', content: 'B', causal_key: 'k2' })
     const r = await queue.drain()
-    expect(r.drained).toBe(2)
-    expect(writes.map(w => w.path).sort()).toEqual(['a.md', 'b.md'])
+    assert.equal(r.drained, 2)
+    assert.deepEqual(writes.map(w => w.path).sort(), ['a.md', 'b.md'])
   })
 
   it('framework-inferred path-hash default when causal_key omitted', async () => {
     await queue.enqueue({ path: 'memory.md', op: 'write', content: '1' })
     await queue.enqueue({ path: 'memory.md', op: 'write', content: '2' })
     await queue.drain()
-    expect(writes.map(w => w.content)).toEqual(['1', '2'])
+    assert.deepEqual(writes.map(w => w.content), ['1', '2'])
   })
 })
 
@@ -194,7 +195,7 @@ describe('Crash recovery — replay from disk', () => {
       { drainIntervalMs: 60_000 },
     )
     await q1.enqueue({ path: 'survives.md', op: 'write', content: 'persist-me' })
-    expect(q1.depth()).toBe(1)
+    assert.equal(q1.depth(), 1)
     // Simulate crash: no q1.stop(), no drain — leave file on disk
 
     const q2 = createWriteQueue(
@@ -204,9 +205,9 @@ describe('Crash recovery — replay from disk', () => {
     )
     // Constructor calls replay() async; give it a tick to land
     await new Promise(r => setTimeout(r, 50))
-    expect(q2.depth()).toBeGreaterThanOrEqual(1)
+    assert.ok(q2.depth() >= 1)
     await q2.drain()
-    expect(writes).toEqual([{ path: 'survives.md', content: 'persist-me' }])
+    assert.deepEqual(writes, [{ path: 'survives.md', content: 'persist-me' }])
     await q2.stop()
     rmSync(dir, { recursive: true, force: true })
   })

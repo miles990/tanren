@@ -9,7 +9,8 @@
  *   - toggling back to sync after async drains pending entries
  */
 
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
+import { describe, it, beforeEach, afterEach } from 'node:test'
+import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -32,15 +33,15 @@ describe('memory.setAsyncMode wiring', () => {
 
   it('exposes setAsyncMode method', () => {
     const mem = createMemorySystem(dir)
-    expect(typeof (mem as { setAsyncMode?: unknown }).setAsyncMode).toBe('function')
+    assert.equal(typeof (mem as { setAsyncMode?: unknown }).setAsyncMode, 'function')
   })
 
   it('sync mode (default): write hits disk immediately', async () => {
     const mem = createMemorySystem(dir)
     await mem.write('a.md', 'hello')
     const filePath = join(dir, 'a.md')
-    expect(existsSync(filePath)).toBe(true)
-    expect(readFileSync(filePath, 'utf-8')).toBe('hello')
+    assert.equal(existsSync(filePath), true)
+    assert.equal(readFileSync(filePath, 'utf-8'), 'hello')
   })
 
   it('async mode: write enqueues, persists to queue dir', async () => {
@@ -49,9 +50,9 @@ describe('memory.setAsyncMode wiring', () => {
     await mem.write('a.md', 'async-content')
     // Queue persisted but disk not yet (drain runs every 100ms)
     const pendingDir = join(dir, 'state', 'write-queue', 'pending')
-    expect(existsSync(pendingDir)).toBe(true)
+    assert.equal(existsSync(pendingDir), true)
     const queueFiles = readdirSync(pendingDir)
-    expect(queueFiles.length).toBeGreaterThan(0)
+    assert.ok(queueFiles.length > 0)
   })
 
   it('async mode: same-tick read-your-own-write via cache', async () => {
@@ -60,7 +61,7 @@ describe('memory.setAsyncMode wiring', () => {
     await mem.write('a.md', 'fresh-content')
     // Read immediately — should hit cache before disk drain
     const got = await mem.read('a.md')
-    expect(got).toBe('fresh-content')
+    assert.equal(got, 'fresh-content')
   })
 
   it('async mode: cache wins over stale disk', async () => {
@@ -71,7 +72,7 @@ describe('memory.setAsyncMode wiring', () => {
     mem.setAsyncMode!(true)
     await mem.write('a.md', 'new-cached-content')
     // Cache returns new, before drain hits disk
-    expect(await mem.read('a.md')).toBe('new-cached-content')
+    assert.equal(await mem.read('a.md'), 'new-cached-content')
   })
 
   it('async mode: drain eventually writes to disk', async () => {
@@ -81,8 +82,8 @@ describe('memory.setAsyncMode wiring', () => {
     // Wait for consumer thread to drain (drainIntervalMs default = 100ms)
     await new Promise(r => setTimeout(r, 300))
     const filePath = join(dir, 'drain-target.md')
-    expect(existsSync(filePath)).toBe(true)
-    expect(readFileSync(filePath, 'utf-8')).toBe('will-land-on-disk')
+    assert.equal(existsSync(filePath), true)
+    assert.equal(readFileSync(filePath, 'utf-8'), 'will-land-on-disk')
   })
 
   it('async append also routes through queue', async () => {
@@ -90,7 +91,7 @@ describe('memory.setAsyncMode wiring', () => {
     mem.setAsyncMode!(true)
     await mem.append('log.md', 'line one')
     // Cache should reflect append content
-    expect(await mem.read('log.md')).toBe('line one')
+    assert.equal(await mem.read('log.md'), 'line one')
   })
 
   it('toggle async → sync: subsequent writes go straight to disk', async () => {
@@ -99,8 +100,8 @@ describe('memory.setAsyncMode wiring', () => {
     await mem.write('mixed.md', 'async-write')
     mem.setAsyncMode!(false)
     await mem.write('mixed-2.md', 'sync-write')
-    expect(existsSync(join(dir, 'mixed-2.md'))).toBe(true)
-    expect(readFileSync(join(dir, 'mixed-2.md'), 'utf-8')).toBe('sync-write')
+    assert.equal(existsSync(join(dir, 'mixed-2.md')), true)
+    assert.equal(readFileSync(join(dir, 'mixed-2.md'), 'utf-8'), 'sync-write')
   })
 
   it('causal_key forwards to underlying queue', async () => {
@@ -112,6 +113,6 @@ describe('memory.setAsyncMode wiring', () => {
     await new Promise(r => setTimeout(r, 300))
     // FIFO within same causal_key — final content is '2'
     const final = readFileSync(join(dir, 'a.md'), 'utf-8')
-    expect(final).toBe('2')
+    assert.equal(final, '2')
   })
 })

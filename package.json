@@ -15,9 +15,10 @@
     "tanren": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc",
     "dev": "tsc --watch",
-    "test": "node --test dist/**/*.test.js",
+    "test": "npm run clean && tsc -p tsconfig.test.json && node --test \"dist/**/*.test.js\"",
     "typecheck": "tsc --noEmit"
   },
   "files": [

@@ -134,7 +134,9 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     const key = entry.lockPlanId ?? entry.lockHandle.record.planId
     if (heartbeatTimers.has(key)) return
     entry.lockHandle.heartbeat()
-    heartbeatTimers.set(key, setInterval(() => entry.lockHandle?.heartbeat(), 15_000))
+    const timer = setInterval(() => entry.lockHandle?.heartbeat(), 15_000)
+    timer.unref?.()
+    heartbeatTimers.set(key, timer)
   }
 
   const releaseSchedulerLock = (entry: PlanEntry) => {
