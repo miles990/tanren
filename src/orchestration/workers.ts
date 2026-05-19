@@ -11,8 +11,29 @@
 
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { ProviderKey } from '../provider-registry.js';
+import type { PlanStep } from './plan-engine.js';
 
 export type WorkerBackend = 'sdk' | 'acp' | 'shell' | 'middleware' | 'webhook' | 'logic';
+export type WorkerCapability = NonNullable<PlanStep['mode']>;
+export type WorkerGate = NonNullable<PlanStep['gate']>;
+export type WorkerRiskLevel = 'low' | 'medium' | 'high';
+export type WorkerEscalationPolicy = 'never' | 'on_failure' | 'only_when_blocked' | 'always';
+
+export interface WorkerPolicy {
+  /** What behavioral modes this worker may be assigned in plans. */
+  capabilities?: WorkerCapability[];
+  /** Mode used when a step omits mode. */
+  defaultMode?: WorkerCapability;
+  /** Writer/report steps for this worker must declare verifyCommand and artifactContract. */
+  requiresArtifactContract?: boolean;
+  /** Production gates that must appear downstream of write/report steps assigned to this worker. */
+  gates?: WorkerGate[];
+  /** Backends this custom role is allowed to use. */
+  allowedBackends?: WorkerBackend[];
+  /** When this worker should escalate to the boss instead of continuing autonomously. */
+  escalationPolicy?: WorkerEscalationPolicy;
+  riskLevel?: WorkerRiskLevel;
+}
 
 export interface WorkerDefinition {
   agent: AgentDefinition;
@@ -48,6 +69,8 @@ export interface WorkerDefinition {
   mcpServers?: Record<string, any>;
   /** Skills (markdown prompts) injected into worker's system prompt — worker-scoped, not agent-scoped */
   skills?: string[];
+  /** Policy contract used by orchestration validation. */
+  policy?: WorkerPolicy;
 }
 
 export const WORKERS: Record<string, WorkerDefinition> = {
@@ -62,6 +85,12 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     backend: 'sdk',
     maxConcurrency: 8,
     defaultTimeoutSeconds: 300,
+    policy: {
+      capabilities: ['read', 'report'],
+      defaultMode: 'read',
+      escalationPolicy: 'only_when_blocked',
+      riskLevel: 'low',
+    },
   },
 
   coder: {
@@ -75,6 +104,14 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     backend: 'sdk',
     maxConcurrency: 2,
     defaultTimeoutSeconds: 300,
+    policy: {
+      capabilities: ['read', 'write', 'verify', 'report'],
+      defaultMode: 'write',
+      requiresArtifactContract: true,
+      gates: ['review'],
+      escalationPolicy: 'only_when_blocked',
+      riskLevel: 'high',
+    },
   },
 
   reviewer: {
@@ -88,6 +125,12 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     backend: 'sdk',
     maxConcurrency: 6,
     defaultTimeoutSeconds: 120,
+    policy: {
+      capabilities: ['read', 'verify', 'report'],
+      defaultMode: 'verify',
+      escalationPolicy: 'on_failure',
+      riskLevel: 'medium',
+    },
   },
 
   shell: {
@@ -99,6 +142,13 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     backend: 'shell',
     maxConcurrency: 4,
     defaultTimeoutSeconds: 30,
+    policy: {
+      capabilities: ['verify'],
+      defaultMode: 'verify',
+      requiresArtifactContract: false,
+      escalationPolicy: 'on_failure',
+      riskLevel: 'medium',
+    },
   },
 
   analyst: {
@@ -112,6 +162,12 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     backend: 'sdk',
     maxConcurrency: 4,
     defaultTimeoutSeconds: 300,
+    policy: {
+      capabilities: ['read', 'verify', 'report'],
+      defaultMode: 'read',
+      escalationPolicy: 'only_when_blocked',
+      riskLevel: 'low',
+    },
   },
 
   explorer: {
@@ -125,6 +181,12 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     backend: 'sdk',
     maxConcurrency: 8,
     defaultTimeoutSeconds: 120,
+    policy: {
+      capabilities: ['read', 'report'],
+      defaultMode: 'read',
+      escalationPolicy: 'only_when_blocked',
+      riskLevel: 'low',
+    },
   },
 
   'qwen-local': {
@@ -138,6 +200,12 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     vendor: 'local',
     maxConcurrency: 1,
     defaultTimeoutSeconds: 120,
+    policy: {
+      capabilities: ['read', 'report'],
+      defaultMode: 'report',
+      escalationPolicy: 'only_when_blocked',
+      riskLevel: 'low',
+    },
   },
 
   'cloud-agent': {
@@ -150,6 +218,12 @@ export const WORKERS: Record<string, WorkerDefinition> = {
     vendor: 'anthropic-managed',
     maxConcurrency: 4,
     defaultTimeoutSeconds: 300,
+    policy: {
+      capabilities: ['read', 'verify', 'report'],
+      defaultMode: 'read',
+      escalationPolicy: 'only_when_blocked',
+      riskLevel: 'medium',
+    },
   },
 };
 

@@ -7,14 +7,14 @@ import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
 import { PlanEventLog } from './plan-events.js'
-import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type StepResult } from './plan-engine.js'
+import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type PlanStep, type StepResult } from './plan-engine.js'
 import { PresetManager } from './presets.js'
 import { ResultBuffer, type TaskEvent, type TaskStatus } from './result-buffer.js'
 import { RepoSchedulerLock, SchedulerLockError, type SchedulerLockHandle } from './scheduler-lock.js'
 import { PLAN_TEMPLATES } from './templates.js'
 import { cleanupCycleWorktree, createCycleWorktree, type WorktreeContext, type WorktreeIsolationConfig } from './worktree.js'
 import { createWorkerRuntime } from './worker-runtime.js'
-import { WORKERS, type WorkerDefinition } from './workers.js'
+import { WORKERS, type WorkerDefinition, type WorkerGate } from './workers.js'
 
 export interface OrchestrationMiddlewareConfig {
   cwd?: string
@@ -115,16 +115,64 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     .filter(([, def]) => def.backend === 'shell' || (def.agent.tools ?? []).some(tool => ['Write', 'Edit'].includes(String(tool))))
     .map(([name]) => name))
 
+  const inferStepMode = (step: PlanStep, def: WorkerDefinition): NonNullable<PlanStep['mode']> => {
+    if (step.mode) return step.mode
+    if (def.policy?.defaultMode) return def.policy.defaultMode
+    if (def.backend === 'shell') return 'verify'
+    if ((def.agent.tools ?? []).some(tool => ['Write', 'Edit'].includes(String(tool)))) return 'write'
+    return 'read'
+  }
+
+  const hasDownstreamGate = (plan: ActionPlan, stepId: string, gate: WorkerGate): boolean => {
+    const byDependency = new Map<string, PlanStep[]>()
+    for (const candidate of plan.steps) {
+      for (const dep of candidate.dependsOn) {
+        const next = byDependency.get(dep) ?? []
+        next.push(candidate)
+        byDependency.set(dep, next)
+      }
+    }
+    const seen = new Set<string>()
+    const queue = [...(byDependency.get(stepId) ?? [])]
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      if (seen.has(current.id)) continue
+      seen.add(current.id)
+      if (current.gate === gate) return true
+      queue.push(...(byDependency.get(current.id) ?? []))
+    }
+    return false
+  }
+
   const validateExecutionPolicy = (plan: ActionPlan, opts?: { enforceContracts?: boolean }): string[] => {
     if (opts?.enforceContracts === false) return []
     const writers = writerWorkers()
     const errors: string[] = []
     for (const step of plan.steps) {
-      if (!writers.has(step.worker)) continue
-      if (step.mode === 'read' || step.mode === 'verify') continue
-      if (!step.verifyCommand) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires verifyCommand`)
-      if (!step.artifactContract?.allowedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.allowedPaths`)
-      if (!step.artifactContract?.expectedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.expectedPaths`)
+      const worker = allWorkers()[step.worker]
+      if (!worker) continue
+      const policy = worker.policy
+      const mode = inferStepMode(step, worker)
+      if (policy?.allowedBackends?.length && !policy.allowedBackends.includes(worker.backend)) {
+        errors.push(`Step ${step.id}: worker '${step.worker}' backend '${worker.backend}' is not allowed by worker policy`)
+      }
+      if (policy?.capabilities?.length && !policy.capabilities.includes(mode)) {
+        errors.push(`Step ${step.id}: worker '${step.worker}' does not allow mode '${mode}'`)
+      }
+      const writes = mode === 'write' || mode === 'report'
+      const contractRequired = writes && (writers.has(step.worker) || policy?.requiresArtifactContract === true)
+      if (contractRequired) {
+        if (!step.verifyCommand) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires verifyCommand`)
+        if (!step.artifactContract?.allowedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.allowedPaths`)
+        if (!step.artifactContract?.expectedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.expectedPaths`)
+      }
+      if (writes && policy?.gates?.length) {
+        for (const gate of policy.gates) {
+          if (!hasDownstreamGate(plan, step.id, gate)) {
+            errors.push(`Step ${step.id}: worker '${step.worker}' policy requires downstream '${gate}' gate`)
+          }
+        }
+      }
     }
     return errors
   }
@@ -586,6 +634,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     workers: Object.entries(mw.allWorkers()).map(([name, def]) => ({
       name, backend: def.backend, model: def.agent.model, timeout: def.defaultTimeoutSeconds,
       providerOptions: def.providerOptions,
+      policy: def.policy,
     })),
     gateway: mw.acpGateway.getStats(),
   }))
@@ -623,6 +672,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       tools: def.agent.tools,
       maxTurns: def.agent.maxTurns,
       timeout: def.defaultTimeoutSeconds,
+      policy: def.policy,
       builtin: !!WORKERS[name],
     })),
   }))
@@ -657,6 +707,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       logicFn: body.logicFn,
       mcpServers: body.mcpServers,
       skills: body.skills,
+      policy: body.policy,
     }
     mw.customWorkers.set(body.name, def)
     mw.refreshProvider(body.name, def)

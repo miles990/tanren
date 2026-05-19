@@ -114,6 +114,7 @@ process restarts and avoid stepping on each other.
 - `repair.enabled` defaults to on. Failed plans create one bounded typed repair DAG: classify failure, apply focused repair, verify, then report. Repair steps go through the same artifact contract policy as normal plans.
 - Step `verifyCommand` runs in the plan cwd. Step `artifactContract` can declare `allowedPaths`, `expectedPaths`, and `forbiddenPaths`.
 - Writer workers (workers with `Write`, `Edit`, or `shell` backend) must include `verifyCommand`, `artifactContract.allowedPaths`, and `artifactContract.expectedPaths`; otherwise `/plan` and `/plan/validate` reject the plan. Set `mode: "read"` or `mode: "verify"` for read-only or verification steps that use a capable worker but must not write files.
+- Workers can declare a `policy` so custom AI agents are governed by capabilities instead of prompts: `capabilities`, `defaultMode`, `requiresArtifactContract`, `gates`, `allowedBackends`, `escalationPolicy`, and `riskLevel`. Write/report steps assigned to a worker with required `gates` must have downstream gate steps such as `{ "gate": "review" }`.
 
 Example step contract:
 
@@ -129,6 +130,26 @@ Example step contract:
     "allowedPaths": ["src/dashboard", "docs/dashboard.md"],
     "expectedPaths": ["src/dashboard/index.ts"],
     "forbiddenPaths": ["package-lock.json"]
+  }
+}
+```
+
+Example custom worker policy:
+
+```json
+{
+  "name": "gameplay-engineer",
+  "backend": "sdk",
+  "model": "sonnet",
+  "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+  "policy": {
+    "capabilities": ["read", "write", "verify", "report"],
+    "defaultMode": "write",
+    "requiresArtifactContract": true,
+    "gates": ["review", "qa"],
+    "allowedBackends": ["sdk", "acp"],
+    "escalationPolicy": "only_when_blocked",
+    "riskLevel": "high"
   }
 }
 ```

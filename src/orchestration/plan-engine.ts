@@ -32,6 +32,8 @@ export interface PlanStep {
   backend?: 'sdk' | 'acp' | 'shell' | 'middleware';
   /** Declares the behavioral intent so orchestration policy can distinguish read/verify/report work from file-writing work. */
   mode?: 'read' | 'write' | 'verify' | 'report';
+  /** Marks this step as a named production gate for policy checks. */
+  gate?: 'review' | 'qa' | 'merge' | 'release' | 'boss-report';
   timeoutSeconds?: number;
   maxConcurrency?: number;
   /** Dynamic branching */
@@ -137,6 +139,8 @@ export type WorkerExecutor = (worker: string, task: string | import('../types.js
 // =============================================================================
 
 const LOW_CONFIDENCE_THRESHOLD = 0.6;
+const STEP_MODES = new Set(['read', 'write', 'verify', 'report']);
+const STEP_GATES = new Set(['review', 'qa', 'merge', 'release', 'boss-report']);
 
 function resolveStepContext(task: string, results: Map<string, StepResult>): string {
   return task.replace(/\{\{(\w[\w-]*)\.(\w+)\}\}/g, (match, stepId, field) => {
@@ -264,6 +268,8 @@ export class PlanEngine {
     const ids = new Set(plan.steps.map(s => s.id));
     for (const step of plan.steps) {
       if (!availableWorkers.has(step.worker)) errors.push(`Step ${step.id}: unknown worker '${step.worker}'`);
+      if (step.mode && !STEP_MODES.has(step.mode)) errors.push(`Step ${step.id}: invalid mode '${step.mode}'`);
+      if (step.gate && !STEP_GATES.has(step.gate)) errors.push(`Step ${step.id}: invalid gate '${step.gate}'`);
       for (const dep of step.dependsOn) {
         if (!ids.has(dep)) errors.push(`Step ${step.id}: depends on unknown '${dep}'`);
         if (dep === step.id) errors.push(`Step ${step.id}: self-dependency`);
