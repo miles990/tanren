@@ -30,6 +30,8 @@ export interface PlanStep {
   label?: string;
   dependsOn: string[];
   backend?: 'sdk' | 'acp' | 'shell' | 'middleware';
+  /** Declares the behavioral intent so orchestration policy can distinguish read/verify/report work from file-writing work. */
+  mode?: 'read' | 'write' | 'verify' | 'report';
   timeoutSeconds?: number;
   maxConcurrency?: number;
   /** Dynamic branching */

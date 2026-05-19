@@ -4,7 +4,7 @@ import type { ActionPlan, PlanEvent, StepResult } from './plan-engine.js'
 import type { WorktreeContext } from './worktree.js'
 
 export type PlanLogEvent =
-  | { type: 'plan.created'; planId: string; plan: ActionPlan; worktree?: WorktreeContext; timestamp: string }
+  | { type: 'plan.created'; planId: string; plan: ActionPlan; worktree?: WorktreeContext; boundaryStatus?: string[]; schedulerLock?: boolean; lockPlanId?: string; timestamp: string }
   | { type: 'plan.started'; planId: string; timestamp: string; attempt: number }
   | { type: 'plan.completed'; planId: string; status: 'completed' | 'failed'; timestamp: string }
   | { type: 'plan.failed'; planId: string; error: string; timestamp: string }
@@ -35,6 +35,57 @@ export class PlanEventLog {
       try { events.push(JSON.parse(line) as PlanLogEvent) } catch { /* skip malformed */ }
     }
     return events
+  }
+
+  replay(): Map<string, { plan: ActionPlan; worktree?: WorktreeContext; boundaryStatus?: string[]; status: 'executing' | 'completed' | 'failed'; createdAt: string; completedAt?: string; repairOf?: string; repairAttempt?: number; schedulerLock?: boolean; lockPlanId?: string }> {
+    const plans = new Map<string, { plan: ActionPlan; worktree?: WorktreeContext; boundaryStatus?: string[]; status: 'executing' | 'completed' | 'failed'; createdAt: string; completedAt?: string; repairOf?: string; repairAttempt?: number; schedulerLock?: boolean; lockPlanId?: string }>()
+    const repairParents = new Map<string, { repairOf: string; repairAttempt: number }>()
+    for (const event of this.readAll()) {
+      switch (event.type) {
+        case 'plan.created': {
+          const repair = repairParents.get(event.planId)
+          plans.set(event.planId, {
+            plan: event.plan,
+            worktree: event.worktree,
+            boundaryStatus: event.boundaryStatus,
+            status: 'executing',
+            createdAt: event.timestamp,
+            repairOf: repair?.repairOf,
+            repairAttempt: repair?.repairAttempt,
+            schedulerLock: event.schedulerLock ?? true,
+            lockPlanId: event.lockPlanId ?? repair?.repairOf ?? event.planId,
+          })
+          break
+        }
+        case 'repair.created':
+          repairParents.set(event.repairPlanId, { repairOf: event.planId, repairAttempt: event.repairAttempt })
+          if (plans.has(event.repairPlanId)) {
+            const entry = plans.get(event.repairPlanId)!
+            entry.repairOf = event.planId
+            entry.repairAttempt = event.repairAttempt
+            entry.lockPlanId = event.planId
+          }
+          break
+        case 'plan.started':
+          if (plans.has(event.planId)) plans.get(event.planId)!.status = 'executing'
+          break
+        case 'plan.completed':
+          if (plans.has(event.planId)) {
+            const entry = plans.get(event.planId)!
+            entry.status = event.status
+            entry.completedAt = event.timestamp
+          }
+          break
+        case 'plan.failed':
+          if (plans.has(event.planId)) {
+            const entry = plans.get(event.planId)!
+            entry.status = 'failed'
+            entry.completedAt = event.timestamp
+          }
+          break
+      }
+    }
+    return plans
   }
 
   appendEngineEvent(planId: string, event: PlanEvent): void {

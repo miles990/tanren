@@ -106,14 +106,14 @@ The orchestration middleware runs worker DAG plans through `POST /plan`.
 It is designed for autonomous product teams where repeated cycles must survive
 process restarts and avoid stepping on each other.
 
-- Plans persist to `plans-state.json`; any plan still marked `executing` resumes on service startup.
 - Plan lifecycle events append to `plan-events.jsonl`, including plan start/completion, step attempts, retries, repair spawning, and lock acquisition/release.
+- On startup, Tanren replays `plan-events.jsonl` as the source of truth for plan state. `plans-state.json` is retained as a compatibility snapshot for older runtimes.
 - Task identity is composite: `planId + stepId`, so two plans can reuse the same step ids safely.
 - `schedulerLock` defaults to `true`, allowing only one active product objective per repo through an atomic lock file at `.tanren/locks/product-objective.lock` with heartbeat. Send `"schedulerLock": false` only for intentionally independent maintenance work.
 - `isolation.mode: "cycle-worktree"` runs the plan in a dedicated git worktree and verifies the main repo status did not change.
-- `repair.enabled` defaults to on. Failed plans create one bounded typed repair DAG: classify failure, apply focused repair, verify, then report. Set `repair.maxAttempts` or `repair.worker` to tune it.
+- `repair.enabled` defaults to on. Failed plans create one bounded typed repair DAG: classify failure, apply focused repair, verify, then report. Repair steps go through the same artifact contract policy as normal plans.
 - Step `verifyCommand` runs in the plan cwd. Step `artifactContract` can declare `allowedPaths`, `expectedPaths`, and `forbiddenPaths`.
-- Writer workers (workers with `Write`, `Edit`, or `shell` backend) must include `verifyCommand`, `artifactContract.allowedPaths`, and `artifactContract.expectedPaths`; otherwise `/plan` and `/plan/validate` reject the plan.
+- Writer workers (workers with `Write`, `Edit`, or `shell` backend) must include `verifyCommand`, `artifactContract.allowedPaths`, and `artifactContract.expectedPaths`; otherwise `/plan` and `/plan/validate` reject the plan. Set `mode: "read"` or `mode: "verify"` for read-only or verification steps that use a capable worker but must not write files.
 
 Example step contract:
 
@@ -121,6 +121,7 @@ Example step contract:
 {
   "id": "implement-ui",
   "worker": "coder",
+  "mode": "write",
   "dependsOn": [],
   "task": "Implement the dashboard UI.",
   "verifyCommand": "npm run typecheck",

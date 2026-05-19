@@ -23,3 +23,22 @@ test('orchestration policy rejects writer steps without artifact contract and ve
   }
 })
 
+test('orchestration policy allows read-mode writer workers but enforces report contracts', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const readPlan: ActionPlan = {
+      goal: 'read',
+      steps: [{ id: 'classify', worker: 'coder', mode: 'read', task: 'read only', dependsOn: [] }],
+    }
+    assert.deepEqual(mw.validateExecutionPolicy(readPlan), [])
+
+    const reportPlan: ActionPlan = {
+      goal: 'report',
+      steps: [{ id: 'report', worker: 'coder', mode: 'report', task: 'write report', dependsOn: [] }],
+    }
+    assert.ok(mw.validateExecutionPolicy(reportPlan).some(error => error.includes('verifyCommand')))
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})

@@ -121,6 +121,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     const errors: string[] = []
     for (const step of plan.steps) {
       if (!writers.has(step.worker)) continue
+      if (step.mode === 'read' || step.mode === 'verify') continue
       if (!step.verifyCommand) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires verifyCommand`)
       if (!step.artifactContract?.allowedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.allowedPaths`)
       if (!step.artifactContract?.expectedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.expectedPaths`)
@@ -253,6 +254,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     const repairWorker = repair?.worker ?? 'autopilot-producer'
     if (!allWorkers()[repairWorker]) return false
     const verifyWorker = allWorkers()['qa-reality-checker'] ? 'qa-reality-checker' : repairWorker
+    const repairReportPath = `docs/tanren-repair-${failedPlanId}.md`
     const repairPlan: ActionPlan = {
       goal: `Repair failed plan ${failedPlanId}: ${entry.plan.goal}`,
       acceptance: 'Classify the failure, apply a focused repair, verify the result, and report a concise handoff.',
@@ -260,6 +262,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         ...failedSteps.map(step => ({
           id: `classify-${step.id}`,
           worker: repairWorker,
+          mode: 'read' as const,
           label: `Classify ${step.id}`,
           dependsOn: [],
           task: [
@@ -283,13 +286,15 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
               `Classifier output: {{classify-${step.id}.output}}`,
               'Keep scope minimal and do not expand product scope.',
             ].join('\n\n'),
-            verifyCommand: original?.verifyCommand,
-            artifactContract: original?.artifactContract,
+            mode: 'write' as const,
+            verifyCommand: original?.verifyCommand ?? 'test -d docs',
+            artifactContract: original?.artifactContract ?? { allowedPaths: ['docs'], expectedPaths: ['docs'] },
           }
         }),
         {
           id: 'repair-verify',
           worker: verifyWorker,
+          mode: 'verify',
           label: 'Verify repair',
           dependsOn: failedSteps.map(step => `fix-${step.id}`),
           task: [
@@ -300,15 +305,23 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         {
           id: 'repair-report',
           worker: repairWorker,
+          mode: 'report',
           label: 'Repair report',
           dependsOn: ['repair-verify'],
+          verifyCommand: `test -e ${repairReportPath}`,
+          artifactContract: { allowedPaths: ['docs'], expectedPaths: [repairReportPath] },
           task: [
-            `Write a concise repair handoff for failed plan ${failedPlanId}.`,
+            `Create ${repairReportPath} as a concise repair handoff for failed plan ${failedPlanId}.`,
             'Include failure classification, files changed, verification evidence, and whether boss escalation is required.',
             'Boss-facing language should be Traditional Chinese except proper nouns.',
           ].join('\n\n'),
         },
       ],
+    }
+    const repairPolicyErrors = validateExecutionPolicy(repairPlan)
+    if (repairPolicyErrors.length > 0) {
+      planEvents.append({ type: 'plan.failed', planId: failedPlanId, error: `Repair policy validation failed: ${repairPolicyErrors.join('; ')}` })
+      return false
     }
     const repairPlanId = nextPlanId()
     const repairEntry: PlanEntry = {
@@ -325,6 +338,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     }
     plans.set(repairPlanId, repairEntry)
     planEvents.append({ type: 'repair.created', planId: failedPlanId, repairPlanId, repairAttempt: attempt, failedStepIds: failedSteps.map(step => step.id) })
+    planEvents.append({ type: 'plan.created', planId: repairPlanId, plan: repairPlan, worktree: entry.worktree, boundaryStatus: entry.boundaryStatus, schedulerLock: repairEntry.schedulerLock, lockPlanId: repairEntry.lockPlanId })
     const repairRuntimeCwd = entry.worktree?.cwd ?? cwd
     const repairPlanCwd = entry.worktree?.worktreePath ?? cwd
     const repairRuntime = entry.worktree
@@ -335,6 +349,14 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   }
 
   function loadPersistedPlans() {
+    const replayed = planEvents.replay()
+    if (replayed.size > 0) {
+      for (const [planId, entry] of replayed) {
+        plans.set(planId, entry)
+      }
+      return
+    }
+
     try {
       const saved = JSON.parse(readFileSync(plansPath, 'utf-8')) as Array<Omit<PlanEntry, 'resultPromise'> & { planId: string }>
       for (const savedEntry of saved) {
@@ -352,8 +374,9 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     for (const [planId, entry] of plans) {
       if (entry.status !== 'executing') continue
       const planCwd = entry.worktree?.worktreePath ?? cwd
+      const runtimeCwd = entry.worktree?.cwd ?? cwd
       const planRuntime = entry.worktree
-        ? createWorkerRuntime({ cwd: planCwd, workers: Object.fromEntries(customWorkers), acpGateway })
+        ? createWorkerRuntime({ cwd: runtimeCwd, workers: Object.fromEntries(customWorkers), acpGateway })
         : runtime
       startPlanExecution(planId, entry, planRuntime, planCwd)
     }
@@ -523,7 +546,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
 
     const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString(), schedulerLock: body.schedulerLock !== false, lockPlanId: planId, lockHandle }
     mw.plans.set(planId, entry)
-    mw.planEvents.append({ type: 'plan.created', planId, plan, worktree })
+    mw.planEvents.append({ type: 'plan.created', planId, plan, worktree, boundaryStatus, schedulerLock: entry.schedulerLock, lockPlanId: entry.lockPlanId })
     mw.startPlanExecution(planId, entry, planRuntime, planCwd, body.caller, body.repair)
 
     return c.json({ planId, status: 'executing', steps: plan.steps.length, worktree: worktreeJson(worktree) })
@@ -763,7 +786,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     }
     const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString(), schedulerLock: body.schedulerLock !== false, lockPlanId: planId, lockHandle }
     mw.plans.set(planId, entry)
-    mw.planEvents.append({ type: 'plan.created', planId, plan, worktree })
+    mw.planEvents.append({ type: 'plan.created', planId, plan, worktree, boundaryStatus, schedulerLock: entry.schedulerLock, lockPlanId: entry.lockPlanId })
     mw.startPlanExecution(planId, entry, planRuntime, planCwd, body.caller)
     return c.json({ planId, status: 'executing', steps: plan.steps.length, template: body.template, worktree: worktreeJson(worktree) })
   })
