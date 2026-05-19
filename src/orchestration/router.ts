@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
-import { PlanEngine, type ActionPlan, type PlanResult } from './plan-engine.js'
+import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult } from './plan-engine.js'
 import { PresetManager } from './presets.js'
 import { ResultBuffer, type TaskEvent, type TaskStatus } from './result-buffer.js'
 import { PLAN_TEMPLATES } from './templates.js'
+import { cleanupCycleWorktree, createCycleWorktree, type WorktreeContext, type WorktreeIsolationConfig } from './worktree.js'
 import { createWorkerRuntime } from './worker-runtime.js'
 import { WORKERS, type WorkerDefinition } from './workers.js'
 
@@ -31,7 +32,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const acpGateway = createGateway()
   const runtime = createWorkerRuntime({ cwd, workers: Object.fromEntries(customWorkers), acpGateway })
   const presetManager = new PresetManager(cwd)
-  const plans = new Map<string, { plan: ActionPlan; resultPromise: Promise<PlanResult> }>()
+  const plans = new Map<string, { plan: ActionPlan; resultPromise: Promise<PlanResult>; worktree?: WorktreeContext }>()
   let planCounter = 0
 
   const allWorkers = () => ({ ...WORKERS, ...Object.fromEntries(customWorkers) })
@@ -39,7 +40,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     try { writeFileSync(customWorkersPath, JSON.stringify(Object.fromEntries(customWorkers), null, 2), 'utf-8') } catch { /* fail-open */ }
   }
 
-  const planEngine = new PlanEngine(runtime.executeWorker, {
+  const planEngineOptions: PlanEngineOptions = {
     getWorkerTimeoutSeconds: workerName => allWorkers()[workerName]?.defaultTimeoutSeconds ?? 120,
     onEvent: event => {
       switch (event.type) {
@@ -57,7 +58,9 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           break
       }
     },
-  })
+  }
+  const createPlanEngine = (planRuntime = runtime) => new PlanEngine(planRuntime.executeWorker, planEngineOptions)
+  const planEngine = createPlanEngine()
 
   const refreshProvider = (name: string, def: WorkerDefinition) => {
     runtime.workerProviders.delete(name)
@@ -74,6 +77,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   return {
     buffer,
     planEngine,
+    createPlanEngine,
     runtime,
     executeWorker: runtime.executeWorker,
     workerProviders: runtime.workerProviders,
@@ -90,6 +94,36 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 }
 
 export type OrchestrationMiddleware = ReturnType<typeof createOrchestrationMiddleware>
+
+type PlanRequest = ActionPlan & {
+  caller?: string
+  isolation?: WorktreeIsolationConfig
+}
+
+type TemplatePlanRequest = {
+  template: string
+  params: Record<string, string>
+  caller?: string
+  isolation?: WorktreeIsolationConfig
+}
+
+function shouldCleanupWorktree(worktree: WorktreeContext, result: PlanResult): boolean {
+  if (worktree.cleanup === 'always') return true
+  if (worktree.cleanup === 'on-success') return result.summary.failed === 0
+  return false
+}
+
+function worktreeJson(worktree?: WorktreeContext) {
+  if (!worktree) return undefined
+  return {
+    mode: worktree.mode,
+    cwd: worktree.cwd,
+    worktreePath: worktree.worktreePath,
+    branchName: worktree.branchName,
+    baseRef: worktree.baseRef,
+    cleanup: worktree.cleanup,
+  }
+}
 
 export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig = {}): Hono {
   const mw = createOrchestrationMiddleware(config)
@@ -123,23 +157,41 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   })
 
   app.post('/plan', async c => {
-    const body = await c.req.json<ActionPlan & { caller?: string }>()
+    const body = await c.req.json<PlanRequest>()
     const plan: ActionPlan = { goal: body.goal, acceptance: body.acceptance, steps: body.steps, convergence: body.convergence }
     const errors = mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers())))
     if (errors.length > 0) return c.json({ error: 'validation_failed', errors }, 400)
 
     const planId = mw.nextPlanId()
+    let worktree: WorktreeContext | undefined
+    let planEngine = mw.planEngine
+    try {
+      if (body.isolation?.mode === 'cycle-worktree') {
+        worktree = createCycleWorktree(config.cwd ?? process.cwd(), planId, body.isolation)
+        const isolatedRuntime = createWorkerRuntime({
+          cwd: worktree.cwd,
+          workers: Object.fromEntries(mw.customWorkers),
+          acpGateway: mw.acpGateway,
+        })
+        planEngine = mw.createPlanEngine(isolatedRuntime)
+      }
+    } catch (err) {
+      if (worktree) cleanupCycleWorktree(worktree)
+      return c.json({ error: 'worktree_creation_failed', message: err instanceof Error ? err.message : String(err) }, 400)
+    }
+
     for (const step of plan.steps) {
       mw.buffer.submit({ id: step.id, planId, worker: step.worker, task: step.task, label: step.label, caller: body.caller })
     }
 
-    const resultPromise = mw.planEngine.execute(plan)
-    mw.plans.set(planId, { plan, resultPromise })
+    const resultPromise = planEngine.execute(plan)
+    mw.plans.set(planId, { plan, resultPromise, worktree })
     resultPromise.then(result => {
       for (const step of result.steps) if (step.status !== 'completed') mw.buffer.fail(step.id, step.output)
+      if (worktree && shouldCleanupWorktree(worktree, result)) cleanupCycleWorktree(worktree)
     }).catch(() => {})
 
-    return c.json({ planId, status: 'executing', steps: plan.steps.length })
+    return c.json({ planId, status: 'executing', steps: plan.steps.length, worktree: worktreeJson(worktree) })
   })
 
   app.get('/status/:id', c => {
@@ -155,7 +207,17 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     const completed = steps.filter(s => s.status === 'completed').length
     const failed = steps.filter(s => s.status === 'failed').length
     const running = steps.filter(s => s.status === 'running').length
-    return c.json({ planId, goal: entry.plan.goal, totalSteps: entry.plan.steps.length, completed, failed, running, pending: entry.plan.steps.length - completed - failed - running, steps })
+    return c.json({
+      planId,
+      goal: entry.plan.goal,
+      totalSteps: entry.plan.steps.length,
+      completed,
+      failed,
+      running,
+      pending: entry.plan.steps.length - completed - failed - running,
+      steps,
+      worktree: worktreeJson(entry.worktree),
+    })
   })
 
   app.delete('/task/:id', c => mw.buffer.cancel(c.req.param('id')) ? c.json({ ok: true }) : c.json({ error: 'cannot cancel' }, 400))
@@ -281,6 +343,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
         completed: steps.filter(s => s.status === 'completed').length,
         failed: steps.filter(s => s.status === 'failed' || s.status === 'timeout').length,
         running: steps.filter(s => s.status === 'running').length,
+        worktree: worktreeJson(entry.worktree),
         steps: entry.plan.steps.map(s => ({
           id: s.id,
           worker: s.worker,
@@ -294,14 +357,14 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   }))
 
   app.post('/plan/validate', async c => {
-    const body = await c.req.json<ActionPlan>()
+    const body = await c.req.json<PlanRequest>()
     const errors = mw.planEngine.validate(body, new Set(Object.keys(mw.allWorkers())))
     return c.json({ valid: errors.length === 0, errors })
   })
 
   app.get('/templates', c => c.json({ templates: PLAN_TEMPLATES }))
   app.post('/plan/from-template', async c => {
-    const body = await c.req.json<{ template: string; params: Record<string, string>; caller?: string }>()
+    const body = await c.req.json<TemplatePlanRequest>()
     const tpl = PLAN_TEMPLATES.find(t => t.name === body.template)
     if (!tpl) return c.json({ error: `Unknown template: ${body.template}` }, 400)
     const missing = tpl.params.filter(p => p.required && !body.params[p.name])
@@ -312,11 +375,29 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     const errors = mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers())))
     if (errors.length > 0) return c.json({ error: 'template_validation_failed', errors }, 400)
     const planId = mw.nextPlanId()
+    let worktree: WorktreeContext | undefined
+    let planEngine = mw.planEngine
+    try {
+      if (body.isolation?.mode === 'cycle-worktree') {
+        worktree = createCycleWorktree(config.cwd ?? process.cwd(), planId, body.isolation)
+        const isolatedRuntime = createWorkerRuntime({
+          cwd: worktree.cwd,
+          workers: Object.fromEntries(mw.customWorkers),
+          acpGateway: mw.acpGateway,
+        })
+        planEngine = mw.createPlanEngine(isolatedRuntime)
+      }
+    } catch (err) {
+      if (worktree) cleanupCycleWorktree(worktree)
+      return c.json({ error: 'worktree_creation_failed', message: err instanceof Error ? err.message : String(err) }, 400)
+    }
     for (const step of plan.steps) mw.buffer.submit({ id: step.id, planId, worker: step.worker, task: step.task, label: step.label, caller: body.caller })
-    const resultPromise = mw.planEngine.execute(plan)
-    mw.plans.set(planId, { plan, resultPromise })
-    resultPromise.catch(() => {})
-    return c.json({ planId, status: 'executing', steps: plan.steps.length, template: body.template })
+    const resultPromise = planEngine.execute(plan)
+    mw.plans.set(planId, { plan, resultPromise, worktree })
+    resultPromise.then(result => {
+      if (worktree && shouldCleanupWorktree(worktree, result)) cleanupCycleWorktree(worktree)
+    }).catch(() => {})
+    return c.json({ planId, status: 'executing', steps: plan.steps.length, template: body.template, worktree: worktreeJson(worktree) })
   })
 
   app.get('/archived', c => c.json({ tasks: mw.buffer.getArchived(Number.parseInt(c.req.query('limit') ?? '50')) }))
