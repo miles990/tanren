@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
-import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult } from './plan-engine.js'
+import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type StepResult } from './plan-engine.js'
 import { PresetManager } from './presets.js'
 import { ResultBuffer, type TaskEvent, type TaskStatus } from './result-buffer.js'
 import { PLAN_TEMPLATES } from './templates.js'
@@ -32,35 +33,211 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const acpGateway = createGateway()
   const runtime = createWorkerRuntime({ cwd, workers: Object.fromEntries(customWorkers), acpGateway })
   const presetManager = new PresetManager(cwd)
-  const plans = new Map<string, { plan: ActionPlan; resultPromise: Promise<PlanResult>; worktree?: WorktreeContext }>()
+  type PlanStatus = 'executing' | 'completed' | 'failed' | 'abandoned'
+  type PlanEntry = {
+    plan: ActionPlan
+    resultPromise?: Promise<PlanResult>
+    worktree?: WorktreeContext
+    boundaryStatus?: string[]
+    status: PlanStatus
+    createdAt: string
+    completedAt?: string
+    repairOf?: string
+    repairAttempt?: number
+  }
+  const plans = new Map<string, PlanEntry>()
   let planCounter = 0
+  const plansPath = join(cwd, 'plans-state.json')
 
   const allWorkers = () => ({ ...WORKERS, ...Object.fromEntries(customWorkers) })
   const persistCustomWorkers = () => {
     try { writeFileSync(customWorkersPath, JSON.stringify(Object.fromEntries(customWorkers), null, 2), 'utf-8') } catch { /* fail-open */ }
   }
+  const nextPlanId = () => `plan-${Date.now()}-${(planCounter++).toString(36)}`
 
-  const planEngineOptions: PlanEngineOptions = {
+  const persistPlans = () => {
+    try {
+      writeFileSync(plansPath, JSON.stringify([...plans.entries()].map(([planId, entry]) => ({
+        planId,
+        plan: entry.plan,
+        worktree: entry.worktree,
+        status: entry.status,
+        createdAt: entry.createdAt,
+        completedAt: entry.completedAt,
+        repairOf: entry.repairOf,
+        repairAttempt: entry.repairAttempt,
+        boundaryStatus: entry.boundaryStatus,
+      })), null, 2), 'utf-8')
+    } catch { /* fail-open */ }
+  }
+
+  const planEngineOptions = (planId?: string, planCwd = cwd): PlanEngineOptions => ({
+    cwd: planCwd,
     getWorkerTimeoutSeconds: workerName => allWorkers()[workerName]?.defaultTimeoutSeconds ?? 120,
     onEvent: event => {
       switch (event.type) {
         case 'step.dispatched':
-          buffer.start(event.step.id)
+          buffer.start(event.step.id, planId)
           break
         case 'step.completed':
-          buffer.complete(event.result.id, event.result.output)
+          buffer.complete(event.result.id, event.result.output, planId)
           break
         case 'step.failed':
-          buffer.fail(event.result.id, event.result.output)
+          buffer.fail(event.result.id, event.result.output, planId)
           break
         default:
           buffer.broadcast({ type: event.type, data: event })
           break
       }
     },
-  }
-  const createPlanEngine = (planRuntime = runtime) => new PlanEngine(planRuntime.executeWorker, planEngineOptions)
+  })
+  const createPlanEngine = (planRuntime = runtime, planId?: string, planCwd = cwd) => new PlanEngine(planRuntime.executeWorker, planEngineOptions(planId, planCwd))
   const planEngine = createPlanEngine()
+
+  const activePlans = () => [...plans.entries()].filter(([, entry]) => entry.status === 'executing')
+  const hasActivePlan = () => activePlans().length > 0
+
+  const gitStatus = (repoPath: string): string[] => {
+    try {
+      return execFileSync('git', ['-C', repoPath, 'status', '--porcelain'], { encoding: 'utf-8' })
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+    } catch {
+      return []
+    }
+  }
+
+  const verifyWorktreeBoundary = (entry: PlanEntry): string | null => {
+    if (!entry.worktree?.repoRoot || !entry.boundaryStatus) return null
+    const before = new Set(entry.boundaryStatus)
+    const after = gitStatus(entry.worktree.repoRoot)
+    const unexpected = after.filter(line => !before.has(line))
+    return unexpected.length
+      ? `Plan wrote outside isolated worktree. Main repo changed: ${unexpected.join(', ')}`
+      : null
+  }
+
+  const failSyntheticStep = (planId: string, id: string, message: string) => {
+    if (!buffer.get(id, planId)) buffer.submit({ id, planId, worker: 'scheduler', task: message, label: 'Scheduler verification' })
+    buffer.start(id, planId)
+    buffer.fail(id, message, planId)
+  }
+
+  const initialResultsFor = (planId: string): StepResult[] => buffer.list({ planId })
+    .filter(task => task.status === 'completed' || task.status === 'failed' || task.status === 'timeout' || task.status === 'cancelled')
+    .map((task, index) => ({
+      id: task.id,
+      worker: task.worker,
+      status: (task.status === 'cancelled' ? 'skipped' : task.status) as StepResult['status'],
+      output: String(task.result ?? task.error ?? ''),
+      durationMs: task.durationMs ?? 0,
+      dispatchOrder: index,
+    }))
+
+  const ensurePlanTasksSubmitted = (planId: string, plan: ActionPlan, caller?: string) => {
+    for (const step of plan.steps) {
+      if (!buffer.get(step.id, planId)) buffer.submit({ id: step.id, planId, worker: step.worker, task: step.task, label: step.label, caller })
+    }
+  }
+
+  const startPlanExecution = (planId: string, entry: PlanEntry, planRuntime = runtime, planCwd = cwd, caller?: string, repair?: PlanRequest['repair']) => {
+    ensurePlanTasksSubmitted(planId, entry.plan, caller)
+    const engine = createPlanEngine(planRuntime, planId, planCwd)
+    const resultPromise = engine.execute(entry.plan, initialResultsFor(planId))
+    entry.resultPromise = resultPromise
+    entry.status = 'executing'
+    persistPlans()
+    resultPromise.then(result => {
+      entry.completedAt = new Date().toISOString()
+      const boundaryError = verifyWorktreeBoundary(entry)
+      if (boundaryError) failSyntheticStep(planId, 'worktree-boundary', boundaryError)
+      const shouldRepair = result.summary.failed > 0 || !!boundaryError
+      entry.status = shouldRepair ? 'failed' : 'completed'
+      if (!shouldRepair && entry.worktree && shouldCleanupWorktree(entry.worktree, result)) cleanupCycleWorktree(entry.worktree)
+      persistPlans()
+      maybeStartRepair(planId, entry, result, repair, boundaryError ?? undefined).catch(() => {})
+    }).catch(() => {
+      entry.completedAt = new Date().toISOString()
+      entry.status = 'failed'
+      persistPlans()
+    })
+    return resultPromise
+  }
+
+  const maybeStartRepair = async (failedPlanId: string, entry: PlanEntry, result: PlanResult, repair?: PlanRequest['repair'], boundaryError?: string) => {
+    if (repair?.enabled === false || (result.summary.failed === 0 && !boundaryError)) return
+    const attempt = (entry.repairAttempt ?? 0) + 1
+    const maxAttempts = repair?.maxAttempts ?? 1
+    if (attempt > maxAttempts) return
+    const failedSteps = result.steps.filter(step => step.status === 'failed' || step.status === 'timeout')
+    if (boundaryError) {
+      failedSteps.push({
+        id: 'worktree-boundary',
+        worker: 'scheduler',
+        status: 'failed',
+        output: boundaryError,
+        durationMs: 0,
+        dispatchOrder: failedSteps.length,
+      })
+    }
+    if (failedSteps.length === 0) return
+    const repairWorker = repair?.worker ?? 'autopilot-producer'
+    if (!allWorkers()[repairWorker]) return
+    const repairPlan: ActionPlan = {
+      goal: `Repair failed plan ${failedPlanId}: ${entry.plan.goal}`,
+      acceptance: 'Repair only the failed steps, keep scope minimal, and produce a clear handoff.',
+      steps: failedSteps.map(step => ({
+        id: `repair-${step.id}`,
+        worker: repairWorker,
+        label: `Repair ${step.id}`,
+        dependsOn: [],
+        task: [
+          `Repair failed step ${step.id} from plan ${failedPlanId}.`,
+          `Original worker: ${step.worker}`,
+          `Failure: ${step.output}`,
+          'Read the relevant repo files and create the smallest safe fix or a concrete repair brief. Do not expand product scope.',
+        ].join('\n\n'),
+      })),
+    }
+    const repairPlanId = nextPlanId()
+    const repairEntry: PlanEntry = {
+      plan: repairPlan,
+      status: 'executing',
+      createdAt: new Date().toISOString(),
+      repairOf: failedPlanId,
+      repairAttempt: attempt,
+      worktree: entry.worktree,
+      boundaryStatus: entry.boundaryStatus,
+    }
+    plans.set(repairPlanId, repairEntry)
+    const repairCwd = entry.worktree?.cwd ?? cwd
+    const repairRuntime = entry.worktree
+      ? createWorkerRuntime({ cwd: repairCwd, workers: Object.fromEntries(customWorkers), acpGateway })
+      : runtime
+    startPlanExecution(repairPlanId, repairEntry, repairRuntime, repairCwd, 'repair-cycle', { enabled: false })
+  }
+
+  function loadPersistedPlans() {
+    try {
+      const saved = JSON.parse(readFileSync(plansPath, 'utf-8')) as Array<Omit<PlanEntry, 'resultPromise'> & { planId: string }>
+      for (const savedEntry of saved) {
+        const { planId, ...entry } = savedEntry
+        plans.set(planId, entry)
+      }
+    } catch { /* no persisted plans */ }
+  }
+
+  function resumePersistedPlans() {
+    for (const [planId, entry] of plans) {
+      if (entry.status !== 'executing') continue
+      const planCwd = entry.worktree?.cwd ?? cwd
+      const planRuntime = entry.worktree
+        ? createWorkerRuntime({ cwd: planCwd, workers: Object.fromEntries(customWorkers), acpGateway })
+        : runtime
+      startPlanExecution(planId, entry, planRuntime, planCwd)
+    }
+  }
 
   const refreshProvider = (name: string, def: WorkerDefinition) => {
     runtime.workerProviders.delete(name)
@@ -70,9 +247,12 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       const provider = next.workerProviders.get(name)
       if (provider) runtime.workerProviders.set(name, provider)
     } else {
-      runtime.workerProviders.set(name, createProvider({ provider: def.vendor ?? 'agent-sdk', model: def.agent.model }))
+      runtime.workerProviders.set(name, createProvider({ provider: def.vendor ?? 'agent-sdk', model: def.agent.model, options: def.providerOptions, cwd }))
     }
   }
+
+  loadPersistedPlans()
+  resumePersistedPlans()
 
   return {
     buffer,
@@ -87,9 +267,13 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     presetManager,
     plans,
     get planCounter() { return planCounter },
-    nextPlanId() { return `plan-${Date.now()}-${(planCounter++).toString(36)}` },
+    nextPlanId,
     allWorkers,
     refreshProvider,
+    activePlans,
+    hasActivePlan,
+    startPlanExecution,
+    gitStatus,
   }
 }
 
@@ -98,6 +282,13 @@ export type OrchestrationMiddleware = ReturnType<typeof createOrchestrationMiddl
 type PlanRequest = ActionPlan & {
   caller?: string
   isolation?: WorktreeIsolationConfig
+  /** Default true: reject new plans while one is active for this repo. */
+  schedulerLock?: boolean
+  repair?: {
+    enabled?: boolean
+    worker?: string
+    maxAttempts?: number
+  }
 }
 
 type TemplatePlanRequest = {
@@ -105,6 +296,7 @@ type TemplatePlanRequest = {
   params: Record<string, string>
   caller?: string
   isolation?: WorktreeIsolationConfig
+  schedulerLock?: boolean
 }
 
 function shouldCleanupWorktree(worktree: WorktreeContext, result: PlanResult): boolean {
@@ -158,44 +350,48 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
 
   app.post('/plan', async c => {
     const body = await c.req.json<PlanRequest>()
+    if (body.schedulerLock !== false && mw.hasActivePlan()) {
+      return c.json({
+        error: 'scheduler_locked',
+        message: 'Another plan is already executing for this repo.',
+        activePlans: mw.activePlans().map(([planId, entry]) => ({ planId, goal: entry.plan.goal, status: entry.status })),
+      }, 409)
+    }
     const plan: ActionPlan = { goal: body.goal, acceptance: body.acceptance, steps: body.steps, convergence: body.convergence }
     const errors = mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers())))
     if (errors.length > 0) return c.json({ error: 'validation_failed', errors }, 400)
 
     const planId = mw.nextPlanId()
     let worktree: WorktreeContext | undefined
-    let planEngine = mw.planEngine
+    let planRuntime = mw.runtime
+    let planCwd = config.cwd ?? process.cwd()
+    let boundaryStatus: string[] | undefined
     try {
       if (body.isolation?.mode === 'cycle-worktree') {
         worktree = createCycleWorktree(config.cwd ?? process.cwd(), planId, body.isolation)
+        boundaryStatus = mw.gitStatus(worktree.repoRoot)
         const isolatedRuntime = createWorkerRuntime({
           cwd: worktree.cwd,
           workers: Object.fromEntries(mw.customWorkers),
           acpGateway: mw.acpGateway,
         })
-        planEngine = mw.createPlanEngine(isolatedRuntime)
+        planRuntime = isolatedRuntime
+        planCwd = worktree.cwd
       }
     } catch (err) {
       if (worktree) cleanupCycleWorktree(worktree)
       return c.json({ error: 'worktree_creation_failed', message: err instanceof Error ? err.message : String(err) }, 400)
     }
 
-    for (const step of plan.steps) {
-      mw.buffer.submit({ id: step.id, planId, worker: step.worker, task: step.task, label: step.label, caller: body.caller })
-    }
-
-    const resultPromise = planEngine.execute(plan)
-    mw.plans.set(planId, { plan, resultPromise, worktree })
-    resultPromise.then(result => {
-      for (const step of result.steps) if (step.status !== 'completed') mw.buffer.fail(step.id, step.output)
-      if (worktree && shouldCleanupWorktree(worktree, result)) cleanupCycleWorktree(worktree)
-    }).catch(() => {})
+    const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString() }
+    mw.plans.set(planId, entry)
+    mw.startPlanExecution(planId, entry, planRuntime, planCwd, body.caller, body.repair)
 
     return c.json({ planId, status: 'executing', steps: plan.steps.length, worktree: worktreeJson(worktree) })
   })
 
   app.get('/status/:id', c => {
-    const task = mw.buffer.get(c.req.param('id'))
+    const task = mw.buffer.get(c.req.param('id'), c.req.query('planId'))
     return task ? c.json(task) : c.json({ error: 'not found' }, 404)
   })
 
@@ -220,11 +416,12 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     })
   })
 
-  app.delete('/task/:id', c => mw.buffer.cancel(c.req.param('id')) ? c.json({ ok: true }) : c.json({ error: 'cannot cancel' }, 400))
+  app.delete('/task/:id', c => mw.buffer.cancel(c.req.param('id'), c.req.query('planId')) ? c.json({ ok: true }) : c.json({ error: 'cannot cancel' }, 400))
 
   app.get('/pool', c => c.json({
     workers: Object.entries(mw.allWorkers()).map(([name, def]) => ({
       name, backend: def.backend, model: def.agent.model, timeout: def.defaultTimeoutSeconds,
+      providerOptions: def.providerOptions,
     })),
     gateway: mw.acpGateway.getStats(),
   }))
@@ -255,6 +452,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       name,
       backend: def.backend,
       vendor: def.vendor,
+      providerOptions: def.providerOptions,
       model: def.agent.model,
       description: def.agent.description,
       prompt: def.agent.prompt,
@@ -275,6 +473,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       tools?: string[]
       timeout?: number
       maxTurns?: number
+      providerOptions?: Record<string, unknown>
     }>()
     if (!body.name) return c.json({ error: 'name required' }, 400)
     if (WORKERS[body.name]) return c.json({ error: 'cannot override built-in worker' }, 400)
@@ -288,6 +487,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       },
       backend: body.backend ?? 'sdk',
       vendor: body.vendor,
+      providerOptions: body.providerOptions,
       defaultTimeoutSeconds: body.timeout ?? body.defaultTimeoutSeconds ?? 120,
       webhook: body.webhook,
       logicFn: body.logicFn,
@@ -365,6 +565,13 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   app.get('/templates', c => c.json({ templates: PLAN_TEMPLATES }))
   app.post('/plan/from-template', async c => {
     const body = await c.req.json<TemplatePlanRequest>()
+    if (body.schedulerLock !== false && mw.hasActivePlan()) {
+      return c.json({
+        error: 'scheduler_locked',
+        message: 'Another plan is already executing for this repo.',
+        activePlans: mw.activePlans().map(([planId, entry]) => ({ planId, goal: entry.plan.goal, status: entry.status })),
+      }, 409)
+    }
     const tpl = PLAN_TEMPLATES.find(t => t.name === body.template)
     if (!tpl) return c.json({ error: `Unknown template: ${body.template}` }, 400)
     const missing = tpl.params.filter(p => p.required && !body.params[p.name])
@@ -376,27 +583,28 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     if (errors.length > 0) return c.json({ error: 'template_validation_failed', errors }, 400)
     const planId = mw.nextPlanId()
     let worktree: WorktreeContext | undefined
-    let planEngine = mw.planEngine
+    let planRuntime = mw.runtime
+    let planCwd = config.cwd ?? process.cwd()
+    let boundaryStatus: string[] | undefined
     try {
       if (body.isolation?.mode === 'cycle-worktree') {
         worktree = createCycleWorktree(config.cwd ?? process.cwd(), planId, body.isolation)
+        boundaryStatus = mw.gitStatus(worktree.repoRoot)
         const isolatedRuntime = createWorkerRuntime({
           cwd: worktree.cwd,
           workers: Object.fromEntries(mw.customWorkers),
           acpGateway: mw.acpGateway,
         })
-        planEngine = mw.createPlanEngine(isolatedRuntime)
+        planRuntime = isolatedRuntime
+        planCwd = worktree.cwd
       }
     } catch (err) {
       if (worktree) cleanupCycleWorktree(worktree)
       return c.json({ error: 'worktree_creation_failed', message: err instanceof Error ? err.message : String(err) }, 400)
     }
-    for (const step of plan.steps) mw.buffer.submit({ id: step.id, planId, worker: step.worker, task: step.task, label: step.label, caller: body.caller })
-    const resultPromise = planEngine.execute(plan)
-    mw.plans.set(planId, { plan, resultPromise, worktree })
-    resultPromise.then(result => {
-      if (worktree && shouldCleanupWorktree(worktree, result)) cleanupCycleWorktree(worktree)
-    }).catch(() => {})
+    const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString() }
+    mw.plans.set(planId, entry)
+    mw.startPlanExecution(planId, entry, planRuntime, planCwd, body.caller)
     return c.json({ planId, status: 'executing', steps: plan.steps.length, template: body.template, worktree: worktreeJson(worktree) })
   })
 

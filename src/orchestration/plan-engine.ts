@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
 /**
  * Plan Engine — Pure DAG executor. No special cases.
  *
@@ -43,6 +46,12 @@ export interface PlanStep {
   };
   /** Mechanical verification: shell command that must exit 0 for step to count as completed */
   verifyCommand?: string;
+  /** Artifact contract: files this step may touch and must produce, relative to the plan cwd. */
+  artifactContract?: {
+    allowedPaths?: string[];
+    expectedPaths?: string[];
+    forbiddenPaths?: string[];
+  };
 }
 
 export interface ActionPlan {
@@ -206,6 +215,8 @@ export interface PlanEngineOptions {
   maxBackoffMs?: number;
   /** Resolve timeout for a worker — lets plan engine use worker-specific defaults instead of hardcoded 120s */
   getWorkerTimeoutSeconds?: (workerName: string) => number;
+  /** Working directory used for verifyCommand and artifact contract checks. */
+  cwd?: string;
 }
 
 export class PlanEngine {
@@ -257,6 +268,15 @@ export class PlanEngine {
       }
       if (step.condition && !ids.has(step.condition.stepId))
         errors.push(`Step ${step.id}: condition references unknown '${step.condition.stepId}'`);
+      for (const expected of step.artifactContract?.expectedPaths ?? []) {
+        if (expected.startsWith('/') || expected.includes('..')) errors.push(`Step ${step.id}: invalid expected path '${expected}'`);
+      }
+      for (const allowed of step.artifactContract?.allowedPaths ?? []) {
+        if (allowed.startsWith('/') || allowed.includes('..')) errors.push(`Step ${step.id}: invalid allowed path '${allowed}'`);
+      }
+      for (const forbidden of step.artifactContract?.forbiddenPaths ?? []) {
+        if (forbidden.startsWith('/') || forbidden.includes('..')) errors.push(`Step ${step.id}: invalid forbidden path '${forbidden}'`);
+      }
     }
     // Cycle detection
     const visited = new Set<string>(), visiting = new Set<string>();
@@ -497,6 +517,7 @@ export class PlanEngine {
 
       const stepStart = Date.now();
       try {
+        const changedBefore = this.gitChangedFiles(this.opts.cwd ?? process.cwd());
         const output = await this.executor(step.worker, task, timeoutMs);
 
         // Mechanical verification: run verifyCommand if defined (async — won't block event loop)
@@ -504,7 +525,7 @@ export class PlanEngine {
           try {
             const { exec } = await import('node:child_process');
             const { promisify } = await import('node:util');
-            await promisify(exec)(step.verifyCommand, { timeout: 30_000 });
+            await promisify(exec)(step.verifyCommand, { timeout: 30_000, cwd: this.opts.cwd });
           } catch (verifyErr) {
             const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
             // Verification failed — treat as step failure (may retry)
@@ -514,6 +535,15 @@ export class PlanEngine {
             }
             continue;
           }
+        }
+
+        const artifactError = this.verifyArtifactContract(step, changedBefore);
+        if (artifactError) {
+          lastError = `Artifact contract failed: ${artifactError}`;
+          if (attempt === maxRetries) {
+            return { id: step.id, worker: step.worker, status: 'failed', output: `${output}\n\n[ARTIFACT CONTRACT FAILED] ${lastError}`, durationMs: Date.now() - stepStart, dispatchOrder: order, retryCount: attempt };
+          }
+          continue;
         }
 
         const structured = parseStructuredOutput(output);
@@ -534,6 +564,42 @@ export class PlanEngine {
     }
 
     return { id: step.id, worker: step.worker, status: 'failed', output: lastError, durationMs: 0, dispatchOrder: order };
+  }
+
+  private verifyArtifactContract(step: PlanStep, changedBefore: string[]): string | null {
+    const contract = step.artifactContract;
+    if (!contract) return null;
+    const cwd = this.opts.cwd ?? process.cwd();
+
+    for (const expected of contract.expectedPaths ?? []) {
+      if (!existsSync(`${cwd}/${expected}`)) return `expected path missing: ${expected}`;
+    }
+
+    const changed = this.gitChangedFiles(cwd).filter(file => !changedBefore.includes(file));
+    if (contract.allowedPaths?.length) {
+      const disallowed = changed.filter(file => !contract.allowedPaths!.some(allowed => file === allowed || file.startsWith(`${allowed.replace(/\/$/, '')}/`)));
+      if (disallowed.length) return `changed files outside allowedPaths: ${disallowed.join(', ')}`;
+    }
+
+    if (contract.forbiddenPaths?.length) {
+      const forbidden = changed.filter(file => contract.forbiddenPaths!.some(path => file === path || file.startsWith(`${path.replace(/\/$/, '')}/`)));
+      if (forbidden.length) return `changed forbidden files: ${forbidden.join(', ')}`;
+    }
+
+    return null;
+  }
+
+  private gitChangedFiles(cwd: string): string[] {
+    try {
+      const output = execFileSync('git', ['-C', cwd, 'status', '--porcelain'], { encoding: 'utf-8' });
+      return output.split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => line.slice(3).replace(/^"|"$/g, ''))
+        .map(line => line.includes(' -> ') ? line.split(' -> ').at(-1)! : line);
+    } catch {
+      return [];
+    }
   }
 }
 

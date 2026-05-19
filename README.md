@@ -100,6 +100,36 @@ curl -X POST http://localhost:3002/chat \
 }
 ```
 
+## Orchestration API
+
+The orchestration middleware runs worker DAG plans through `POST /plan`.
+It is designed for autonomous product teams where repeated cycles must survive
+process restarts and avoid stepping on each other.
+
+- Plans persist to `plans-state.json`; any plan still marked `executing` resumes on service startup.
+- Task identity is composite: `planId + stepId`, so two plans can reuse the same step ids safely.
+- `schedulerLock` defaults to `true`, allowing only one active product objective per repo. Send `"schedulerLock": false` only for intentionally independent maintenance work.
+- `isolation.mode: "cycle-worktree"` runs the plan in a dedicated git worktree and verifies the main repo status did not change.
+- `repair.enabled` defaults to on. Failed steps create one bounded repair plan by default; set `repair.maxAttempts` or `repair.worker` to tune it.
+- Step `verifyCommand` runs in the plan cwd. Step `artifactContract` can declare `allowedPaths`, `expectedPaths`, and `forbiddenPaths`.
+
+Example step contract:
+
+```json
+{
+  "id": "implement-ui",
+  "worker": "coder",
+  "dependsOn": [],
+  "task": "Implement the dashboard UI.",
+  "verifyCommand": "npm run typecheck",
+  "artifactContract": {
+    "allowedPaths": ["src/dashboard", "docs/dashboard.md"],
+    "expectedPaths": ["src/dashboard/index.ts"],
+    "forbiddenPaths": ["package-lock.json"]
+  }
+}
+```
+
 ## Architecture
 
 ### Three-Layer Cognitive Forging

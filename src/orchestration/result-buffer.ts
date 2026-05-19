@@ -50,6 +50,10 @@ export class ResultBuffer {
   private counter = 0;
   private persistPath: string | null = null;
 
+  private key(id: string, planId?: string): string {
+    return planId ? `${planId}:${id}` : id;
+  }
+
   /** Enable JSONL persistence — results survive restarts */
   enablePersistence(cwd: string): void {
     this.persistPath = path.join(cwd, 'results.jsonl');
@@ -64,7 +68,7 @@ export class ResultBuffer {
             if (record.submittedAt) record.submittedAt = new Date(record.submittedAt);
             if (record.startedAt) record.startedAt = new Date(record.startedAt);
             if (record.completedAt) record.completedAt = new Date(record.completedAt);
-            this.tasks.set(record.id, record);
+            this.tasks.set(this.key(record.id, record.planId), record);
           }
         } catch { /* skip malformed lines */ }
       }
@@ -94,14 +98,14 @@ export class ResultBuffer {
       submittedAt: new Date(),
       caller: opts.caller,
     };
-    this.tasks.set(id, record);
+    this.tasks.set(this.key(id, opts.planId), record);
     this.emit({ type: 'task.submitted', task: record, timestamp: new Date() });
     return id;
   }
 
   /** Mark task as running */
-  start(id: string): void {
-    const task = this.tasks.get(id);
+  start(id: string, planId?: string): void {
+    const task = this.tasks.get(this.key(id, planId));
     if (!task) return;
     task.status = 'running';
     task.startedAt = new Date();
@@ -109,8 +113,8 @@ export class ResultBuffer {
   }
 
   /** Mark task as completed (result is pass-through — any format) */
-  complete(id: string, result: unknown): void {
-    const task = this.tasks.get(id);
+  complete(id: string, result: unknown, planId?: string): void {
+    const task = this.tasks.get(this.key(id, planId));
     if (!task) return;
     task.status = 'completed';
     task.result = result;
@@ -121,8 +125,8 @@ export class ResultBuffer {
   }
 
   /** Mark task as failed */
-  fail(id: string, error: string): void {
-    const task = this.tasks.get(id);
+  fail(id: string, error: string, planId?: string): void {
+    const task = this.tasks.get(this.key(id, planId));
     if (!task) return;
     task.status = 'failed';
     task.error = error;
@@ -133,8 +137,8 @@ export class ResultBuffer {
   }
 
   /** Cancel a task */
-  cancel(id: string): boolean {
-    const task = this.tasks.get(id);
+  cancel(id: string, planId?: string): boolean {
+    const task = this.tasks.get(this.key(id, planId));
     if (!task || task.status === 'completed' || task.status === 'failed') return false;
     task.status = 'cancelled';
     task.completedAt = new Date();
@@ -143,8 +147,8 @@ export class ResultBuffer {
   }
 
   /** Get single task */
-  get(id: string): TaskRecord | undefined {
-    return this.tasks.get(id);
+  get(id: string, planId?: string): TaskRecord | undefined {
+    return this.tasks.get(this.key(id, planId));
   }
 
   /** List tasks with optional filter */
