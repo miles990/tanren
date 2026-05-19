@@ -250,6 +250,8 @@ export { PLAN_TEMPLATES, type PlanTemplate } from './orchestration/templates.js'
 export { PresetManager, type WorkerPreset } from './orchestration/presets.js'
 export { createPlanningBrain, createBrain, brainPlan, brainDigest, type BrainConfig, type WorkerInfo } from './orchestration/brain.js'
 export { createOrchestrationMiddleware, createOrchestrationRouter, type OrchestrationMiddleware, type OrchestrationMiddlewareConfig } from './orchestration/router.js'
+export { PlanEventLog, type PlanLogEvent } from './orchestration/plan-events.js'
+export { RepoSchedulerLock, SchedulerLockError, type SchedulerLockRecord, type SchedulerLockHandle, type SchedulerLockConflict } from './orchestration/scheduler-lock.js'
 export { createOrchestrationMcpServer, startOrchestrationMcpServer, type OrchestrationMcpOptions } from './orchestration/mcp-server.js'
 export {
   FileLongTaskStore,

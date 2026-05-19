@@ -6,9 +6,11 @@ import { join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
+import { PlanEventLog } from './plan-events.js'
 import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type StepResult } from './plan-engine.js'
 import { PresetManager } from './presets.js'
 import { ResultBuffer, type TaskEvent, type TaskStatus } from './result-buffer.js'
+import { RepoSchedulerLock, SchedulerLockError, type SchedulerLockHandle } from './scheduler-lock.js'
 import { PLAN_TEMPLATES } from './templates.js'
 import { cleanupCycleWorktree, createCycleWorktree, type WorktreeContext, type WorktreeIsolationConfig } from './worktree.js'
 import { createWorkerRuntime } from './worker-runtime.js'
@@ -44,10 +46,16 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     completedAt?: string
     repairOf?: string
     repairAttempt?: number
+    schedulerLock?: boolean
+    lockPlanId?: string
+    lockHandle?: SchedulerLockHandle
   }
   const plans = new Map<string, PlanEntry>()
   let planCounter = 0
   const plansPath = join(cwd, 'plans-state.json')
+  const planEvents = new PlanEventLog(cwd)
+  const schedulerLock = new RepoSchedulerLock(cwd)
+  const heartbeatTimers = new Map<string, NodeJS.Timeout>()
 
   const allWorkers = () => ({ ...WORKERS, ...Object.fromEntries(customWorkers) })
   const persistCustomWorkers = () => {
@@ -67,6 +75,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         repairOf: entry.repairOf,
         repairAttempt: entry.repairAttempt,
         boundaryStatus: entry.boundaryStatus,
+        schedulerLock: entry.schedulerLock,
+        lockPlanId: entry.lockPlanId,
       })), null, 2), 'utf-8')
     } catch { /* fail-open */ }
   }
@@ -78,15 +88,19 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       switch (event.type) {
         case 'step.dispatched':
           buffer.start(event.step.id, planId)
+          if (planId) planEvents.appendEngineEvent(planId, event)
           break
         case 'step.completed':
           buffer.complete(event.result.id, event.result.output, planId)
+          if (planId) planEvents.appendEngineEvent(planId, event)
           break
         case 'step.failed':
           buffer.fail(event.result.id, event.result.output, planId)
+          if (planId) planEvents.appendEngineEvent(planId, event)
           break
         default:
           buffer.broadcast({ type: event.type, data: event })
+          if (planId) planEvents.appendEngineEvent(planId, event)
           break
       }
     },
@@ -96,6 +110,41 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const activePlans = () => [...plans.entries()].filter(([, entry]) => entry.status === 'executing')
   const hasActivePlan = () => activePlans().length > 0
+
+  const writerWorkers = () => new Set(Object.entries(allWorkers())
+    .filter(([, def]) => def.backend === 'shell' || (def.agent.tools ?? []).some(tool => ['Write', 'Edit'].includes(String(tool))))
+    .map(([name]) => name))
+
+  const validateExecutionPolicy = (plan: ActionPlan, opts?: { enforceContracts?: boolean }): string[] => {
+    if (opts?.enforceContracts === false) return []
+    const writers = writerWorkers()
+    const errors: string[] = []
+    for (const step of plan.steps) {
+      if (!writers.has(step.worker)) continue
+      if (!step.verifyCommand) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires verifyCommand`)
+      if (!step.artifactContract?.allowedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.allowedPaths`)
+      if (!step.artifactContract?.expectedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.expectedPaths`)
+    }
+    return errors
+  }
+
+  const startHeartbeat = (entry: PlanEntry) => {
+    if (!entry.schedulerLock || !entry.lockHandle) return
+    const key = entry.lockPlanId ?? entry.lockHandle.record.planId
+    if (heartbeatTimers.has(key)) return
+    entry.lockHandle.heartbeat()
+    heartbeatTimers.set(key, setInterval(() => entry.lockHandle?.heartbeat(), 15_000))
+  }
+
+  const releaseSchedulerLock = (entry: PlanEntry) => {
+    if (!entry.schedulerLock || !entry.lockHandle) return
+    const key = entry.lockPlanId ?? entry.lockHandle.record.planId
+    const timer = heartbeatTimers.get(key)
+    if (timer) clearInterval(timer)
+    heartbeatTimers.delete(key)
+    entry.lockHandle.release()
+    planEvents.append({ type: 'lock.released', planId: key })
+  }
 
   const gitStatus = (repoPath: string): string[] => {
     try {
@@ -142,34 +191,53 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   }
 
   const startPlanExecution = (planId: string, entry: PlanEntry, planRuntime = runtime, planCwd = cwd, caller?: string, repair?: PlanRequest['repair']) => {
+    if (entry.schedulerLock && !entry.lockHandle) {
+      entry.lockHandle = schedulerLock.adopt({ planId: entry.lockPlanId ?? planId, goal: entry.plan.goal })
+      planEvents.append({ type: 'lock.acquired', planId: entry.lockPlanId ?? planId })
+    }
+    startHeartbeat(entry)
     ensurePlanTasksSubmitted(planId, entry.plan, caller)
     const engine = createPlanEngine(planRuntime, planId, planCwd)
     const resultPromise = engine.execute(entry.plan, initialResultsFor(planId))
     entry.resultPromise = resultPromise
     entry.status = 'executing'
+    planEvents.append({ type: 'plan.started', planId, attempt: entry.repairAttempt ?? 0 })
     persistPlans()
-    resultPromise.then(result => {
+    resultPromise.then(async result => {
       entry.completedAt = new Date().toISOString()
       const boundaryError = verifyWorktreeBoundary(entry)
       if (boundaryError) failSyntheticStep(planId, 'worktree-boundary', boundaryError)
       const shouldRepair = result.summary.failed > 0 || !!boundaryError
       entry.status = shouldRepair ? 'failed' : 'completed'
+      let repairStarted = false
+      if (shouldRepair) repairStarted = await maybeStartRepair(planId, entry, result, repair, boundaryError ?? undefined)
       if (!shouldRepair && entry.worktree && shouldCleanupWorktree(entry.worktree, result)) cleanupCycleWorktree(entry.worktree)
+      if (!repairStarted) releaseSchedulerLock(entry)
+      planEvents.append({ type: 'plan.completed', planId, status: entry.status })
       persistPlans()
-      maybeStartRepair(planId, entry, result, repair, boundaryError ?? undefined).catch(() => {})
     }).catch(() => {
       entry.completedAt = new Date().toISOString()
       entry.status = 'failed'
+      releaseSchedulerLock(entry)
+      planEvents.append({ type: 'plan.failed', planId, error: 'Plan execution promise rejected' })
       persistPlans()
     })
     return resultPromise
   }
 
-  const maybeStartRepair = async (failedPlanId: string, entry: PlanEntry, result: PlanResult, repair?: PlanRequest['repair'], boundaryError?: string) => {
-    if (repair?.enabled === false || (result.summary.failed === 0 && !boundaryError)) return
+  const classifyFailure = (step: StepResult): 'timeout' | 'artifact_contract' | 'verification' | 'worktree_boundary' | 'worker_error' => {
+    if (step.id === 'worktree-boundary') return 'worktree_boundary'
+    if (step.status === 'timeout' || /timeout/i.test(step.output)) return 'timeout'
+    if (step.output.includes('[ARTIFACT CONTRACT FAILED]')) return 'artifact_contract'
+    if (step.output.includes('[VERIFY FAILED]')) return 'verification'
+    return 'worker_error'
+  }
+
+  const maybeStartRepair = async (failedPlanId: string, entry: PlanEntry, result: PlanResult, repair?: PlanRequest['repair'], boundaryError?: string): Promise<boolean> => {
+    if (repair?.enabled === false || (result.summary.failed === 0 && !boundaryError)) return false
     const attempt = (entry.repairAttempt ?? 0) + 1
     const maxAttempts = repair?.maxAttempts ?? 1
-    if (attempt > maxAttempts) return
+    if (attempt > maxAttempts) return false
     const failedSteps = result.steps.filter(step => step.status === 'failed' || step.status === 'timeout')
     if (boundaryError) {
       failedSteps.push({
@@ -181,24 +249,66 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         dispatchOrder: failedSteps.length,
       })
     }
-    if (failedSteps.length === 0) return
+    if (failedSteps.length === 0) return false
     const repairWorker = repair?.worker ?? 'autopilot-producer'
-    if (!allWorkers()[repairWorker]) return
+    if (!allWorkers()[repairWorker]) return false
+    const verifyWorker = allWorkers()['qa-reality-checker'] ? 'qa-reality-checker' : repairWorker
     const repairPlan: ActionPlan = {
       goal: `Repair failed plan ${failedPlanId}: ${entry.plan.goal}`,
-      acceptance: 'Repair only the failed steps, keep scope minimal, and produce a clear handoff.',
-      steps: failedSteps.map(step => ({
-        id: `repair-${step.id}`,
-        worker: repairWorker,
-        label: `Repair ${step.id}`,
-        dependsOn: [],
-        task: [
-          `Repair failed step ${step.id} from plan ${failedPlanId}.`,
-          `Original worker: ${step.worker}`,
-          `Failure: ${step.output}`,
-          'Read the relevant repo files and create the smallest safe fix or a concrete repair brief. Do not expand product scope.',
-        ].join('\n\n'),
-      })),
+      acceptance: 'Classify the failure, apply a focused repair, verify the result, and report a concise handoff.',
+      steps: [
+        ...failedSteps.map(step => ({
+          id: `classify-${step.id}`,
+          worker: repairWorker,
+          label: `Classify ${step.id}`,
+          dependsOn: [],
+          task: [
+            `Classify failed step ${step.id} from plan ${failedPlanId}.`,
+            `Failure type hint: ${classifyFailure(step)}`,
+            `Original worker: ${step.worker}`,
+            `Failure: ${step.output}`,
+            'Return the smallest repair strategy. Do not edit files in this classify step.',
+          ].join('\n\n'),
+        })),
+        ...failedSteps.map(step => {
+          const original = entry.plan.steps.find(candidate => candidate.id === step.id)
+          return {
+            id: `fix-${step.id}`,
+            worker: repairWorker,
+            label: `Fix ${step.id}`,
+            dependsOn: [`classify-${step.id}`],
+            task: [
+              `Apply a focused repair for failed step ${step.id} from plan ${failedPlanId}.`,
+              `Failure type: ${classifyFailure(step)}`,
+              `Classifier output: {{classify-${step.id}.output}}`,
+              'Keep scope minimal and do not expand product scope.',
+            ].join('\n\n'),
+            verifyCommand: original?.verifyCommand,
+            artifactContract: original?.artifactContract,
+          }
+        }),
+        {
+          id: 'repair-verify',
+          worker: verifyWorker,
+          label: 'Verify repair',
+          dependsOn: failedSteps.map(step => `fix-${step.id}`),
+          task: [
+            `Verify repair for failed plan ${failedPlanId}.`,
+            'Check the repaired files, run available verification commands, and report remaining blockers first.',
+          ].join('\n\n'),
+        },
+        {
+          id: 'repair-report',
+          worker: repairWorker,
+          label: 'Repair report',
+          dependsOn: ['repair-verify'],
+          task: [
+            `Write a concise repair handoff for failed plan ${failedPlanId}.`,
+            'Include failure classification, files changed, verification evidence, and whether boss escalation is required.',
+            'Boss-facing language should be Traditional Chinese except proper nouns.',
+          ].join('\n\n'),
+        },
+      ],
     }
     const repairPlanId = nextPlanId()
     const repairEntry: PlanEntry = {
@@ -209,13 +319,19 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       repairAttempt: attempt,
       worktree: entry.worktree,
       boundaryStatus: entry.boundaryStatus,
+      schedulerLock: entry.schedulerLock,
+      lockPlanId: entry.lockPlanId ?? failedPlanId,
+      lockHandle: entry.lockHandle,
     }
     plans.set(repairPlanId, repairEntry)
-    const repairCwd = entry.worktree?.cwd ?? cwd
+    planEvents.append({ type: 'repair.created', planId: failedPlanId, repairPlanId, repairAttempt: attempt, failedStepIds: failedSteps.map(step => step.id) })
+    const repairRuntimeCwd = entry.worktree?.cwd ?? cwd
+    const repairPlanCwd = entry.worktree?.worktreePath ?? cwd
     const repairRuntime = entry.worktree
-      ? createWorkerRuntime({ cwd: repairCwd, workers: Object.fromEntries(customWorkers), acpGateway })
+      ? createWorkerRuntime({ cwd: repairRuntimeCwd, workers: Object.fromEntries(customWorkers), acpGateway })
       : runtime
-    startPlanExecution(repairPlanId, repairEntry, repairRuntime, repairCwd, 'repair-cycle', { enabled: false })
+    startPlanExecution(repairPlanId, repairEntry, repairRuntime, repairPlanCwd, 'repair-cycle', { enabled: false })
+    return true
   }
 
   function loadPersistedPlans() {
@@ -223,6 +339,10 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       const saved = JSON.parse(readFileSync(plansPath, 'utf-8')) as Array<Omit<PlanEntry, 'resultPromise'> & { planId: string }>
       for (const savedEntry of saved) {
         const { planId, ...entry } = savedEntry
+        if (entry.status === 'executing' && entry.schedulerLock === undefined) {
+          entry.schedulerLock = true
+          entry.lockPlanId = planId
+        }
         plans.set(planId, entry)
       }
     } catch { /* no persisted plans */ }
@@ -231,7 +351,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   function resumePersistedPlans() {
     for (const [planId, entry] of plans) {
       if (entry.status !== 'executing') continue
-      const planCwd = entry.worktree?.cwd ?? cwd
+      const planCwd = entry.worktree?.worktreePath ?? cwd
       const planRuntime = entry.worktree
         ? createWorkerRuntime({ cwd: planCwd, workers: Object.fromEntries(customWorkers), acpGateway })
         : runtime
@@ -272,8 +392,11 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     refreshProvider,
     activePlans,
     hasActivePlan,
+    validateExecutionPolicy,
     startPlanExecution,
     gitStatus,
+    schedulerLock,
+    planEvents,
   }
 }
 
@@ -350,18 +473,32 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
 
   app.post('/plan', async c => {
     const body = await c.req.json<PlanRequest>()
-    if (body.schedulerLock !== false && mw.hasActivePlan()) {
-      return c.json({
-        error: 'scheduler_locked',
-        message: 'Another plan is already executing for this repo.',
-        activePlans: mw.activePlans().map(([planId, entry]) => ({ planId, goal: entry.plan.goal, status: entry.status })),
-      }, 409)
-    }
     const plan: ActionPlan = { goal: body.goal, acceptance: body.acceptance, steps: body.steps, convergence: body.convergence }
-    const errors = mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers())))
+    const errors = [
+      ...mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers()))),
+      ...mw.validateExecutionPolicy(plan),
+    ]
     if (errors.length > 0) return c.json({ error: 'validation_failed', errors }, 400)
 
     const planId = mw.nextPlanId()
+    let lockHandle: SchedulerLockHandle | undefined
+    if (body.schedulerLock !== false) {
+      try {
+        lockHandle = mw.schedulerLock.acquire({ planId, goal: plan.goal })
+        mw.planEvents.append({ type: 'lock.acquired', planId })
+      } catch (err) {
+        if (err instanceof SchedulerLockError) {
+          return c.json({
+            error: 'scheduler_locked',
+            message: 'Another plan is already executing for this repo.',
+            lock: err.conflict.record,
+            lockPath: err.conflict.path,
+            activePlans: mw.activePlans().map(([activePlanId, entry]) => ({ planId: activePlanId, goal: entry.plan.goal, status: entry.status })),
+          }, 409)
+        }
+        throw err
+      }
+    }
     let worktree: WorktreeContext | undefined
     let planRuntime = mw.runtime
     let planCwd = config.cwd ?? process.cwd()
@@ -376,15 +513,17 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
           acpGateway: mw.acpGateway,
         })
         planRuntime = isolatedRuntime
-        planCwd = worktree.cwd
+        planCwd = worktree.worktreePath
       }
     } catch (err) {
+      lockHandle?.release()
       if (worktree) cleanupCycleWorktree(worktree)
       return c.json({ error: 'worktree_creation_failed', message: err instanceof Error ? err.message : String(err) }, 400)
     }
 
-    const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString() }
+    const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString(), schedulerLock: body.schedulerLock !== false, lockPlanId: planId, lockHandle }
     mw.plans.set(planId, entry)
+    mw.planEvents.append({ type: 'plan.created', planId, plan, worktree })
     mw.startPlanExecution(planId, entry, planRuntime, planCwd, body.caller, body.repair)
 
     return c.json({ planId, status: 'executing', steps: plan.steps.length, worktree: worktreeJson(worktree) })
@@ -556,22 +695,20 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     }),
   }))
 
+  app.get('/plan-events', c => c.json({ events: mw.planEvents.readAll() }))
+
   app.post('/plan/validate', async c => {
     const body = await c.req.json<PlanRequest>()
-    const errors = mw.planEngine.validate(body, new Set(Object.keys(mw.allWorkers())))
+    const errors = [
+      ...mw.planEngine.validate(body, new Set(Object.keys(mw.allWorkers()))),
+      ...mw.validateExecutionPolicy(body),
+    ]
     return c.json({ valid: errors.length === 0, errors })
   })
 
   app.get('/templates', c => c.json({ templates: PLAN_TEMPLATES }))
   app.post('/plan/from-template', async c => {
     const body = await c.req.json<TemplatePlanRequest>()
-    if (body.schedulerLock !== false && mw.hasActivePlan()) {
-      return c.json({
-        error: 'scheduler_locked',
-        message: 'Another plan is already executing for this repo.',
-        activePlans: mw.activePlans().map(([planId, entry]) => ({ planId, goal: entry.plan.goal, status: entry.status })),
-      }, 409)
-    }
     const tpl = PLAN_TEMPLATES.find(t => t.name === body.template)
     if (!tpl) return c.json({ error: `Unknown template: ${body.template}` }, 400)
     const missing = tpl.params.filter(p => p.required && !body.params[p.name])
@@ -579,9 +716,30 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     let planJson = JSON.stringify(tpl.plan)
     for (const param of tpl.params) planJson = planJson.replaceAll(`{{${param.name}}}`, body.params[param.name] ?? '')
     const plan = JSON.parse(planJson) as ActionPlan
-    const errors = mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers())))
+    const errors = [
+      ...mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers()))),
+      ...mw.validateExecutionPolicy(plan),
+    ]
     if (errors.length > 0) return c.json({ error: 'template_validation_failed', errors }, 400)
     const planId = mw.nextPlanId()
+    let lockHandle: SchedulerLockHandle | undefined
+    if (body.schedulerLock !== false) {
+      try {
+        lockHandle = mw.schedulerLock.acquire({ planId, goal: plan.goal })
+        mw.planEvents.append({ type: 'lock.acquired', planId })
+      } catch (err) {
+        if (err instanceof SchedulerLockError) {
+          return c.json({
+            error: 'scheduler_locked',
+            message: 'Another plan is already executing for this repo.',
+            lock: err.conflict.record,
+            lockPath: err.conflict.path,
+            activePlans: mw.activePlans().map(([activePlanId, entry]) => ({ planId: activePlanId, goal: entry.plan.goal, status: entry.status })),
+          }, 409)
+        }
+        throw err
+      }
+    }
     let worktree: WorktreeContext | undefined
     let planRuntime = mw.runtime
     let planCwd = config.cwd ?? process.cwd()
@@ -596,14 +754,16 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
           acpGateway: mw.acpGateway,
         })
         planRuntime = isolatedRuntime
-        planCwd = worktree.cwd
+        planCwd = worktree.worktreePath
       }
     } catch (err) {
+      lockHandle?.release()
       if (worktree) cleanupCycleWorktree(worktree)
       return c.json({ error: 'worktree_creation_failed', message: err instanceof Error ? err.message : String(err) }, 400)
     }
-    const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString() }
+    const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString(), schedulerLock: body.schedulerLock !== false, lockPlanId: planId, lockHandle }
     mw.plans.set(planId, entry)
+    mw.planEvents.append({ type: 'plan.created', planId, plan, worktree })
     mw.startPlanExecution(planId, entry, planRuntime, planCwd, body.caller)
     return c.json({ planId, status: 'executing', steps: plan.steps.length, template: body.template, worktree: worktreeJson(worktree) })
   })
