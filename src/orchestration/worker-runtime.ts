@@ -35,11 +35,15 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
 
   const allWorkers = () => ({ ...WORKERS, ...customWorkers })
 
+  const workerPrompt = (def: WorkerDefinition): string => {
+    const skillsPrompt = def.skills?.length ? `\n\n<skills>\n${def.skills.join('\n---\n')}\n</skills>` : ''
+    return `${def.agent.prompt ?? ''}${skillsPrompt}`
+  }
+
   for (const [name, def] of Object.entries(allWorkers())) {
     if (def.backend !== 'sdk' && def.backend !== 'acp') continue
     const vendor = def.vendor ?? 'agent-sdk'
     if (vendor === 'agent-sdk') {
-      const skillsPrompt = def.skills?.length ? `\n\n<skills>\n${def.skills.join('\n---\n')}\n</skills>` : ''
       workerProviders.set(name, createAgentSdkProvider({
         model: def.agent.model ?? 'sonnet',
         cwd,
@@ -47,10 +51,15 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
         maxTurns: def.agent.maxTurns,
         maxBudgetUsd: 5,
         mcpServers: def.mcpServers,
+        ...(def.providerOptions ?? {}),
       }))
-      if (skillsPrompt) def.agent.prompt = (def.agent.prompt ?? '') + skillsPrompt
     } else {
-      workerProviders.set(name, createProvider({ provider: vendor, model: def.agent.model }))
+      workerProviders.set(name, createProvider({
+        provider: vendor,
+        model: def.agent.model,
+        options: def.providerOptions,
+        cwd,
+      }))
     }
   }
 
@@ -65,7 +74,7 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
         const maxTurns = def.agent.maxTurns ?? 10
         const safetyTimeout = Math.max(timeoutMs, maxTurns * 120_000)
         return Promise.race([
-          createModelIO(worker, provider).generate({ prompt: task, systemPrompt: def.agent.prompt ?? '' }).then(result => result.text),
+          createModelIO(worker, provider).generate({ prompt: task, systemPrompt: workerPrompt(def) }).then(result => result.text),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error(`Worker ${worker} timeout after ${safetyTimeout}ms (maxTurns=${maxTurns})`)), safetyTimeout),
           ),
@@ -80,7 +89,12 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
         }
       }
       case 'acp': {
-        return acpGateway.dispatch(def.acpCommand ?? 'claude', promptToText(task), timeoutMs)
+        const systemPrompt = workerPrompt(def)
+        const taskText = promptToText(task)
+        const acpTask = systemPrompt
+          ? `<system>\n${systemPrompt}\n</system>\n\n<task>\n${taskText}\n</task>`
+          : taskText
+        return acpGateway.dispatch(def.acpCommand ?? 'claude', acpTask, timeoutMs)
       }
       case 'webhook': {
         const wh = def.webhook

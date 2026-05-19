@@ -52,6 +52,7 @@ export interface ProviderConfig {
   model?: string
   cloud?: boolean
   options?: Record<string, unknown>
+  cwd?: string
 }
 
 export interface ProviderFactoryContext {
@@ -107,7 +108,7 @@ export function createProvider(config: ProviderConfig): LLMProvider {
   const options = config.options ?? {}
   const factory = providerFactories.get(config.provider)
   if (!factory) throw new Error(`Unknown provider "${config.provider}". Use ${[...providerFactories.keys()].join(', ')}.`)
-  return factory({ model, options, env: process.env })
+  return factory({ model, options, env: process.env, cwd: config.cwd })
 }
 
 export function listProviders(): Array<{ provider: ProviderKey; cloud: boolean; description: string }> {

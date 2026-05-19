@@ -37,6 +37,8 @@ export interface WorkerDefinition {
   logicFn?: string;
   /** LLM vendor/provider key. */
   vendor?: ProviderKey;
+  /** Provider-specific options, e.g. Codex cwd/sandbox/profile or Claude CLI flags. */
+  providerOptions?: Record<string, unknown>;
   /** Max concurrent instances of this worker type (readers=high, writers=low) */
   maxConcurrency?: number;
   /** Fallback timeout for non-plan dispatch. For SDK workers in plans, actual timeout = max(this, maxTurns * 120s) */
