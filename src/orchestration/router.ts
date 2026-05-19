@@ -110,6 +110,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const activePlans = () => [...plans.entries()].filter(([, entry]) => entry.status === 'executing')
   const hasActivePlan = () => activePlans().length > 0
+  const latestPlan = () => [...plans.entries()]
+    .sort(([, a], [, b]) => b.createdAt.localeCompare(a.createdAt))[0]
 
   const writerWorkers = () => new Set(Object.entries(allWorkers())
     .filter(([, def]) => def.backend === 'shell' || (def.agent.tools ?? []).some(tool => ['Write', 'Edit'].includes(String(tool))))
@@ -276,6 +278,70 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     return resultPromise
   }
 
+  const blockingFailedSteps = (planId: string, entry: PlanEntry) => {
+    const stepById = new Map(entry.plan.steps.map(step => [step.id, step]))
+    return buffer.list({ planId }).filter(step =>
+      (step.status === 'failed' || step.status === 'timeout')
+      && stepById.get(step.id)?.blocking !== false,
+    )
+  }
+
+  const objectiveStatus = () => {
+    const active = activePlans()[0]
+    const latest = active ?? latestPlan()
+    if (!latest) {
+      return {
+        currentObjective: null,
+        activeWorktree: null,
+        blockedReason: null,
+        repairAttempt: 0,
+        nextMergeGate: null,
+        mergeReady: false,
+        gateStatus: { gates: [], nextGate: undefined, mergeReady: false },
+        activePlans: [],
+      }
+    }
+
+    const [planId, entry] = latest
+    const steps = buffer.list({ planId })
+    const gates = gateSummary(entry, steps)
+    const failed = blockingFailedSteps(planId, entry)
+    const blockedGate = gates.gates.find(gate =>
+      gate.status === 'completed' && (gate.verdict === 'fail' || gate.verdict === 'blocked' || gate.verdict === 'unknown'),
+    )
+    const repairPlans = [...plans.values()].filter(candidate => candidate.repairOf === planId)
+    const activeRepair = repairPlans.find(candidate => candidate.status === 'executing')
+    const blockedReason =
+      activeRepair ? `repair running: attempt ${activeRepair.repairAttempt ?? 1}`
+        : failed[0] ? `blocking step ${failed[0].id} ${failed[0].status}`
+          : blockedGate ? `${blockedGate.gate} gate ${blockedGate.verdict}`
+            : entry.status === 'failed' ? 'plan failed'
+              : null
+
+    return {
+      currentObjective: {
+        planId,
+        goal: entry.plan.goal,
+        status: entry.status,
+        createdAt: entry.createdAt,
+        completedAt: entry.completedAt,
+        repairOf: entry.repairOf,
+      },
+      activeWorktree: worktreeJson(entry.worktree) ?? null,
+      blockedReason,
+      repairAttempt: Math.max(entry.repairAttempt ?? 0, ...repairPlans.map(candidate => candidate.repairAttempt ?? 0), 0),
+      nextMergeGate: gates.nextGate ?? null,
+      mergeReady: gates.mergeReady,
+      gateStatus: gates,
+      activePlans: activePlans().map(([activePlanId, activeEntry]) => ({
+        planId: activePlanId,
+        goal: activeEntry.plan.goal,
+        status: activeEntry.status,
+        worktree: worktreeJson(activeEntry.worktree) ?? null,
+      })),
+    }
+  }
+
   const classifyFailure = (step: StepResult): 'timeout' | 'artifact_contract' | 'verification' | 'worktree_boundary' | 'worker_error' => {
     if (step.id === 'worktree-boundary') return 'worktree_boundary'
     if (step.status === 'timeout' || /timeout/i.test(step.output)) return 'timeout'
@@ -289,7 +355,11 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     const attempt = (entry.repairAttempt ?? 0) + 1
     const maxAttempts = repair?.maxAttempts ?? 1
     if (attempt > maxAttempts) return false
-    const failedSteps = result.steps.filter(step => step.status === 'failed' || step.status === 'timeout')
+    const stepById = new Map(entry.plan.steps.map(step => [step.id, step]))
+    const failedSteps = result.steps.filter(step =>
+      (step.status === 'failed' || step.status === 'timeout')
+      && stepById.get(step.id)?.blocking !== false,
+    )
     if (boundaryError) {
       failedSteps.push({
         id: 'worktree-boundary',
@@ -466,6 +536,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     activePlans,
     hasActivePlan,
     validateExecutionPolicy,
+    blockingFailedSteps,
+    objectiveStatus,
     startPlanExecution,
     gitStatus,
     schedulerLock,
@@ -525,19 +597,35 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 }
 
+function gateVerdict(output: unknown): 'pass' | 'fail' | 'blocked' | 'unknown' {
+  const text = String(output ?? '')
+  const lineVerdict = text.match(/^\s*(?:verdict|recommendation|result|結論|建議)?\s*:?\s*(PASS|FAIL|FAILED|BLOCKED)\b/im)
+  if (lineVerdict) {
+    const value = lineVerdict[1].toUpperCase()
+    if (value === 'PASS') return 'pass'
+    if (value === 'BLOCKED') return 'blocked'
+    return 'fail'
+  }
+  if (/\bBLOCKED\b|需要人工|NEED HUMAN/i.test(text)) return 'blocked'
+  if (/\bFAIL(?:ED)?\b|不通過/i.test(text.replace(/PASS\/FAIL/gi, ''))) return 'fail'
+  if (/\bPASS(?:ED)?\b|通過/i.test(text)) return 'pass'
+  return 'unknown'
+}
+
 function gateSummary(entry: { plan: ActionPlan }, steps: ReturnType<ResultBuffer['list']>) {
   const gates = entry.plan.steps
     .filter(step => step.gate)
     .map(step => {
-      const status = steps.find(task => task.id === step.id)?.status ?? 'pending'
-      return { gate: step.gate!, stepId: step.id, worker: step.worker, status }
+      const task = steps.find(candidate => candidate.id === step.id)
+      const status = task?.status ?? 'pending'
+      return { gate: step.gate!, stepId: step.id, worker: step.worker, status, verdict: gateVerdict(task?.result ?? task?.error) }
     })
-  const nextGate = gates.find(gate => gate.status !== 'completed')
+  const nextGate = gates.find(gate => gate.status !== 'completed' || gate.verdict !== 'pass')
   return {
     gates,
     nextGate,
     mergeReady: ['review', 'qa', 'release'].every(required =>
-      gates.some(gate => gate.gate === required && gate.status === 'completed'),
+      gates.some(gate => gate.gate === required && gate.status === 'completed' && gate.verdict === 'pass'),
     ),
   }
 }
@@ -642,7 +730,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     if (!entry) return c.json({ error: 'not found' }, 404)
     const steps = mw.buffer.list({ planId })
     const completed = steps.filter(s => s.status === 'completed').length
-    const failed = steps.filter(s => s.status === 'failed').length
+    const failed = mw.blockingFailedSteps(planId, entry).length
     const running = steps.filter(s => s.status === 'running').length
     return c.json({
       planId,
@@ -689,6 +777,8 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     const tasks = mw.buffer.list({ status, limit })
     return c.json({ tasks, total: tasks.length })
   })
+
+  app.get('/objective/status', c => c.json(mw.objectiveStatus()))
 
   app.get('/workers', c => c.json({
     workers: Object.entries(mw.allWorkers()).map(([name, def]) => ({
@@ -788,7 +878,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
         status: entry.status,
         totalSteps: entry.plan.steps.length,
         completed: steps.filter(s => s.status === 'completed').length,
-        failed: steps.filter(s => s.status === 'failed' || s.status === 'timeout').length,
+        failed: mw.blockingFailedSteps(planId, entry).length,
         running: steps.filter(s => s.status === 'running').length,
         gateStatus: gates,
         worktree: worktreeJson(entry.worktree),
@@ -819,9 +909,9 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     const steps = mw.buffer.list({ planId })
     const gates = gateSummary(entry, steps)
     const missingGates = requiredGates.filter(required =>
-      !gates.gates.some(gate => gate.gate === required && gate.status === 'completed'),
+      !gates.gates.some(gate => gate.gate === required && gate.status === 'completed' && gate.verdict === 'pass'),
     )
-    const failed = steps.filter(step => step.status === 'failed' || step.status === 'timeout')
+    const failed = mw.blockingFailedSteps(planId, entry)
 
     if (entry.status !== 'completed') {
       return c.json({ error: 'plan_not_completed', status: entry.status, gateStatus: gates }, 409)

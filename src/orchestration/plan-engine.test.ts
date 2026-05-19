@@ -39,3 +39,24 @@ test('PlanEngine fails a step that changes files outside artifactContract.allowe
   }
 })
 
+test('PlanEngine lets downstream steps continue after non-blocking support failure', async () => {
+  const engine = new PlanEngine(async (_worker, task) => {
+    if (task === 'support') throw new Error('support unavailable')
+    return 'main completed'
+  })
+
+  const plan: ActionPlan = {
+    goal: 'advisory support can fail',
+    acceptance: 'main work completes',
+    steps: [
+      { id: 'support', worker: 'advisor', task: 'support', dependsOn: [], blocking: false },
+      { id: 'main', worker: 'builder', task: 'main', dependsOn: ['support'] },
+    ],
+  }
+
+  const result = await engine.execute(plan)
+  assert.equal(result.steps.find(step => step.id === 'support')?.status, 'failed')
+  assert.equal(result.steps.find(step => step.id === 'main')?.status, 'completed')
+  assert.equal(result.summary.failed, 0)
+  assert.equal(result.accepted, true)
+})

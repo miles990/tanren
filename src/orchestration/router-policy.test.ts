@@ -108,3 +108,33 @@ test('orchestration policy validates custom worker capabilities and backends', (
     rmSync(cwd, { recursive: true, force: true })
   }
 })
+
+test('objective status requires completed gates to return PASS verdicts', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const plan: ActionPlan = {
+      goal: 'gate verdicts',
+      steps: [
+        { id: 'review', worker: 'reviewer', mode: 'verify', gate: 'review', task: 'review', dependsOn: [] },
+        { id: 'qa', worker: 'reviewer', mode: 'verify', gate: 'qa', task: 'qa', dependsOn: ['review'] },
+        { id: 'release', worker: 'reviewer', mode: 'verify', gate: 'release', task: 'release', dependsOn: ['qa'] },
+      ],
+    }
+
+    mw.plans.set('plan-gates', { plan, status: 'completed', createdAt: new Date().toISOString() })
+    for (const step of plan.steps) {
+      mw.buffer.submit({ id: step.id, planId: 'plan-gates', worker: step.worker, task: step.task })
+      mw.buffer.start(step.id, 'plan-gates')
+    }
+    mw.buffer.complete('review', 'PASS\nNo blockers.', 'plan-gates')
+    mw.buffer.complete('qa', 'PASS/FAIL: PASS\nReady.', 'plan-gates')
+    mw.buffer.complete('release', 'Result: FAIL\nRelease is blocked.', 'plan-gates')
+
+    const status = mw.objectiveStatus()
+    assert.equal(status.mergeReady, false)
+    assert.match(status.blockedReason ?? '', /release gate fail/)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})

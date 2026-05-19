@@ -112,10 +112,12 @@ process restarts and avoid stepping on each other.
 - `schedulerLock` defaults to `true`, allowing only one active product objective per repo through an atomic lock file at `.tanren/locks/product-objective.lock` with heartbeat. Send `"schedulerLock": false` only for intentionally independent maintenance work.
 - `isolation.mode: "cycle-worktree"` runs the plan in a dedicated git worktree and verifies the main repo status did not change.
 - `repair.enabled` defaults to on. Failed plans create one bounded typed repair DAG: classify failure, apply focused repair, verify, then report. Repair steps go through the same artifact contract policy as normal plans.
+- Set `blocking: false` on advisory/support steps. Their failures remain visible in task history, but they do not block downstream hard-gate work or mark the whole objective failed.
 - Step `verifyCommand` runs in the plan cwd. Step `artifactContract` can declare `allowedPaths`, `expectedPaths`, and `forbiddenPaths`.
 - Writer workers (workers with `Write`, `Edit`, or `shell` backend) must include `verifyCommand`, `artifactContract.allowedPaths`, and `artifactContract.expectedPaths`; otherwise `/plan` and `/plan/validate` reject the plan. Set `mode: "read"` or `mode: "verify"` for read-only or verification steps that use a capable worker but must not write files.
 - Workers can declare a `policy` so custom AI agents are governed by capabilities instead of prompts: `capabilities`, `defaultMode`, `requiresArtifactContract`, `gates`, `allowedBackends`, `escalationPolicy`, and `riskLevel`. Write/report steps assigned to a worker with required `gates` must have downstream gate steps such as `{ "gate": "review" }`.
-- `POST /plan/:id/merge` is the merge gate for isolated worktree plans. By default it requires completed `review`, `qa`, and `release` gates, no failed steps, a completed plan, and a clean worktree branch before fast-forward or squash merge.
+- Gate workers should return an explicit first-line verdict: `PASS`, `FAIL`, or `BLOCKED`. `POST /plan/:id/merge` requires completed `review`, `qa`, and `release` gates with `PASS` verdicts, no blocking failed steps, a completed plan, and a clean worktree branch before fast-forward or squash merge.
+- `GET /objective/status` returns the boss-facing production snapshot: current objective, active worktree, blocked reason, repair attempt, next merge gate, and whether the objective is merge-ready.
 
 Example step contract:
 

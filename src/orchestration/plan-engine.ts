@@ -34,6 +34,8 @@ export interface PlanStep {
   mode?: 'read' | 'write' | 'verify' | 'report';
   /** Marks this step as a named production gate for policy checks. */
   gate?: 'review' | 'qa' | 'merge' | 'release' | 'boss-report';
+  /** Defaults true. Advisory/support steps can fail without blocking downstream hard-gate work. */
+  blocking?: boolean;
   timeoutSeconds?: number;
   maxConcurrency?: number;
   /** Dynamic branching */
@@ -270,6 +272,7 @@ export class PlanEngine {
       if (!availableWorkers.has(step.worker)) errors.push(`Step ${step.id}: unknown worker '${step.worker}'`);
       if (step.mode && !STEP_MODES.has(step.mode)) errors.push(`Step ${step.id}: invalid mode '${step.mode}'`);
       if (step.gate && !STEP_GATES.has(step.gate)) errors.push(`Step ${step.id}: invalid gate '${step.gate}'`);
+      if (step.blocking !== undefined && typeof step.blocking !== 'boolean') errors.push(`Step ${step.id}: blocking must be boolean`);
       for (const dep of step.dependsOn) {
         if (!ids.has(dep)) errors.push(`Step ${step.id}: depends on unknown '${dep}'`);
         if (dep === step.id) errors.push(`Step ${step.id}: self-dependency`);
@@ -368,6 +371,7 @@ export class PlanEngine {
     let aborted = false;
     let convergenceIterations = 0;
     const workerRunning = new Map<string, number>();
+    const stepMap = new Map(plan.steps.map(candidate => [candidate.id, candidate]));
 
     return new Promise<PlanResult>((resolve) => {
       const tryDispatch = () => {
@@ -386,14 +390,19 @@ export class PlanEngine {
           // Check dependencies
           const depsOk = step.dependsOn.every(d => {
             const r = results.get(d);
-            return r && (r.status === 'completed' || r.status === 'condition_skipped');
+            if (!r) return false;
+            if (r.status === 'completed' || r.status === 'condition_skipped') return true;
+            const dependency = stepMap.get(d);
+            return dependency?.blocking === false && (r.status === 'failed' || r.status === 'timeout' || r.status === 'skipped');
           });
 
           if (!depsOk) {
             // Dep failed → skip (unless retry pending)
             const depFailed = step.dependsOn.some(d => {
               const r = results.get(d);
-              return r && r.status !== 'completed' && r.status !== 'condition_skipped';
+              const dependency = stepMap.get(d);
+              if (!r || r.status === 'completed' || r.status === 'condition_skipped') return false;
+              return dependency?.blocking !== false;
             });
             if (depFailed) {
               results.set(step.id, { id: step.id, worker: step.worker, status: 'skipped', output: 'Dependency failed', durationMs: 0, dispatchOrder: dispatchOrder++ });
@@ -616,9 +625,10 @@ export class PlanEngine {
 
 function buildResult(plan: ActionPlan, results: Map<string, StepResult>, start: number, convergenceIterations: number = 0): PlanResult {
   const steps = plan.steps.map(s => results.get(s.id)).filter((s): s is StepResult => s != null);
+  const stepById = new Map(plan.steps.map(s => [s.id, s]));
 
   const completedSteps = steps.filter(s => s.status === 'completed');
-  const failedSteps = steps.filter(s => s.status === 'failed' || s.status === 'timeout');
+  const failedSteps = steps.filter(s => (s.status === 'failed' || s.status === 'timeout') && stepById.get(s.id)?.blocking !== false);
 
   const criticalFindings: string[] = [];
   for (const s of completedSteps) {
@@ -626,7 +636,10 @@ function buildResult(plan: ActionPlan, results: Map<string, StepResult>, start: 
   }
 
   const replanCandidates = steps
-    .filter(s => s.status === 'failed' || s.status === 'timeout' || (s.status === 'completed' && s.structured?.confidence !== undefined && s.structured.confidence < LOW_CONFIDENCE_THRESHOLD))
+    .filter(s => {
+      if (s.status === 'failed' || s.status === 'timeout') return stepById.get(s.id)?.blocking !== false;
+      return s.status === 'completed' && s.structured?.confidence !== undefined && s.structured.confidence < LOW_CONFIDENCE_THRESHOLD;
+    })
     .map(s => ({ id: s.id, reason: s.status !== 'completed' ? s.status : `low confidence (${s.structured!.confidence})`, confidence: s.structured?.confidence }));
 
   const digestInput: DigestInput = {
@@ -670,7 +683,7 @@ function buildResult(plan: ActionPlan, results: Map<string, StepResult>, start: 
     totalDurationMs: Date.now() - start,
     summary: {
       completed: steps.filter(s => s.status === 'completed').length,
-      failed: steps.filter(s => s.status === 'failed' || s.status === 'timeout').length,
+      failed: failedSteps.length,
       skipped: steps.filter(s => s.status === 'skipped').length,
       conditionSkipped: steps.filter(s => s.status === 'condition_skipped').length,
     },
