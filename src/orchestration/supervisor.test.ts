@@ -119,7 +119,7 @@ test('buildSmallestProductSlicePlan creates a gated writer contract', () => {
     verifyCommand: 'test -e game/project.godot',
   }, new Set(['gameplay-engineer', 'qa-reality-checker', 'reviewer']))
 
-  assert.equal(plan.steps.length, 4)
+  assert.equal(plan.steps.length, 5)
   assert.equal(plan.steps[0].worker, 'gameplay-engineer')
   assert.equal(plan.steps[0].mode, 'write')
   assert.deepEqual(plan.steps[0].artifactContract?.allowedPaths, ['game'])
@@ -127,6 +127,8 @@ test('buildSmallestProductSlicePlan creates a gated writer contract', () => {
   assert.equal(plan.steps[2].worker, 'qa-reality-checker')
   assert.equal(plan.steps[2].gate, 'qa')
   assert.equal(plan.steps[3].gate, 'release')
+  assert.equal(plan.steps[4].gate, 'boss-report')
+  assert.deepEqual(plan.steps[4].artifactContract?.expectedPaths, ['docs/boss-report.md', 'docs/product-brief-current.md', 'docs/roadmap-current.md'])
 })
 
 test('selectSmallestProductSliceWorkers keeps support workers dynamic and optional', () => {

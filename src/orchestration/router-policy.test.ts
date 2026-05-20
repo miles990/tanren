@@ -8,6 +8,7 @@ import { createOrchestrationMiddleware } from './router.js'
 import type { ActionPlan } from './plan-engine.js'
 import { extractStepLessons, recordStepLearningEvent } from './learning-events.js'
 import { auditBranchHygiene, cleanupMergedCycleBranches } from './branch-hygiene.js'
+import { writeProductionReports } from './production-reports.js'
 
 test('orchestration policy rejects writer steps without artifact contract and verification', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
@@ -192,6 +193,32 @@ test('step learning extraction records root-cause style lessons', () => {
   }
 })
 
+test('production reports write boss, product brief, and roadmap snapshots', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-production-reports-'))
+  try {
+    writeProductionReports(cwd, {
+      bossReportPath: 'docs/boss-report.md',
+      productBriefPath: 'docs/product-brief-current.md',
+      roadmapPath: 'docs/roadmap-current.md',
+    }, {
+      timestamp: '2026-05-20T00:00:00.000Z',
+      objective: {
+        lifecyclePhase: 'blocked',
+        productReady: false,
+        blockedReason: 'qa gate failed',
+        repairAttempt: 2,
+        currentObjective: { planId: 'plan-1', goal: 'demo', status: 'failed' },
+      },
+      trigger: { type: 'test', planId: 'plan-1', status: 'failed' },
+    })
+    assert.match(execFileSync('cat', [join(cwd, 'docs/boss-report.md')], { encoding: 'utf-8' }), /qa gate failed/)
+    assert.match(execFileSync('cat', [join(cwd, 'docs/product-brief-current.md')], { encoding: 'utf-8' }), /Current product/)
+    assert.match(execFileSync('cat', [join(cwd, 'docs/roadmap-current.md')], { encoding: 'utf-8' }), /Branch Hygiene/)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test('objective status requires completed gates to return PASS verdicts', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
   try {
@@ -352,7 +379,7 @@ test('supervisor tick dry-run builds a valid smallest product slice plan', async
 
     assert.equal(result.status, 'dry_run')
     assert.equal(result.action, 'start_smallest_product_slice')
-    assert.equal(result.plan?.steps.length, 4)
+    assert.equal(result.plan?.steps.length, 5)
     assert.deepEqual(mw.validateExecutionPolicy(result.plan!), [])
   } finally {
     rmSync(cwd, { recursive: true, force: true })
@@ -394,7 +421,7 @@ test('supervisor tick falls back to smallest product slice after stale failed re
     assert.equal(result.action, 'decompose_failed_step')
     assert.equal(result.decision.failureType, 'max_turns')
     assert.equal(result.plan?.goal, 'demo slice')
-    assert.equal(result.plan?.steps.length, 4)
+    assert.equal(result.plan?.steps.length, 5)
     assert.equal(mw.runtimeTrace[0]?.type, 'approval.preflight')
     assert.equal(mw.runtimeTrace[1]?.type, 'supervisor.fallback_smallest_slice')
   } finally {

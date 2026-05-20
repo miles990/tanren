@@ -82,6 +82,7 @@ export interface SmallestProductSliceInput {
   reviewWorker?: string;
   qaWorker?: string;
   releaseWorker?: string;
+  reportWorker?: string;
   supportWorkers?: string[];
 }
 
@@ -206,6 +207,7 @@ export function buildSmallestProductSlicePlan(
   const reviewWorker = selected.reviewWorker;
   const qaWorker = selected.qaWorker;
   const releaseWorker = selected.releaseWorker;
+  const reportWorker = selected.reportWorker;
 
   return {
     goal: input.goal,
@@ -275,6 +277,27 @@ export function buildSmallestProductSlicePlan(
           'Confirm review and QA passed, expected outputs exist, and no unresolved blockers remain.',
         ].join('\n'),
       },
+      {
+        id: 'publish-product-status',
+        worker: reportWorker,
+        mode: 'report',
+        gate: 'boss-report',
+        label: 'Publish product status',
+        dependsOn: ['release-slice'],
+        verifyCommand: 'test -e docs/boss-report.md && test -e docs/product-brief-current.md && test -e docs/roadmap-current.md',
+        artifactContract: {
+          allowedPaths: ['docs'],
+          expectedPaths: ['docs/boss-report.md', 'docs/product-brief-current.md', 'docs/roadmap-current.md'],
+        },
+        task: [
+          'Update the boss-facing productization reports after this cycle.',
+          'Write in the boss preferred language: Traditional Chinese except proper nouns.',
+          'Update docs/boss-report.md with current objective, completed work, blockers, branch/worktree, gate status, and next action.',
+          'Update docs/product-brief-current.md only if product direction changed; otherwise refresh its status timestamp and owner notes.',
+          'Update docs/roadmap-current.md with the latest milestone/gate state and next planned slice.',
+          'Do not claim productReady unless review, QA, release, and merge gate have actually passed.',
+        ].join('\n'),
+      },
     ],
   };
 }
@@ -288,6 +311,7 @@ export function selectSmallestProductSliceWorkers(
     reviewWorker: input.reviewWorker ?? pickWorker(availableWorkers, ['codex-reviewer', 'reviewer']),
     qaWorker: input.qaWorker ?? pickWorker(availableWorkers, ['qa-reality-checker', 'reviewer']),
     releaseWorker: input.releaseWorker ?? pickWorker(availableWorkers, ['release-engineer', 'reviewer']),
+    reportWorker: input.reportWorker ?? pickWorker(availableWorkers, ['autopilot-producer', 'analyst']),
     supportWorkers: (input.supportWorkers ?? ['game-designer', 'ui-ux-designer', 'technical-artist', 'playtest-analyst'])
       .filter(worker => !availableWorkers || availableWorkers.has(worker)),
   };

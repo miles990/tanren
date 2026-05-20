@@ -11,6 +11,7 @@ import { evaluateExecutionHarnessFailure, evaluatePlanStepApproval, type Approva
 import { readStepLearningEvents, recordStepLearningEvent, type StepLearningEvent } from './learning-events.js'
 import { PlanEventLog } from './plan-events.js'
 import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type PlanStep, type StepResult } from './plan-engine.js'
+import { writeProductionReports, type ProductionReportConfig } from './production-reports.js'
 import { PresetManager } from './presets.js'
 import { ResultBuffer, type TaskEvent, type TaskStatus } from './result-buffer.js'
 import { RepoSchedulerLock, SchedulerLockError, type SchedulerLockHandle } from './scheduler-lock.js'
@@ -23,6 +24,8 @@ import { WORKERS, type WorkerDefinition, type WorkerGate } from './workers.js'
 export interface OrchestrationMiddlewareConfig {
   cwd?: string
   branchHygiene?: BranchHygienePolicy
+  productionReports?: ProductionReportConfig
+  maxInternalRepairAttempts?: number
 }
 
 export function createOrchestrationMiddleware(config: OrchestrationMiddlewareConfig = {}) {
@@ -137,6 +140,20 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     .filter((branch): branch is string => Boolean(branch))
   const branchHygieneStatus = () => auditBranchHygiene(cwd, activeCycleBranches(), config.branchHygiene)
   const cleanupBranchHygiene = (opts?: { dryRun?: boolean }) => cleanupMergedCycleBranches(cwd, activeCycleBranches(), config.branchHygiene, opts)
+  const writeProductionSnapshot = (trigger?: { type: string; planId?: string; status?: string }) => {
+    if (!config.productionReports) return
+    try {
+      writeProductionReports(cwd, config.productionReports, {
+        timestamp: new Date().toISOString(),
+        objective: objectiveStatus(),
+        branchHygiene: branchHygieneStatus(),
+        trigger,
+      })
+    } catch (err) {
+      runtimeTrace.unshift({ type: 'production_reports.failed', timestamp: new Date().toISOString(), data: { error: err instanceof Error ? err.message : String(err), trigger } })
+      runtimeTrace.splice(200)
+    }
+  }
   const latestPlan = () => [...plans.entries()]
     .sort(([, a], [, b]) => b.createdAt.localeCompare(a.createdAt))[0]
 
@@ -313,6 +330,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       if (!shouldRepair && !downstreamResumed && entry.worktree && shouldCleanupWorktree(entry.worktree, result)) cleanupCycleWorktree(entry.worktree)
       if (!repairStarted && !downstreamResumed) releaseSchedulerLock(entry)
       persistPlans()
+      writeProductionSnapshot({ type: 'plan.completed', planId, status: entry.status })
     }).catch(() => {
       activeEngines.delete(planId)
       entry.completedAt = new Date().toISOString()
@@ -320,6 +338,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       releaseSchedulerLock(entry)
       planEvents.append({ type: 'plan.failed', planId, error: 'Plan execution promise rejected' })
       persistPlans()
+      writeProductionSnapshot({ type: 'plan.failed', planId, status: entry.status })
     })
     return resultPromise
   }
@@ -410,7 +429,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         entry.completedAt = new Date().toISOString()
         const result = syntheticPlanResult(planId, entry)
         let repairStarted = false
-        if (startRepair) repairStarted = await maybeStartRepair(planId, entry, result, { maxAttempts: 3 })
+        if (startRepair) repairStarted = await maybeStartRepair(planId, entry, result, { maxAttempts: config.maxInternalRepairAttempts ?? 2 })
         planEvents.append({ type: 'plan.failed', planId, error: 'stale running task watchdog reaped plan' })
         if (!repairStarted) releaseSchedulerLock(entry)
         persistPlans()
@@ -641,6 +660,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const supervisorDecision = () => evaluateSupervisor({
     objective: objectiveStatus(),
+    maxInternalRepairAttempts: config.maxInternalRepairAttempts ?? 2,
     plans: [...plans.entries()].map(([planId, entry]) => ({
       planId,
       goal: entry.plan.goal,
@@ -813,7 +833,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
     const approvalPolicy = input.approval?.policy ?? {
       repoRoot: cwd,
-      trustedPaths: input.smallestProductSlice.allowedPaths,
+      trustedPaths: [...new Set([...input.smallestProductSlice.allowedPaths, 'docs'])],
     }
     const approvals = plan.steps
       .filter(step => step.mode === 'write' || step.mode === 'report')
@@ -918,7 +938,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const maybeStartRepair = async (failedPlanId: string, entry: PlanEntry, result: PlanResult, repair?: PlanRequest['repair'], boundaryError?: string): Promise<boolean> => {
     if (repair?.enabled === false || (result.summary.failed === 0 && !boundaryError)) return false
     const attempt = (entry.repairAttempt ?? 0) + 1
-    const maxAttempts = repair?.maxAttempts ?? 3
+    const maxAttempts = repair?.maxAttempts ?? config.maxInternalRepairAttempts ?? 2
     if (attempt > maxAttempts) return false
     entry.repairAttempt = attempt
     const stepById = new Map(entry.plan.steps.map(step => [step.id, step]))
@@ -1139,6 +1159,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     activeCycleBranches,
     branchHygieneStatus,
     cleanupBranchHygiene,
+    writeProductionSnapshot,
     validateExecutionPolicy,
     classifyTaskError,
     blockingFailedSteps,
@@ -1407,6 +1428,15 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     })
   })
   app.get('/branch-hygiene', c => c.json(mw.branchHygieneStatus()))
+  app.get('/productization/status', c => c.json({
+    objective: mw.objectiveStatus(),
+    branchHygiene: mw.branchHygieneStatus(),
+    staleReports: false,
+  }))
+  app.post('/productization/reports/refresh', c => {
+    mw.writeProductionSnapshot({ type: 'manual-refresh' })
+    return c.json({ ok: true })
+  })
   app.post('/branch-hygiene/cleanup', async c => {
     const body: { dryRun?: boolean } = await c.req.json<{ dryRun?: boolean }>().catch(() => ({}))
     return c.json(mw.cleanupBranchHygiene({ dryRun: body.dryRun !== false }))
