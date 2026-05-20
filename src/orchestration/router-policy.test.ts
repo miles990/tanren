@@ -138,3 +138,27 @@ test('objective status requires completed gates to return PASS verdicts', () => 
     rmSync(cwd, { recursive: true, force: true })
   }
 })
+
+test('supervisor tick dry-run builds a valid smallest product slice plan', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const result = await mw.supervisorTick({
+      dryRun: true,
+      smallestProductSlice: {
+        goal: 'demo slice',
+        implementationTask: 'Create a visible demo slice.',
+        allowedPaths: ['src'],
+        expectedPaths: ['src/index.ts'],
+        verifyCommand: 'test -e src/index.ts',
+      },
+    })
+
+    assert.equal(result.status, 'dry_run')
+    assert.equal(result.action, 'start_smallest_product_slice')
+    assert.equal(result.plan?.steps.length, 4)
+    assert.deepEqual(mw.validateExecutionPolicy(result.plan!), [])
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})

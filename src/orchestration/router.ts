@@ -6,11 +6,13 @@ import { join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
+import { evaluateExecutionHarnessFailure } from './execution-harness.js'
 import { PlanEventLog } from './plan-events.js'
 import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type PlanStep, type StepResult } from './plan-engine.js'
 import { PresetManager } from './presets.js'
 import { ResultBuffer, type TaskEvent, type TaskStatus } from './result-buffer.js'
 import { RepoSchedulerLock, SchedulerLockError, type SchedulerLockHandle } from './scheduler-lock.js'
+import { buildSmallestProductSlicePlan, evaluateSupervisor, type SupervisorPlanSnapshot, type SupervisorStepSnapshot, type SupervisorTickInput, type SupervisorTickResult } from './supervisor.js'
 import { PLAN_TEMPLATES } from './templates.js'
 import { cleanupCycleWorktree, createCycleWorktree, type WorktreeContext, type WorktreeIsolationConfig } from './worktree.js'
 import { createWorkerRuntime } from './worker-runtime.js'
@@ -342,6 +344,134 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     }
   }
 
+  const supervisorDecision = () => evaluateSupervisor({
+    objective: objectiveStatus(),
+    plans: [...plans.entries()].map(([planId, entry]) => ({
+      planId,
+      goal: entry.plan.goal,
+      status: entry.status,
+      repairOf: entry.repairOf,
+      repairAttempt: entry.repairAttempt,
+      steps: entry.plan.steps.map((step): SupervisorStepSnapshot => {
+        const record = buffer.get(step.id, planId)
+        return {
+          id: step.id,
+          worker: step.worker,
+          label: step.label,
+          status: record?.status ?? 'pending',
+          mode: step.mode,
+          gate: step.gate,
+          output: String(record?.result ?? record?.error ?? ''),
+        }
+      }),
+    } satisfies SupervisorPlanSnapshot)),
+  })
+
+  const supervisorTick = async (input: SupervisorTickInput = {}): Promise<SupervisorTickResult> => {
+    const decision = supervisorDecision()
+    if (decision.action !== 'start_smallest_product_slice') {
+      return { action: decision.action, decision, status: 'no_action' }
+    }
+    if (!input.smallestProductSlice) {
+      return {
+        action: decision.action,
+        decision,
+        status: 'blocked',
+        error: 'missing_smallest_product_slice_contract',
+        errors: [
+          'smallestProductSlice.goal is required',
+          'smallestProductSlice.implementationTask is required',
+          'smallestProductSlice.allowedPaths is required',
+          'smallestProductSlice.expectedPaths is required',
+          'smallestProductSlice.verifyCommand is required',
+        ],
+      }
+    }
+
+    let plan: ActionPlan
+    try {
+      plan = buildSmallestProductSlicePlan(input.smallestProductSlice, new Set(Object.keys(allWorkers())))
+    } catch (err) {
+      return {
+        action: decision.action,
+        decision,
+        status: 'blocked',
+        error: 'invalid_smallest_product_slice_contract',
+        errors: [err instanceof Error ? err.message : String(err)],
+      }
+    }
+
+    const errors = [
+      ...planEngine.validate(plan, new Set(Object.keys(allWorkers()))),
+      ...validateExecutionPolicy(plan),
+    ]
+    if (errors.length > 0) {
+      return { action: decision.action, decision, plan, status: 'blocked', error: 'validation_failed', errors }
+    }
+    if (input.dryRun) return { action: decision.action, decision, plan, status: 'dry_run' }
+
+    const planId = nextPlanId()
+    let lockHandle: SchedulerLockHandle | undefined
+    try {
+      lockHandle = schedulerLock.acquire({ planId, goal: plan.goal })
+      planEvents.append({ type: 'lock.acquired', planId })
+    } catch (err) {
+      if (err instanceof SchedulerLockError) {
+        return {
+          action: decision.action,
+          decision,
+          plan,
+          status: 'blocked',
+          error: 'scheduler_locked',
+          errors: [`Another plan is already executing for this repo: ${err.conflict.record?.planId ?? 'unknown plan'}`],
+        }
+      }
+      throw err
+    }
+
+    let worktree: WorktreeContext | undefined
+    let planRuntime = runtime
+    let planCwd = cwd
+    let boundaryStatus: string[] | undefined
+    try {
+      worktree = createCycleWorktree(cwd, planId, { mode: 'cycle-worktree', cleanup: 'never' })
+      boundaryStatus = gitStatus(worktree.repoRoot)
+      planRuntime = createWorkerRuntime({
+        cwd: worktree.cwd,
+        workers: Object.fromEntries(customWorkers),
+        acpGateway,
+      })
+      planCwd = worktree.worktreePath
+    } catch (err) {
+      lockHandle.release()
+      if (worktree) cleanupCycleWorktree(worktree)
+      return {
+        action: decision.action,
+        decision,
+        plan,
+        status: 'blocked',
+        error: 'worktree_creation_failed',
+        errors: [err instanceof Error ? err.message : String(err)],
+      }
+    }
+
+    const entry = {
+      plan,
+      worktree,
+      boundaryStatus,
+      status: 'executing' as const,
+      createdAt: new Date().toISOString(),
+      schedulerLock: true,
+      lockPlanId: planId,
+      lockHandle,
+    }
+    plans.set(planId, entry)
+    planEvents.append({ type: 'plan.created', planId, plan, worktree, boundaryStatus, schedulerLock: true, lockPlanId: planId })
+    startPlanExecution(planId, entry, planRuntime, planCwd, 'supervisor-tick')
+
+    return { action: decision.action, decision, plan, submittedPlanId: planId, status: 'executing' }
+  }
+
   const classifyFailure = (step: StepResult): 'timeout' | 'artifact_contract' | 'verification' | 'worktree_boundary' | 'worker_error' => {
     if (step.id === 'worktree-boundary') return 'worktree_boundary'
     if (step.status === 'timeout' || /timeout/i.test(step.output)) return 'timeout'
@@ -375,6 +505,28 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     if (!allWorkers()[repairWorker]) return false
     const verifyWorker = allWorkers()['qa-reality-checker'] ? 'qa-reality-checker' : repairWorker
     const repairReportPath = `docs/tanren-repair-${failedPlanId}.md`
+    const runtimeEvaluations = new Map<string, ReturnType<typeof evaluateExecutionHarnessFailure> | undefined>()
+    const runtimeEvaluation = (step: StepResult) => {
+      if (runtimeEvaluations.has(step.id)) return runtimeEvaluations.get(step.id)
+      const original = stepById.get(step.id)
+      if (!original) return undefined
+      try {
+        const evaluation = evaluateExecutionHarnessFailure({
+          objectiveId: entry.lockPlanId ?? failedPlanId,
+          planId: failedPlanId,
+          step: original,
+          result: step,
+          attempt,
+          repoRoot: entry.worktree?.repoRoot ?? cwd,
+          worktreePath: entry.worktree?.worktreePath,
+        })
+        runtimeEvaluations.set(step.id, evaluation)
+        return evaluation
+      } catch {
+        runtimeEvaluations.set(step.id, undefined)
+        return undefined
+      }
+    }
     const repairPlan: ActionPlan = {
       goal: `Repair failed plan ${failedPlanId}: ${entry.plan.goal}`,
       acceptance: 'Classify the failure, apply a focused repair, verify the result, and report a concise handoff.',
@@ -387,7 +539,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           dependsOn: [],
           task: [
             `Classify failed step ${step.id} from plan ${failedPlanId}.`,
-            `Failure type hint: ${classifyFailure(step)}`,
+            `Failure type hint: ${runtimeEvaluation(step)?.failureType ?? classifyFailure(step)}`,
+            `Execution harness next action: ${runtimeEvaluation(step)?.nextAction ?? 'unavailable'}`,
             `Original worker: ${step.worker}`,
             `Failure: ${step.output}`,
             'Return the smallest repair strategy. Do not edit files in this classify step.',
@@ -402,7 +555,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
             dependsOn: [`classify-${step.id}`],
             task: [
               `Apply a focused repair for failed step ${step.id} from plan ${failedPlanId}.`,
-              `Failure type: ${classifyFailure(step)}`,
+              `Failure type: ${runtimeEvaluation(step)?.failureType ?? classifyFailure(step)}`,
+              `Execution harness next action: ${runtimeEvaluation(step)?.nextAction ?? 'unavailable'}`,
               `Classifier output: {{classify-${step.id}.output}}`,
               'Keep scope minimal and do not expand product scope.',
             ].join('\n\n'),
@@ -538,6 +692,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     validateExecutionPolicy,
     blockingFailedSteps,
     objectiveStatus,
+    supervisorDecision,
+    supervisorTick,
     startPlanExecution,
     gitStatus,
     schedulerLock,
@@ -779,6 +935,15 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   })
 
   app.get('/objective/status', c => c.json(mw.objectiveStatus()))
+  app.get('/supervisor/decision', c => c.json(mw.supervisorDecision()))
+  app.post('/supervisor/tick', async c => {
+    const body = await c.req.json<SupervisorTickInput>().catch(() => ({}))
+    const result = await mw.supervisorTick(body)
+    const status = result.error === 'scheduler_locked' ? 409
+      : result.error ? 400
+        : 200
+    return c.json(result, status)
+  })
 
   app.get('/workers', c => c.json({
     workers: Object.entries(mw.allWorkers()).map(([name, def]) => ({

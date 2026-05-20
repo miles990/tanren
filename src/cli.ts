@@ -39,17 +39,20 @@ Commands:
   serve   Start HTTP server (POST /chat, GET /health, GET /status)
   health  Check a running agent's health
   status  Get a running agent's status
+  supervisor-loop  Poll an orchestration API and run supervisor ticks
 
 Options:
   --config <path>    Path to config file (default: ./tanren.config.ts)
   --interval <ms>    Tick interval in ms (default: 60000)
   --port <port>      HTTP port for serve/health/status (default: 3000)
+  --api <url>        Orchestration API URL for supervisor-loop
 
 Examples:
   npx tanren tick
   npx tanren serve --port 3002
   npx tanren health --port 3002
   npx tanren start --config ./my-agent/config.ts
+  npx tanren supervisor-loop --api http://localhost:3100 --config ./supervisor.config.json
 `.trim())
   process.exit(0)
 }
@@ -102,6 +105,30 @@ async function loadConfig(): Promise<TanrenConfig> {
 
 async function main(): Promise<void> {
   loadEnv()
+  if (command === 'supervisor-loop') {
+    const apiUrl = getFlag('api') ?? 'http://localhost:3100'
+    const configPath = getFlag('config')
+    const pollMs = getFlag('poll-ms') ? parseInt(getFlag('poll-ms')!, 10) : 10_000
+    const maxTicks = args.includes('--once') ? 1 : (getFlag('max-ticks') ? parseInt(getFlag('max-ticks')!, 10) : Number.POSITIVE_INFINITY)
+    const tickInput = configPath
+      ? JSON.parse(readFileSync(resolve(configPath), 'utf-8'))
+      : {}
+    const { runSupervisorHttpLoop } = await import('./orchestration/supervisor-loop.js')
+    const controller = new AbortController()
+    process.on('SIGINT', () => controller.abort())
+    process.on('SIGTERM', () => controller.abort())
+    const summary = await runSupervisorHttpLoop({
+      apiUrl,
+      tickInput,
+      pollMs,
+      maxTicks,
+      signal: controller.signal,
+      logger: message => console.log(message),
+    })
+    console.log(`[tanren] supervisor loop stopped: ${summary.stoppedReason}, ticks=${summary.ticks}, submitted=${summary.submittedPlans.length}`)
+    return
+  }
+
   const config = await loadConfig()
   const interval = getFlag('interval')
 
