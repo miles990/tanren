@@ -275,6 +275,63 @@ test('completed repair exposes and dry-runs downstream resume instead of waiting
   }
 })
 
+test('downstream resume retries failed gate steps instead of marking them repaired', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const productPlan: ActionPlan = {
+      goal: 'demo product',
+      steps: [
+        { id: 'implement-slice', worker: 'shell', mode: 'write', task: 'true', dependsOn: [] },
+        { id: 'review-slice', worker: 'shell', mode: 'verify', gate: 'review', task: 'printf PASS', dependsOn: ['implement-slice'] },
+        { id: 'qa-slice', worker: 'shell', mode: 'verify', gate: 'qa', task: 'printf PASS', dependsOn: ['review-slice'] },
+        { id: 'release-slice', worker: 'shell', mode: 'verify', gate: 'release', task: 'printf PASS', dependsOn: ['qa-slice'] },
+      ],
+    }
+    const repairPlan: ActionPlan = {
+      goal: 'repair review provider failure',
+      steps: [{ id: 'repair-verify', worker: 'shell', mode: 'verify', task: 'printf PASS', dependsOn: [] }],
+    }
+
+    mw.plans.set('plan-product', { plan: productPlan, status: 'failed', createdAt: '2026-05-20T00:00:00.000Z', schedulerLock: false })
+    mw.buffer.submit({ id: 'implement-slice', planId: 'plan-product', worker: 'shell', task: 'true' })
+    mw.buffer.start('implement-slice', 'plan-product')
+    mw.buffer.complete('implement-slice', 'implemented', 'plan-product')
+    mw.buffer.submit({ id: 'review-slice', planId: 'plan-product', worker: 'shell', task: 'printf PASS' })
+    mw.buffer.start('review-slice', 'plan-product')
+    mw.buffer.fail('review-slice', 'temporary provider output missing', 'plan-product')
+    for (const step of productPlan.steps.slice(2)) {
+      mw.buffer.submit({ id: step.id, planId: 'plan-product', worker: step.worker, task: step.task })
+    }
+
+    mw.plans.set('plan-repair', {
+      plan: repairPlan,
+      status: 'completed',
+      createdAt: '2026-05-20T00:01:00.000Z',
+      completedAt: '2026-05-20T00:02:00.000Z',
+      repairOf: 'plan-product',
+      repairAttempt: 1,
+      schedulerLock: false,
+    })
+    mw.buffer.submit({ id: 'repair-verify', planId: 'plan-repair', worker: 'shell', task: 'printf PASS' })
+    mw.buffer.start('repair-verify', 'plan-repair')
+    mw.buffer.complete('repair-verify', 'PASS', 'plan-repair')
+
+    const tick = await mw.supervisorTick()
+    assert.equal(tick.status, 'executing')
+    assert.equal(tick.action, 'resume_downstream')
+    await mw.plans.get('plan-product')?.resultPromise
+
+    const review = mw.buffer.get('review-slice', 'plan-product')
+    assert.equal(review?.status, 'completed')
+    assert.equal(review?.result, 'PASS')
+    assert.equal(mw.buffer.get('qa-slice', 'plan-product')?.status, 'completed')
+    assert.equal(mw.buffer.get('release-slice', 'plan-product')?.status, 'completed')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test('supervisor tick enforces approval policy before submission', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
   try {

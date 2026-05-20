@@ -361,12 +361,29 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       target.originalEntry.lockPlanId = repairEntry.lockPlanId ?? target.originalPlanId
     }
 
+    const repairedStepIds: string[] = []
+    const retriedStepIds: string[] = []
+    const originalStepsById = new Map(target.originalEntry.plan.steps.map(step => [step.id, step]))
     for (const step of target.failedSteps) {
-      buffer.complete(step.id, [
-        `REPAIRED by ${repairPlanId}.`,
-        'The focused repair plan completed successfully; resuming downstream product gates.',
-        `Original failure was: ${String(step.error ?? step.result ?? '').slice(0, 500)}`,
-      ].join('\n'), target.originalPlanId)
+      const originalStep = originalStepsById.get(step.id)
+      if (originalStep?.gate || originalStep?.mode === 'verify' || originalStep?.mode === 'read') {
+        buffer.submit({
+          id: originalStep.id,
+          planId: target.originalPlanId,
+          worker: originalStep.worker,
+          task: originalStep.task,
+          label: originalStep.label,
+          caller: 'repair-resume',
+        })
+        retriedStepIds.push(step.id)
+      } else {
+        buffer.complete(step.id, [
+          `REPAIRED by ${repairPlanId}.`,
+          'The focused repair plan completed successfully; resuming downstream product gates.',
+          `Original failure was: ${String(step.error ?? step.result ?? '').slice(0, 500)}`,
+        ].join('\n'), target.originalPlanId)
+        repairedStepIds.push(step.id)
+      }
     }
 
     target.originalEntry.completedAt = undefined
@@ -375,7 +392,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       type: 'repair.resumed_downstream',
       planId: target.originalPlanId,
       repairPlanId,
-      repairedStepIds: target.failedSteps.map(step => step.id),
+      repairedStepIds,
+      retriedStepIds,
     })
     runtimeTrace.unshift({
       type: 'repair.resumed_downstream',
@@ -383,7 +401,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       data: {
         planId: target.originalPlanId,
         repairPlanId,
-        repairedStepIds: target.failedSteps.map(step => step.id),
+        repairedStepIds,
+        retriedStepIds,
         nextGate: target.gates.nextGate ?? null,
       },
     })

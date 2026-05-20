@@ -9,7 +9,7 @@ export type PlanLogEvent =
   | { type: 'plan.completed'; planId: string; status: 'completed' | 'failed'; timestamp: string }
   | { type: 'plan.failed'; planId: string; error: string; timestamp: string }
   | { type: 'repair.created'; planId: string; repairPlanId: string; repairAttempt: number; failedStepIds: string[]; timestamp: string }
-  | { type: 'repair.resumed_downstream'; planId: string; repairPlanId: string; repairedStepIds: string[]; timestamp: string }
+  | { type: 'repair.resumed_downstream'; planId: string; repairPlanId: string; repairedStepIds: string[]; retriedStepIds?: string[]; timestamp: string }
   | { type: 'step.dispatched'; planId: string; stepId: string; worker: string; timestamp: string }
   | { type: 'step.completed'; planId: string; stepId: string; worker: string; timestamp: string }
   | { type: 'step.failed'; planId: string; stepId: string; worker: string; status: StepResult['status']; output: string; timestamp: string }
