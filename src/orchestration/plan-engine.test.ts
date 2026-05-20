@@ -39,6 +39,51 @@ test('PlanEngine fails a step that changes files outside artifactContract.allowe
   }
 })
 
+test('PlanEngine does not blame a parallel step for another step owned path change', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-plan-parallel-contract-'))
+  try {
+    gitInit(cwd)
+    mkdirSync(join(cwd, 'docs'), { recursive: true })
+    mkdirSync(join(cwd, 'game'), { recursive: true })
+    const engine = new PlanEngine(async (_worker, task) => {
+      if (task === 'plan') {
+        await new Promise(resolve => setTimeout(resolve, 40))
+        writeFileSync(join(cwd, 'docs/product.md'), 'PASS\n', 'utf-8')
+        return 'wrote product plan'
+      }
+      await new Promise(resolve => setTimeout(resolve, 5))
+      writeFileSync(join(cwd, 'game/main.gd'), 'extends Node\n', 'utf-8')
+      return 'wrote game'
+    }, { cwd })
+
+    const plan: ActionPlan = {
+      goal: 'parallel product and engineering lanes',
+      steps: [
+        {
+          id: 'product',
+          worker: 'product-owner',
+          task: 'plan',
+          dependsOn: [],
+          artifactContract: { allowedPaths: ['docs'], expectedPaths: ['docs/product.md'] },
+        },
+        {
+          id: 'game',
+          worker: 'gameplay-engineer',
+          task: 'game',
+          dependsOn: [],
+          artifactContract: { allowedPaths: ['game'], expectedPaths: ['game/main.gd'] },
+        },
+      ],
+    }
+
+    const result = await engine.execute(plan)
+    assert.equal(result.summary.failed, 0)
+    assert.equal(result.summary.completed, 2)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test('PlanEngine verifies expected artifacts from git root when cwd is a subdirectory', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-plan-subdir-'))
   try {

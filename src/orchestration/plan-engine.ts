@@ -195,6 +195,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function pathMatches(scope: string, file: string): boolean {
+  const normalized = scope.replace(/\/$/, '');
+  return file === normalized || file.startsWith(`${normalized}/`);
+}
+
 async function withStepTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string, signal?: AbortSignal): Promise<T> {
   if (timeoutMs <= 0) return promise;
   let timer: NodeJS.Timeout | undefined;
@@ -395,6 +400,8 @@ export class PlanEngine {
     let aborted = false;
     let convergenceIterations = 0;
     const workerRunning = new Map<string, number>();
+    const runningAllowedPaths = new Map<string, string[]>();
+    const concurrentAllowedPaths = new Map<string, Set<string>>();
     const stepMap = new Map(plan.steps.map(candidate => [candidate.id, candidate]));
 
     return new Promise<PlanResult>((resolve) => {
@@ -455,6 +462,16 @@ export class PlanEngine {
           // DISPATCH with abort controller
           running.add(step.id);
           workerRunning.set(step.worker, currentConc + 1);
+          const stepAllowedPaths = step.artifactContract?.allowedPaths ?? [];
+          const ignoredForStep = new Set<string>();
+          for (const [runningId, allowedPaths] of runningAllowedPaths) {
+            for (const allowed of allowedPaths) ignoredForStep.add(allowed);
+            const ignoredForRunning = concurrentAllowedPaths.get(runningId) ?? new Set<string>();
+            for (const allowed of stepAllowedPaths) ignoredForRunning.add(allowed);
+            concurrentAllowedPaths.set(runningId, ignoredForRunning);
+          }
+          runningAllowedPaths.set(step.id, stepAllowedPaths);
+          concurrentAllowedPaths.set(step.id, ignoredForStep);
           const ac = new AbortController();
           this.abortControllers.set(step.id, ac);
           this.emit({ type: 'step.dispatched', step });
@@ -464,9 +481,11 @@ export class PlanEngine {
           const timeoutMs = (step.timeoutSeconds ?? defaultTimeout) * 1000;
           const order = dispatchOrder++;
 
-          this.executeWithRetry(step, resolvedTask, timeoutMs, order, retryCounts, ac.signal)
+          this.executeWithRetry(step, resolvedTask, timeoutMs, order, retryCounts, ac.signal, () => [...(concurrentAllowedPaths.get(step.id) ?? [])])
             .then(res => {
               running.delete(step.id);
+              runningAllowedPaths.delete(step.id);
+              concurrentAllowedPaths.delete(step.id);
               this.abortControllers.delete(step.id);
               workerRunning.set(step.worker, (workerRunning.get(step.worker) ?? 1) - 1);
               results.set(res.id, res);
@@ -537,7 +556,15 @@ export class PlanEngine {
 
   // ─── Execute with Retry ───
 
-  private async executeWithRetry(step: PlanStep, task: string, timeoutMs: number, order: number, retryCounts: Map<string, number>, signal?: AbortSignal): Promise<StepResult> {
+  private async executeWithRetry(
+    step: PlanStep,
+    task: string,
+    timeoutMs: number,
+    order: number,
+    retryCounts: Map<string, number>,
+    signal?: AbortSignal,
+    concurrentAllowedPaths?: () => string[],
+  ): Promise<StepResult> {
     const maxRetries = step.retry?.maxRetries ?? 0;
     const baseBackoff = step.retry?.backoffMs ?? 1000;
     const maxBackoff = this.opts.maxBackoffMs ?? 30_000;
@@ -583,7 +610,7 @@ export class PlanEngine {
           }
         }
 
-        const artifactError = this.verifyArtifactContract(step, changedBefore);
+        const artifactError = this.verifyArtifactContract(step, changedBefore, concurrentAllowedPaths?.() ?? []);
         if (artifactError) {
           lastError = `Artifact contract failed: ${artifactError}`;
           if (attempt === maxRetries) {
@@ -612,7 +639,7 @@ export class PlanEngine {
     return { id: step.id, worker: step.worker, status: 'failed', output: lastError, durationMs: 0, dispatchOrder: order };
   }
 
-  private verifyArtifactContract(step: PlanStep, changedBefore: string[]): string | null {
+  private verifyArtifactContract(step: PlanStep, changedBefore: string[], concurrentAllowedPaths: string[] = []): string | null {
     const contract = step.artifactContract;
     if (!contract) return null;
     const cwd = this.opts.cwd ?? process.cwd();
@@ -622,14 +649,16 @@ export class PlanEngine {
       if (!existsSync(`${root}/${expected}`)) return `expected path missing: ${expected}`;
     }
 
-    const changed = this.gitChangedFiles(cwd).filter(file => !changedBefore.includes(file));
+    const changed = this.gitChangedFiles(cwd)
+      .filter(file => !changedBefore.includes(file))
+      .filter(file => !concurrentAllowedPaths.some(allowed => pathMatches(allowed, file)));
     if (contract.allowedPaths?.length) {
-      const disallowed = changed.filter(file => !contract.allowedPaths!.some(allowed => file === allowed || file.startsWith(`${allowed.replace(/\/$/, '')}/`)));
+      const disallowed = changed.filter(file => !contract.allowedPaths!.some(allowed => pathMatches(allowed, file)));
       if (disallowed.length) return `changed files outside allowedPaths: ${disallowed.join(', ')}`;
     }
 
     if (contract.forbiddenPaths?.length) {
-      const forbidden = changed.filter(file => contract.forbiddenPaths!.some(path => file === path || file.startsWith(`${path.replace(/\/$/, '')}/`)));
+      const forbidden = changed.filter(file => contract.forbiddenPaths!.some(path => pathMatches(path, file)));
       if (forbidden.length) return `changed forbidden files: ${forbidden.join(', ')}`;
     }
 

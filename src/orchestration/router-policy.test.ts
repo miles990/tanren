@@ -431,6 +431,35 @@ test('branch hygiene marks canonical, active, merged, and unmerged cycle branche
   }
 })
 
+test('branch hygiene requires review before cleaning dirty merged worktrees', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tanren-branch-dirty-'))
+  const worktree = join(tmpdir(), `tanren-branch-dirty-wt-${Date.now()}`)
+  try {
+    execFileSync('git', ['init', '-b', 'productization/cycle-1'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+    writeFileSync(join(repo, 'base.txt'), 'base\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['worktree', 'add', '-b', 'tanren/cycle/dirty-merged', worktree, 'productization/cycle-1'], { cwd: repo, stdio: 'ignore' })
+    writeFileSync(join(worktree, 'uncommitted.txt'), 'keep me\n', 'utf-8')
+
+    const report = auditBranchHygiene(repo, [], { canonicalBranch: 'productization/cycle-1' })
+    const dirty = report.branches.find(branch => branch.name === 'tanren/cycle/dirty-merged')
+    assert.equal(dirty?.status, 'merged-cycle')
+    assert.equal(dirty?.dirty, true)
+    assert.equal(dirty?.recommendedAction, 'review_dirty_worktree_before_cleanup')
+    assert.equal(report.summary.cleanupCandidates, 0)
+    assert.equal(report.summary.needsReview, 1)
+
+    const dryRun = cleanupMergedCycleBranches(repo, [], { canonicalBranch: 'productization/cycle-1' })
+    assert.deepEqual(dryRun.removed, [])
+  } finally {
+    try { execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: repo, stdio: 'ignore' }) } catch { /* ignore */ }
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test('branch hygiene requires consolidation when unmerged cycle branches exceed policy', () => {
   const repo = mkdtempSync(join(tmpdir(), 'tanren-branch-consolidation-'))
   try {
@@ -607,6 +636,102 @@ test('supervisor tick falls back to smallest product slice after stale failed re
     assert.equal(result.plan?.steps.length, 5)
     assert.equal(mw.runtimeTrace[0]?.type, 'approval.preflight')
     assert.equal(mw.runtimeTrace[1]?.type, 'supervisor.fallback_smallest_slice')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('supervisor circuit-breaks active repair plans with blocking fix failures', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-circuit-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const repairPlan: ActionPlan = {
+      goal: 'repair demo',
+      steps: [
+        { id: 'fix-implement-slice', worker: 'reviewer', mode: 'write', task: 'fix', dependsOn: [], verifyCommand: 'true', artifactContract: { allowedPaths: ['src'], expectedPaths: ['src/index.ts'] } },
+        { id: 'fix-product-lane', worker: 'reviewer', mode: 'write', task: 'fix lane', dependsOn: [], verifyCommand: 'true', artifactContract: { allowedPaths: ['src'], expectedPaths: ['src/index.ts'] } },
+      ],
+    }
+    mw.plans.set('repair-active', {
+      plan: repairPlan,
+      status: 'executing',
+      createdAt: new Date().toISOString(),
+      repairOf: 'plan-product',
+      repairAttempt: 1,
+      schedulerLock: false,
+    })
+    mw.buffer.submit({ id: 'fix-implement-slice', planId: 'repair-active', worker: 'reviewer', task: 'fix' })
+    mw.buffer.start('fix-implement-slice', 'repair-active')
+    mw.buffer.fail('fix-implement-slice', 'Verify failed: test -e docs/report.md', 'repair-active')
+    mw.buffer.submit({ id: 'fix-product-lane', planId: 'repair-active', worker: 'reviewer', task: 'fix lane' })
+    mw.buffer.start('fix-product-lane', 'repair-active')
+
+    const result = await mw.supervisorTick({
+      dryRun: true,
+      smallestProductSlice: {
+        goal: 'demo slice',
+        implementationTask: 'Create a visible demo slice.',
+        allowedPaths: ['src'],
+        expectedPaths: ['src/index.ts'],
+        verifyCommand: 'test -e src/index.ts',
+      },
+    })
+
+    assert.equal(mw.plans.get('repair-active')?.status, 'failed')
+    assert.equal(mw.buffer.get('fix-product-lane', 'repair-active')?.status, 'cancelled')
+    assert.equal(result.status, 'dry_run')
+    assert.equal(result.plan?.goal, 'demo slice')
+    assert.equal(mw.runtimeTrace.some(event => event.type === 'repair.circuit_breaker.closed'), true)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('supervisor circuit-breaks nested active repairs', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-nested-repair-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const repairPlan: ActionPlan = {
+      goal: 'repair product',
+      steps: [{ id: 'repair-verify', worker: 'reviewer', mode: 'verify', task: 'verify', dependsOn: [] }],
+    }
+    const nestedRepairPlan: ActionPlan = {
+      goal: 'repair repair',
+      steps: [{ id: 'classify-repair-verify', worker: 'reviewer', mode: 'read', task: 'classify', dependsOn: [] }],
+    }
+    mw.plans.set('repair-parent', {
+      plan: repairPlan,
+      status: 'failed',
+      createdAt: new Date().toISOString(),
+      repairOf: 'plan-product',
+      repairAttempt: 1,
+    })
+    mw.plans.set('repair-child', {
+      plan: nestedRepairPlan,
+      status: 'executing',
+      createdAt: new Date().toISOString(),
+      repairOf: 'repair-parent',
+      repairAttempt: 2,
+      schedulerLock: false,
+    })
+    mw.buffer.submit({ id: 'classify-repair-verify', planId: 'repair-child', worker: 'reviewer', task: 'classify' })
+    mw.buffer.start('classify-repair-verify', 'repair-child')
+
+    const result = await mw.supervisorTick({
+      dryRun: true,
+      smallestProductSlice: {
+        goal: 'demo slice',
+        implementationTask: 'Create a visible demo slice.',
+        allowedPaths: ['src'],
+        expectedPaths: ['src/index.ts'],
+        verifyCommand: 'test -e src/index.ts',
+      },
+    })
+
+    assert.equal(mw.plans.get('repair-child')?.status, 'failed')
+    assert.equal(mw.buffer.get('classify-repair-verify', 'repair-child')?.status, 'cancelled')
+    assert.equal(result.status, 'dry_run')
+    assert.equal(result.plan?.goal, 'demo slice')
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }

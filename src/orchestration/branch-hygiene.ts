@@ -18,13 +18,15 @@ export interface BranchHygieneBranch {
   head: string
   current: boolean
   worktreePath?: string
+  dirty: boolean
+  dirtyFiles: string[]
   status: 'canonical' | 'protected' | 'active-cycle' | 'merged-cycle' | 'unmerged-cycle' | 'unmanaged'
   mergedIntoCanonical: boolean
   sameAsCanonical: boolean
   aheadCanonical: number
   behindCanonical: number
   latestSubject?: string
-  recommendedAction: 'use_as_source_of_truth' | 'wait' | 'cleanup_worktree_and_branch' | 'review_or_cherry_pick_before_cleanup' | 'keep'
+  recommendedAction: 'use_as_source_of_truth' | 'wait' | 'cleanup_worktree_and_branch' | 'review_or_cherry_pick_before_cleanup' | 'review_dirty_worktree_before_cleanup' | 'keep'
 }
 
 export interface BranchHygieneReport {
@@ -117,6 +119,18 @@ function worktreeBranches(cwd: string): Map<string, string> {
   return map
 }
 
+function dirtyFiles(cwd: string | undefined): string[] {
+  if (!cwd) return []
+  try {
+    return git(cwd, ['status', '--porcelain'])
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
 export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = [], policy: BranchHygienePolicy = {}): BranchHygieneReport {
   let repoRoot: string
   try {
@@ -158,6 +172,8 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
     const sameAsCanonical = Boolean(canonicalHead) && branch.head === canonicalHead
     const relative = aheadBehind(repoRoot, canonicalBranch, branch.name)
     const protectedBranch = protectedBranches.has(branch.name)
+    const worktreePath = worktrees.get(branch.name)
+    const dirty = dirtyFiles(worktreePath)
     let status: BranchHygieneBranch['status'] = 'unmanaged'
     let recommendedAction: BranchHygieneBranch['recommendedAction'] = 'keep'
 
@@ -172,7 +188,7 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
       recommendedAction = 'keep'
     } else if (isCycle && (mergedIntoCanonical || sameAsCanonical)) {
       status = 'merged-cycle'
-      recommendedAction = 'cleanup_worktree_and_branch'
+      recommendedAction = dirty.length > 0 ? 'review_dirty_worktree_before_cleanup' : 'cleanup_worktree_and_branch'
     } else if (isCycle) {
       status = 'unmerged-cycle'
       recommendedAction = 'review_or_cherry_pick_before_cleanup'
@@ -182,7 +198,9 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
       name: branch.name,
       head: branch.head,
       current: branch.current,
-      worktreePath: worktrees.get(branch.name),
+      worktreePath,
+      dirty: dirty.length > 0,
+      dirtyFiles: dirty,
       status,
       mergedIntoCanonical,
       sameAsCanonical,
@@ -193,12 +211,12 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
     }
   })
   const candidates = branches
-    .filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup')
+    .filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup' || branch.recommendedAction === 'review_dirty_worktree_before_cleanup')
     .sort((a, b) => (b.aheadCanonical - a.aheadCanonical) || a.name.localeCompare(b.name))
     .slice(0, policy.consolidation?.maxCandidates ?? 5)
   const mode = policy.consolidation?.mode ?? 'audit'
   const maxUnmerged = policy.consolidation?.maxUnmergedCycleBranches ?? Number.POSITIVE_INFINITY
-  const needsReview = branches.filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup').length
+  const needsReview = branches.filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup' || branch.recommendedAction === 'review_dirty_worktree_before_cleanup').length
   const required = mode !== 'off' && needsReview > maxUnmerged
 
   return {

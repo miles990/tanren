@@ -442,6 +442,42 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     return reaped
   }
 
+  const closeIneffectiveActiveRepairPlans = () => {
+    const closed: Array<{ planId: string; failedStepIds: string[]; runningStepIds: string[] }> = []
+    for (const [planId, entry] of activePlans()) {
+      if (!entry.repairOf) continue
+      const isNestedRepair = Boolean(plans.get(entry.repairOf)?.repairOf)
+      const failed = blockingFailedSteps(planId, entry)
+      if (failed.length === 0 && !isNestedRepair) continue
+      const failedIds = failed.map(step => step.id)
+      const shouldClose = failed.length >= 2 || failedIds.some(id => id.startsWith('fix-') || id === 'repair-verify' || id === 'repair-report')
+      if (!shouldClose && !isNestedRepair) continue
+
+      const running = buffer.list({ planId, status: 'running' })
+      activeEngines.get(planId)?.cancelAll()
+      activeEngines.delete(planId)
+      for (const task of running) buffer.cancel(task.id, planId)
+      entry.status = 'failed'
+      entry.completedAt = new Date().toISOString()
+      planEvents.append({
+        type: 'plan.failed',
+        planId,
+        error: isNestedRepair
+          ? `repair circuit breaker closed nested repair; repairOf=${entry.repairOf}`
+          : `repair circuit breaker closed ineffective active repair; failed=${failedIds.join(', ')}`,
+      })
+      releaseSchedulerLock(entry)
+      closed.push({ planId, failedStepIds: failedIds, runningStepIds: running.map(task => task.id) })
+    }
+    if (closed.length > 0) {
+      runtimeTrace.unshift({ type: 'repair.circuit_breaker.closed', timestamp: new Date().toISOString(), data: { closed } })
+      runtimeTrace.splice(200)
+      persistPlans()
+      for (const item of closed) writeProductionSnapshot({ type: 'repair.circuit_breaker.closed', planId: item.planId, status: 'failed' })
+    }
+    return closed
+  }
+
   const classifyTaskError = (text: unknown): string | undefined => {
     const message = String(text ?? '')
     if (!message) return undefined
@@ -729,6 +765,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   }
 
   const supervisorTick = async (input: SupervisorTickInput = {}): Promise<SupervisorTickResult> => {
+    const closedRepairs = closeIneffectiveActiveRepairPlans()
     const reaped = await reapStaleRunningTasks()
     if (reaped.length > 0) {
       return {
@@ -778,6 +815,10 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       )
     if (!shouldDispatchSmallestSlice) {
       return { action: decision.action, decision, status: 'no_action' }
+    }
+    if (closedRepairs.length > 0) {
+      runtimeTrace.unshift({ type: 'supervisor.repair_circuit_breaker_fallback', timestamp: new Date().toISOString(), data: { closedRepairs, decision } })
+      runtimeTrace.splice(200)
     }
     const hygiene = branchHygieneStatus()
     if (
@@ -1079,6 +1120,15 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const maybeStartRepair = async (failedPlanId: string, entry: PlanEntry, result: PlanResult, repair?: PlanRequest['repair'], boundaryError?: string): Promise<boolean> => {
     if (repair?.enabled === false || (result.summary.failed === 0 && !boundaryError)) return false
+    if (entry.repairOf) {
+      runtimeTrace.unshift({
+        type: 'repair.circuit_breaker.prevented_nested_repair',
+        timestamp: new Date().toISOString(),
+        data: { failedPlanId, repairOf: entry.repairOf },
+      })
+      runtimeTrace.splice(200)
+      return false
+    }
     const attempt = (entry.repairAttempt ?? 0) + 1
     const maxAttempts = repair?.maxAttempts ?? config.maxInternalRepairAttempts ?? 2
     if (attempt > maxAttempts) return false
@@ -1312,6 +1362,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     runtimeTrace,
     learningTrace,
     reapStaleRunningTasks,
+    closeIneffectiveActiveRepairPlans,
     autoMergeReadyPlan,
     startPlanExecution,
     gitStatus,
