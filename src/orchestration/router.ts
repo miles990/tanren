@@ -247,7 +247,19 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     }
   }
 
+  const normalizeRepairStepTimeouts = (entry: PlanEntry) => {
+    if (!entry.repairOf) return
+    for (const step of entry.plan.steps) {
+      if (step.timeoutSeconds) continue
+      if (step.id.startsWith('classify-')) step.timeoutSeconds = 180
+      else if (step.id.startsWith('fix-')) step.timeoutSeconds = 300
+      else if (step.id === 'repair-verify') step.timeoutSeconds = 180
+      else if (step.id === 'repair-report') step.timeoutSeconds = 180
+    }
+  }
+
   const startPlanExecution = (planId: string, entry: PlanEntry, planRuntime = runtime, planCwd = cwd, caller?: string, repair?: PlanRequest['repair']) => {
+    normalizeRepairStepTimeouts(entry)
     if (entry.schedulerLock && !entry.lockHandle) {
       entry.lockHandle = schedulerLock.adopt({ planId: entry.lockPlanId ?? planId, goal: entry.plan.goal })
       planEvents.append({ type: 'lock.acquired', planId: entry.lockPlanId ?? planId })
