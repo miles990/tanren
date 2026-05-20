@@ -67,7 +67,7 @@ export function runSupervisorHttpLoop(options: SupervisorHttpLoopOptions): Promi
         });
         const text = await response.text();
         const body = text ? JSON.parse(text) as SupervisorTickResult : {} as SupervisorTickResult;
-        if (!response.ok && body.error !== 'scheduler_locked') {
+        if (!response.ok && !isExpectedBlockedTick(body.error)) {
           return transientSupervisorFailure(`supervisor tick failed: ${response.status} ${text}`);
         }
         return body;
@@ -76,6 +76,10 @@ export function runSupervisorHttpLoop(options: SupervisorHttpLoopOptions): Promi
       }
     },
   });
+}
+
+function isExpectedBlockedTick(error: unknown): boolean {
+  return error === 'scheduler_locked' || error === 'consolidation_required'
 }
 
 function transientSupervisorFailure(message: string): SupervisorTickResult {
