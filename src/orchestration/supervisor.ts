@@ -93,6 +93,7 @@ export interface SmallestProductSliceInput {
 export interface SupervisorTickInput {
   dryRun?: boolean;
   smallestProductSlice?: SmallestProductSliceInput;
+  consolidationPlan?: ActionPlan;
   approval?: {
     enforce?: boolean;
     explicitAuthorization?: string[];

@@ -422,6 +422,55 @@ test('branch hygiene requires consolidation when unmerged cycle branches exceed 
   }
 })
 
+test('supervisor tick dry-runs consolidation plan when branch hygiene blocks new cycles', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tanren-supervisor-consolidation-'))
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+    mkdirSync(join(repo, 'docs'), { recursive: true })
+    writeFileSync(join(repo, 'docs/base.md'), 'base\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', '-b', 'tanren/cycle/needs-review'], { cwd: repo, stdio: 'ignore' })
+    writeFileSync(join(repo, 'docs/feature.md'), 'feature\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'feature'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', 'main'], { cwd: repo, stdio: 'ignore' })
+
+    const mw = createOrchestrationMiddleware({
+      cwd: repo,
+      branchHygiene: {
+        canonicalBranch: 'main',
+        consolidation: { mode: 'block-new-cycles', maxUnmergedCycleBranches: 0 },
+      },
+    })
+    const result = await mw.supervisorTick({
+      dryRun: true,
+      approval: { enforce: false },
+      consolidationPlan: {
+        goal: 'consolidate',
+        steps: [{
+          id: 'audit',
+          worker: 'analyst',
+          mode: 'report',
+          task: 'printf PASS',
+          dependsOn: [],
+          verifyCommand: 'test -e docs/base.md',
+          artifactContract: { allowedPaths: ['docs'], expectedPaths: ['docs/base.md'] },
+        }],
+      },
+    })
+
+    assert.equal(result.action, 'consolidate_unmerged_work')
+    assert.equal(result.status, 'dry_run')
+    assert.equal(result.branchHygiene && typeof result.branchHygiene === 'object', true)
+    assert.equal(result.plan?.goal, 'consolidate')
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test('supervisor tick dry-run builds a valid smallest product slice plan', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
   try {

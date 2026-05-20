@@ -805,6 +805,110 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       })
       runtimeTrace.splice(200)
       writeProductionSnapshot({ type: 'consolidation-required' })
+      if (input.consolidationPlan) {
+        const plan = input.consolidationPlan
+        const errors = [
+          ...planEngine.validate(plan, new Set(Object.keys(allWorkers()))),
+          ...validateExecutionPolicy(plan),
+        ]
+        if (errors.length > 0) {
+          return { action: 'consolidate_unmerged_work', decision: consolidationDecision, plan, status: 'blocked', error: 'validation_failed', errors, branchHygiene: hygiene }
+        }
+        const approvalPolicy = input.approval?.policy ?? {
+          repoRoot: cwd,
+          trustedPaths: ['docs'],
+        }
+        const approvals = plan.steps
+          .filter(step => step.mode === 'write' || step.mode === 'report')
+          .map(step => evaluatePlanStepApproval({
+            userObjective: plan.goal,
+            step,
+            policy: approvalPolicy,
+            explicitAuthorization: input.approval?.explicitAuthorization,
+          }))
+        approvalDecisions.unshift(...approvals)
+        approvalDecisions.splice(100)
+        runtimeTrace.unshift({ type: 'approval.preflight', timestamp: new Date().toISOString(), data: { goal: plan.goal, approvals } })
+        runtimeTrace.splice(200)
+        const blockedApprovals = approvals.filter(item => item.status !== 'approved')
+        if ((input.approval?.enforce ?? true) && blockedApprovals.length > 0) {
+          return {
+            action: 'consolidate_unmerged_work',
+            decision: consolidationDecision,
+            plan,
+            approvals,
+            status: blockedApprovals.some(item => item.status === 'needs_boss') ? 'needs_boss' : 'blocked',
+            error: 'approval_blocked',
+            errors: blockedApprovals.map(item => `${item.stepId ?? 'unknown'}: ${item.reason}`),
+            branchHygiene: hygiene,
+          }
+        }
+        if (input.dryRun) return { action: 'consolidate_unmerged_work', decision: consolidationDecision, plan, approvals, status: 'dry_run', branchHygiene: hygiene }
+
+        const planId = nextPlanId()
+        let lockHandle: SchedulerLockHandle | undefined
+        try {
+          lockHandle = schedulerLock.acquire({ planId, goal: plan.goal })
+          planEvents.append({ type: 'lock.acquired', planId })
+        } catch (err) {
+          if (err instanceof SchedulerLockError) {
+            return {
+              action: 'consolidate_unmerged_work',
+              decision: consolidationDecision,
+              plan,
+              status: 'blocked',
+              error: 'scheduler_locked',
+              errors: [`Another plan is already executing for this repo: ${err.conflict.record?.planId ?? 'unknown plan'}`],
+              branchHygiene: hygiene,
+            }
+          }
+          throw err
+        }
+
+        let worktree: WorktreeContext | undefined
+        let planRuntime = runtime
+        let planCwd = cwd
+        let boundaryStatus: string[] | undefined
+        try {
+          worktree = createCycleWorktree(cwd, planId, { mode: 'cycle-worktree', branchPrefix: 'tanren/consolidation', cleanup: 'never' })
+          boundaryStatus = gitStatus(worktree.repoRoot)
+          planRuntime = createWorkerRuntime({
+            cwd: worktree.cwd,
+            workers: Object.fromEntries(customWorkers),
+            acpGateway,
+          })
+          planCwd = worktree.worktreePath
+        } catch (err) {
+          lockHandle.release()
+          if (worktree) cleanupCycleWorktree(worktree)
+          return {
+            action: 'consolidate_unmerged_work',
+            decision: consolidationDecision,
+            plan,
+            status: 'blocked',
+            error: 'worktree_creation_failed',
+            errors: [err instanceof Error ? err.message : String(err)],
+            branchHygiene: hygiene,
+          }
+        }
+
+        const entry = {
+          plan,
+          worktree,
+          boundaryStatus,
+          status: 'executing' as const,
+          createdAt: new Date().toISOString(),
+          schedulerLock: true,
+          lockPlanId: planId,
+          lockHandle,
+        }
+        plans.set(planId, entry)
+        planEvents.append({ type: 'plan.created', planId, plan, worktree, boundaryStatus, schedulerLock: true, lockPlanId: planId })
+        startPlanExecution(planId, entry, planRuntime, planCwd, 'supervisor-consolidation')
+        runtimeTrace.unshift({ type: 'supervisor.consolidation_submitted', timestamp: new Date().toISOString(), data: { planId } })
+        runtimeTrace.splice(200)
+        return { action: 'consolidate_unmerged_work', decision: consolidationDecision, plan, approvals, submittedPlanId: planId, status: 'executing', branchHygiene: hygiene }
+      }
       return {
         action: 'consolidate_unmerged_work',
         decision: consolidationDecision,
