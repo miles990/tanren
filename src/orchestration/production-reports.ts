@@ -14,7 +14,18 @@ export interface ProductionReportConfig {
   northStar?: string
   currentDirection?: string[]
   milestoneTargets?: string[]
+  reportingOwners?: ReportingOwnerConfig[]
   notReadyNextAction?: string
+}
+
+export interface ReportingOwnerConfig {
+  owner: string
+  responsibility: string
+  currentOutput?: string
+  status?: string
+  blocker?: string
+  nextAction?: string
+  finalSpecAlignment?: string
 }
 
 export interface ProductionSnapshot {
@@ -79,6 +90,7 @@ export function buildBossReport(snapshot: ProductionSnapshot): string {
   const objective = snapshot.objective.currentObjective
   const owner = snapshot.config?.productOwner ?? 'product lead'
   const milestoneTargets = snapshot.config?.milestoneTargets ?? defaultMilestoneTargets()
+  const reportingOwners = reportOwnerRows(snapshot, owner)
   return [
     '# 老闆報告',
     '',
@@ -107,13 +119,7 @@ export function buildBossReport(snapshot: ProductionSnapshot): string {
     '',
     '| owner | responsibility | current output | status | blocker | next action | final-spec alignment |',
     '| --- | --- | --- | --- | --- | --- | --- |',
-    `| ${owner} | 產品方向、目標、最後規格、老闆溝通 | docs/final-product-decision-current.md / docs/boss-report.md | ${objective?.status ?? 'idle'} | ${snapshot.objective.blockedReason ?? '無'} | ${snapshot.objective.productReady ? '安排真人測試與下一切片' : '收斂目前 cycle 或解除 blocker'} | 以 final spec 為準 |`,
-    '| game-designer | 卡牌規則、取捨、平衡假設 | docs/support-game-designer-brief.md | pending/running by cycle | 無即時摘要 | 依 final spec 修正設計輸入 | 必須對齊 final spec |',
-    '| ui-ux-designer | 首屏理解、資訊階層、操作清楚度 | docs/support-ui-ux-designer-brief.md | pending/running by cycle | 無即時摘要 | 依 final spec 修正 UX acceptance | 必須對齊 final spec |',
-    '| technical-artist | demo 畫面可展示性、視覺一致性 | docs/support-technical-artist-brief.md / docs/art-direction-current.md | pending/running by cycle | 無即時摘要 | 依 final spec 修正視覺標準 | 必須對齊 final spec |',
-    '| gameplay-engineer | Godot 實作與可玩性 | game/ | pending/running by cycle | 無即時摘要 | 實作最小可驗收切片 | 必須對齊 final spec |',
-    '| qa-reality-checker | 玩家是否真的能玩懂 | QA gate output | pending/running by cycle | 無即時摘要 | 用 final spec 判定 PASS/FAIL/BLOCKED | 必須對齊 final spec |',
-    '| release-engineer | 交付、啟動、repo clean | release gate output | pending/running by cycle | 無即時摘要 | 確認可合併與可交付狀態 | 必須對齊 final spec |',
+    ...reportingOwners,
     '',
     '## Git 版本規則',
     '',
@@ -211,11 +217,38 @@ export function buildRoadmap(snapshot: ProductionSnapshot): string {
 
 function defaultMilestoneTargets(): string[] {
   return [
-    'M0: Team system can plan, execute, gate, report, and consolidate without boss babysitting.',
-    'M1: Tester-ready first battle demo with visible win/loss, enemy intent, card costs/effects, energy, draw/discard, and clear feedback.',
-    'M2: First human playtest evidence loop with H1-H5 findings and one Product Owner decision.',
-    'M3: Replayable MVP direction selected from evidence; only then consider enemy/card reward/map/shop/progression expansion.',
+    'M0: Operating system can plan, execute, gate, report, and consolidate work without manual babysitting.',
+    'M1: First reviewable product slice passes implementation, review, QA, release, and merge gates.',
+    'M2: First evidence loop produces findings and one accountable owner decision.',
+    'M3: Next product direction is selected from evidence before broad scope expansion.',
   ]
+}
+
+function reportOwnerRows(snapshot: ProductionSnapshot, owner: string): string[] {
+  const objective = snapshot.objective.currentObjective
+  const fallback: ReportingOwnerConfig[] = [{
+    owner,
+    responsibility: 'Direction, objective, final specification, and stakeholder communication',
+    currentOutput: 'Configured report paths',
+    status: objective?.status ?? 'idle',
+    blocker: snapshot.objective.blockedReason ?? 'none',
+    nextAction: snapshot.objective.productReady ? 'Start next evidence-backed slice' : 'Converge active work or clear the blocker',
+    finalSpecAlignment: 'Required',
+  }]
+  const owners = snapshot.config?.reportingOwners?.length ? snapshot.config.reportingOwners : fallback
+  return owners.map(item => [
+    item.owner,
+    item.responsibility,
+    item.currentOutput ?? 'not configured',
+    item.status ?? objective?.status ?? 'idle',
+    item.blocker ?? snapshot.objective.blockedReason ?? 'none',
+    item.nextAction ?? 'not configured',
+    item.finalSpecAlignment ?? 'Required',
+  ].map(markdownCell).join(' | ')).map(row => `| ${row} |`)
+}
+
+function markdownCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\n/g, ' ')
 }
 
 export function writeProductionReports(cwd: string, config: ProductionReportConfig, snapshot: ProductionSnapshot): void {

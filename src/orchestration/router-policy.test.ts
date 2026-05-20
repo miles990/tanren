@@ -214,6 +214,42 @@ test('production reports write boss, product brief, and roadmap snapshots', () =
     assert.match(execFileSync('cat', [join(cwd, 'docs/boss-report.md')], { encoding: 'utf-8' }), /qa gate failed/)
     assert.match(execFileSync('cat', [join(cwd, 'docs/product-brief-current.md')], { encoding: 'utf-8' }), /Current product/)
     assert.match(execFileSync('cat', [join(cwd, 'docs/roadmap-current.md')], { encoding: 'utf-8' }), /Branch Hygiene/)
+    assert.doesNotMatch(execFileSync('cat', [join(cwd, 'docs/boss-report.md')], { encoding: 'utf-8' }), /game-designer/)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('production reports use configured owner progress rows', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-production-reporting-owners-'))
+  try {
+    writeProductionReports(cwd, {
+      bossReportPath: 'docs/boss-report.md',
+      productBriefPath: 'docs/product-brief-current.md',
+      roadmapPath: 'docs/roadmap-current.md',
+      productOwner: 'account-owner',
+      reportingOwners: [{
+        owner: 'domain-expert',
+        responsibility: 'Domain requirements',
+        currentOutput: 'docs/domain-brief.md',
+        status: 'PASS',
+        blocker: 'none',
+        nextAction: 'Review final specification',
+        finalSpecAlignment: 'Aligned',
+      }],
+    }, {
+      timestamp: '2026-05-20T00:00:00.000Z',
+      objective: {
+        lifecyclePhase: 'running',
+        productReady: false,
+        currentObjective: { planId: 'plan-1', goal: 'slice', status: 'running' },
+      },
+      trigger: { type: 'test' },
+    })
+    const report = execFileSync('cat', [join(cwd, 'docs/boss-report.md')], { encoding: 'utf-8' })
+    assert.match(report, /domain-expert/)
+    assert.match(report, /docs\/domain-brief.md/)
+    assert.doesNotMatch(report, /gameplay-engineer/)
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }
