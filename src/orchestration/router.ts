@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
@@ -28,12 +28,40 @@ export interface OrchestrationMiddlewareConfig {
   maxInternalRepairAttempts?: number
 }
 
+type WorkerQualificationStatus = 'unverified' | 'running' | 'passed' | 'failed' | 'blocked'
+
+type WorkerQualificationSpec = {
+  worker: string
+  title?: string
+  task: string
+  acceptance?: string
+  mode?: PlanStep['mode']
+  timeoutSeconds?: number
+  verifyCommand?: string
+  artifactContract?: PlanStep['artifactContract']
+  requiredForProduction?: boolean
+}
+
+type WorkerQualificationResult = {
+  worker: string
+  status: WorkerQualificationStatus
+  planId?: string
+  stepId?: string
+  updatedAt: string
+  summary?: string
+}
+
+const QUALIFICATION_GOAL_PREFIX = 'Worker qualification'
+
 export function createOrchestrationMiddleware(config: OrchestrationMiddlewareConfig = {}) {
   const cwd = config.cwd ?? process.cwd()
   const buffer = new ResultBuffer()
   buffer.enablePersistence(cwd)
   const customWorkers = new Map<string, WorkerDefinition>()
   const customWorkersPath = join(cwd, 'workers.json')
+  const workerQualificationsPath = join(cwd, 'worker-qualifications.json')
+  const workerQualificationResultsPath = join(cwd, 'worker-qualification-results.json')
+  const knowledgeGraphNamespace = process.env.TANREN_KG_NAMESPACE || basename(cwd)
 
   try {
     const saved = JSON.parse(readFileSync(customWorkersPath, 'utf-8')) as Record<string, WorkerDefinition>
@@ -70,6 +98,53 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const learningTrace: StepLearningEvent[] = readStepLearningEvents(cwd, 100)
 
   const allWorkers = () => ({ ...WORKERS, ...Object.fromEntries(customWorkers) })
+  const workerQualificationSpecs = (): WorkerQualificationSpec[] => {
+    try {
+      const parsed = JSON.parse(readFileSync(workerQualificationsPath, 'utf-8')) as { workers?: WorkerQualificationSpec[] } | WorkerQualificationSpec[]
+      return (Array.isArray(parsed) ? parsed : parsed.workers ?? []).filter(spec => spec?.worker && spec?.task)
+    } catch {
+      return []
+    }
+  }
+  const readQualificationResults = (): Record<string, WorkerQualificationResult> => {
+    try {
+      return JSON.parse(readFileSync(workerQualificationResultsPath, 'utf-8')) as Record<string, WorkerQualificationResult>
+    } catch {
+      return {}
+    }
+  }
+  const writeQualificationResults = (results: Record<string, WorkerQualificationResult>) => {
+    try { writeFileSync(workerQualificationResultsPath, JSON.stringify(results, null, 2), 'utf-8') } catch { /* fail-open */ }
+  }
+  const writeQualificationContextToKg = (result: WorkerQualificationResult) => {
+    const kgApi = (process.env.TANREN_KG_API || process.env.KG_API || 'http://localhost:3310').replace(/\/$/, '')
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    const apiKey = process.env.TANREN_KG_API_KEY || process.env.KG_API_KEY
+    if (apiKey) headers['x-api-key'] = apiKey
+    fetch(`${kgApi}/api/write/triple`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        subject: result.worker,
+        subject_type: 'worker',
+        predicate: 'has_qualification_status',
+        object: result.status,
+        object_type: 'qualification_status',
+        confidence: result.status === 'passed' ? 0.9 : 0.75,
+        source_agent: 'tanren',
+        namespace: knowledgeGraphNamespace,
+        description: result.summary ?? `Worker ${result.worker} qualification status is ${result.status}.`,
+        properties: {
+          planId: result.planId,
+          stepId: result.stepId,
+          updatedAt: result.updatedAt,
+        },
+      }),
+    }).catch(() => undefined)
+  }
+  const qualificationStatusFor = (worker: string): WorkerQualificationResult => {
+    return readQualificationResults()[worker] ?? { worker, status: 'unverified', updatedAt: new Date(0).toISOString() }
+  }
   const persistCustomWorkers = () => {
     try { writeFileSync(customWorkersPath, JSON.stringify(Object.fromEntries(customWorkers), null, 2), 'utf-8') } catch { /* fail-open */ }
   }
@@ -123,6 +198,11 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           buffer.fail(event.result.id, event.result.output, planId)
           if (planId) planEvents.appendEngineEvent(planId, event)
           break
+        case 'plan.completed':
+          if (planId) recordQualificationResults(planId, event.result)
+          buffer.broadcast({ type: event.type, data: event })
+          if (planId) planEvents.appendEngineEvent(planId, event)
+          break
         default:
           buffer.broadcast({ type: event.type, data: event })
           if (planId) planEvents.appendEngineEvent(planId, event)
@@ -140,6 +220,39 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     .filter((branch): branch is string => Boolean(branch))
   const branchHygieneStatus = () => auditBranchHygiene(cwd, activeCycleBranches(), config.branchHygiene)
   const cleanupBranchHygiene = (opts?: { dryRun?: boolean }) => cleanupMergedCycleBranches(cwd, activeCycleBranches(), config.branchHygiene, opts)
+  const isQualificationPlan = (plan?: ActionPlan) => Boolean(plan?.goal?.startsWith(QUALIFICATION_GOAL_PREFIX))
+  const qualificationStepId = (worker: string) => `qualify-${worker.replace(/[^a-zA-Z0-9_-]+/g, '-')}`
+  const qualificationStatusFromOutput = (output: string): WorkerQualificationStatus => {
+    const text = String(output ?? '')
+    if (/\bPASS(?:ED)?\b|通過/i.test(text)) return 'passed'
+    if (/\bBLOCKED\b|卡住|需要人工|NEED HUMAN/i.test(text)) return 'blocked'
+    return 'failed'
+  }
+  const recordQualificationResults = (planId: string, result: PlanResult) => {
+    const entry = plans.get(planId)
+    if (!isQualificationPlan(entry?.plan)) return
+    const specs = workerQualificationSpecs()
+    const results = readQualificationResults()
+    for (const spec of specs) {
+      const step = result.steps.find(candidate => candidate.id === qualificationStepId(spec.worker))
+      if (!step) continue
+      const status: WorkerQualificationStatus = step.status === 'completed'
+        ? qualificationStatusFromOutput(step.output)
+        : step.status === 'skipped' || step.status === 'condition_skipped'
+          ? 'blocked'
+          : 'failed'
+      results[spec.worker] = {
+        worker: spec.worker,
+        status,
+        planId,
+        stepId: step.id,
+        updatedAt: new Date().toISOString(),
+        summary: step.output.slice(0, 1000),
+      }
+      writeQualificationContextToKg(results[spec.worker])
+    }
+    writeQualificationResults(results)
+  }
   const writeProductionSnapshot = (trigger?: { type: string; planId?: string; status?: string }) => {
     if (!config.productionReports) return
     try {
@@ -194,9 +307,17 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     if (opts?.enforceContracts === false) return []
     const writers = writerWorkers()
     const errors: string[] = []
+    const qualificationSpecs = workerQualificationSpecs()
+    const requiredQualifications = new Map(qualificationSpecs.filter(spec => spec.requiredForProduction).map(spec => [spec.worker, spec]))
+    const qualificationResults = readQualificationResults()
     for (const step of plan.steps) {
       const worker = allWorkers()[step.worker]
       if (!worker) continue
+      const requiredQualification = requiredQualifications.get(step.worker)
+      const qualified = qualificationResults[step.worker]?.status === 'passed'
+      if (requiredQualification && !qualified && !isQualificationPlan(plan)) {
+        errors.push(`Step ${step.id}: worker '${step.worker}' must pass worker qualification before production use`)
+      }
       const policy = worker.policy
       const mode = inferStepMode(step, worker)
       if (policy?.allowedBackends?.length && !policy.allowedBackends.includes(worker.backend)) {
@@ -1345,6 +1466,10 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     get planCounter() { return planCounter },
     nextPlanId,
     allWorkers,
+    workerQualificationSpecs,
+    qualificationStatusFor,
+    readQualificationResults,
+    writeQualificationResults,
     refreshProvider,
     activePlans,
     hasActivePlan,
@@ -1675,9 +1800,93 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       maxTurns: def.agent.maxTurns,
       timeout: def.defaultTimeoutSeconds,
       policy: def.policy,
+      qualification: mw.qualificationStatusFor(name),
       builtin: !!WORKERS[name],
     })),
   }))
+
+  app.get('/workers/qualifications', c => {
+    const specs = mw.workerQualificationSpecs()
+    const specByWorker = new Map(specs.map(spec => [spec.worker, spec]))
+    return c.json({
+      workers: Object.keys(mw.allWorkers()).map(worker => ({
+        worker,
+        configured: specByWorker.has(worker),
+        requiredForProduction: specByWorker.get(worker)?.requiredForProduction === true,
+        title: specByWorker.get(worker)?.title,
+        status: mw.qualificationStatusFor(worker),
+      })),
+      specs,
+      results: mw.readQualificationResults(),
+    })
+  })
+
+  app.post('/workers/qualifications/run', async c => {
+    const body = await c.req.json<{ workers?: string[]; isolation?: WorktreeIsolationConfig; schedulerLock?: boolean }>().catch(() => ({} as { workers?: string[]; isolation?: WorktreeIsolationConfig; schedulerLock?: boolean }))
+    const selected = new Set(body.workers ?? [])
+    const specs = mw.workerQualificationSpecs().filter(spec => selected.size === 0 || selected.has(spec.worker))
+    if (specs.length === 0) return c.json({ error: 'no_worker_qualification_specs' }, 400)
+    const plan: ActionPlan = {
+      goal: `${QUALIFICATION_GOAL_PREFIX}: ${specs.map(spec => spec.worker).join(', ')}`,
+      acceptance: 'Each worker must prove it can produce its owned artifact, stay inside allowed paths, and return PASS/FAIL/BLOCKED with evidence.',
+      steps: specs.map(spec => ({
+        id: `qualify-${spec.worker.replace(/[^a-zA-Z0-9_-]+/g, '-')}`,
+        worker: spec.worker,
+        mode: spec.mode ?? 'report',
+        label: spec.title ?? `Qualify ${spec.worker}`,
+        dependsOn: [],
+        timeoutSeconds: spec.timeoutSeconds,
+        verifyCommand: spec.verifyCommand,
+        artifactContract: spec.artifactContract,
+        task: [
+          `Worker qualification for ${spec.worker}.`,
+          spec.acceptance ? `Acceptance:\n${spec.acceptance}` : '',
+          'Return the first line as exactly PASS, FAIL, or BLOCKED.',
+          'Then include files changed, verification evidence, gaps, and one skill improvement if you failed or were blocked.',
+          spec.task,
+        ].filter(Boolean).join('\n\n'),
+      })),
+    }
+    const errors = [
+      ...mw.planEngine.validate(plan, new Set(Object.keys(mw.allWorkers()))),
+      ...mw.validateExecutionPolicy(plan),
+    ]
+    if (errors.length > 0) return c.json({ error: 'validation_failed', errors }, 400)
+    const planId = mw.nextPlanId()
+    let worktree: WorktreeContext | undefined
+    let planRuntime = mw.runtime
+    let planCwd = routerCwd
+    let boundaryStatus: string[] | undefined
+    try {
+      const isolation = body.isolation ?? { mode: 'cycle-worktree', branchPrefix: 'tanren/qualification', cleanup: 'never' } as WorktreeIsolationConfig
+      if (isolation.mode === 'cycle-worktree') {
+        worktree = createCycleWorktree(routerCwd, planId, isolation)
+        boundaryStatus = mw.gitStatus(worktree.repoRoot)
+        planRuntime = createWorkerRuntime({ cwd: worktree.cwd, workers: Object.fromEntries(mw.customWorkers), acpGateway: mw.acpGateway })
+        planCwd = worktree.worktreePath
+      }
+    } catch (err) {
+      if (worktree) cleanupCycleWorktree(worktree)
+      return c.json({ error: 'worktree_creation_failed', message: err instanceof Error ? err.message : String(err) }, 400)
+    }
+    const entry = { plan, worktree, boundaryStatus, status: 'executing' as const, createdAt: new Date().toISOString(), schedulerLock: false, lockPlanId: planId }
+    mw.plans.set(planId, entry)
+    const qualificationResults = mw.readQualificationResults()
+    for (const spec of specs) {
+      qualificationResults[spec.worker] = {
+        worker: spec.worker,
+        status: 'running',
+        planId,
+        stepId: `qualify-${spec.worker.replace(/[^a-zA-Z0-9_-]+/g, '-')}`,
+        updatedAt: new Date().toISOString(),
+        summary: 'Qualification running.',
+      }
+    }
+    mw.writeQualificationResults(qualificationResults)
+    mw.planEvents.append({ type: 'plan.created', planId, plan, worktree, boundaryStatus, schedulerLock: false, lockPlanId: planId })
+    mw.startPlanExecution(planId, entry, planRuntime, planCwd, 'worker-qualification', { enabled: false })
+    return c.json({ planId, status: 'executing', steps: plan.steps.length, worktree: worktreeJson(worktree) })
+  })
 
   app.post('/workers', async c => {
     const body = await c.req.json<Partial<WorkerDefinition> & {

@@ -86,6 +86,41 @@ test('orchestration policy enforces worker-declared downstream gates', () => {
   }
 })
 
+test('orchestration policy blocks production use until required worker qualification passes', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-qualification-policy-'))
+  try {
+    writeFileSync(join(cwd, 'worker-qualifications.json'), JSON.stringify({
+      workers: [{
+        worker: 'reviewer',
+        task: 'prove review ability',
+        requiredForProduction: true,
+      }],
+    }), 'utf-8')
+    const mw = createOrchestrationMiddleware({ cwd })
+    const productionPlan: ActionPlan = {
+      goal: 'production review',
+      steps: [{ id: 'review', worker: 'reviewer', mode: 'verify', task: 'review', dependsOn: [] }],
+    }
+    assert.ok(mw.validateExecutionPolicy(productionPlan).some(error => error.includes('must pass worker qualification')))
+    const qualificationPlan: ActionPlan = {
+      goal: 'Worker qualification: reviewer',
+      steps: [{ id: 'qualify-reviewer', worker: 'reviewer', mode: 'verify', task: 'qualify', dependsOn: [] }],
+    }
+    assert.deepEqual(mw.validateExecutionPolicy(qualificationPlan), [])
+
+    writeFileSync(join(cwd, 'worker-qualification-results.json'), JSON.stringify({
+      reviewer: {
+        worker: 'reviewer',
+        status: 'passed',
+        updatedAt: new Date().toISOString(),
+      },
+    }), 'utf-8')
+    assert.deepEqual(mw.validateExecutionPolicy(productionPlan), [])
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test('orchestration policy validates custom worker capabilities and backends', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
   try {
