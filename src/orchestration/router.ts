@@ -1297,17 +1297,21 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
         running: steps.filter(s => s.status === 'running').length,
         gateStatus: gates,
         worktree: worktreeJson(entry.worktree),
-        steps: entry.plan.steps.map(s => ({
-          id: s.id,
-          worker: s.worker,
-          label: s.label,
-          gate: s.gate,
-          dependsOn: s.dependsOn,
-          status: steps.find(t => t.id === s.id)?.status ?? 'pending',
-          durationMs: steps.find(t => t.id === s.id)?.durationMs,
-          errorKind: mw.classifyTaskError(steps.find(t => t.id === s.id)?.error ?? steps.find(t => t.id === s.id)?.result),
-          error: steps.find(t => t.id === s.id)?.error,
-        })),
+        steps: entry.plan.steps.map(s => {
+          const task = steps.find(t => t.id === s.id)
+          const failedLike = task?.status === 'failed' || task?.status === 'timeout' || task?.status === 'cancelled'
+          return {
+            id: s.id,
+            worker: s.worker,
+            label: s.label,
+            gate: s.gate,
+            dependsOn: s.dependsOn,
+            status: task?.status ?? 'pending',
+            durationMs: task?.durationMs,
+            errorKind: failedLike ? mw.classifyTaskError(task?.error ?? task?.result) : undefined,
+            error: failedLike ? task?.error : undefined,
+          }
+        }),
       }
     }),
   }))
