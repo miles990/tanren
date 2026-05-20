@@ -58,6 +58,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const planEvents = new PlanEventLog(cwd)
   const schedulerLock = new RepoSchedulerLock(cwd)
   const heartbeatTimers = new Map<string, NodeJS.Timeout>()
+  const activeEngines = new Map<string, PlanEngine>()
   const approvalDecisions: ApprovalEvaluation[] = []
   const runtimeTrace: Array<{ type: string; timestamp: string; data: unknown }> = []
 
@@ -268,12 +269,14 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     startHeartbeat(entry)
     ensurePlanTasksSubmitted(planId, entry.plan, caller)
     const engine = createPlanEngine(planRuntime, planId, planCwd)
+    activeEngines.set(planId, engine)
     const resultPromise = engine.execute(entry.plan, initialResultsFor(planId))
     entry.resultPromise = resultPromise
     entry.status = 'executing'
     planEvents.append({ type: 'plan.started', planId, attempt: entry.repairAttempt ?? 0 })
     persistPlans()
     resultPromise.then(async result => {
+      activeEngines.delete(planId)
       entry.completedAt = new Date().toISOString()
       const boundaryError = verifyWorktreeBoundary(entry)
       if (boundaryError) failSyntheticStep(planId, 'worktree-boundary', boundaryError)
@@ -290,6 +293,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       if (!repairStarted && !downstreamResumed) releaseSchedulerLock(entry)
       persistPlans()
     }).catch(() => {
+      activeEngines.delete(planId)
       entry.completedAt = new Date().toISOString()
       entry.status = 'failed'
       releaseSchedulerLock(entry)
@@ -305,6 +309,97 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       (step.status === 'failed' || step.status === 'timeout')
       && stepById.get(step.id)?.blocking !== false,
     )
+  }
+
+  const planMerged = (planId: string) => planEvents.readAll().some(event => event.type === 'merge.completed' && event.planId === planId)
+
+  const stepTimeoutMs = (step: PlanStep) => {
+    const timeoutSeconds = step.timeoutSeconds ?? allWorkers()[step.worker]?.defaultTimeoutSeconds ?? 120
+    return Math.max(1_000, timeoutSeconds * 1000)
+  }
+
+  const syntheticPlanResult = (planId: string, entry: PlanEntry): PlanResult => {
+    const steps = entry.plan.steps.map((step, index): StepResult => {
+      const task = buffer.get(step.id, planId)
+      const status = task?.status === 'timeout' || task?.status === 'failed' || task?.status === 'completed'
+        ? task.status
+        : task?.status === 'cancelled'
+          ? 'skipped'
+          : 'skipped'
+      return {
+        id: step.id,
+        worker: step.worker,
+        status: status as StepResult['status'],
+        output: String(task?.result ?? task?.error ?? (task?.status === 'pending' ? 'Pending when plan was reaped' : 'Skipped when plan was reaped')),
+        durationMs: task?.durationMs ?? 0,
+        dispatchOrder: index,
+      }
+    })
+    const failed = steps.filter(step => step.status === 'failed' || step.status === 'timeout').length
+    const skipped = steps.filter(step => step.status === 'skipped').length
+    const conditionSkipped = steps.filter(step => step.status === 'condition_skipped').length
+    return {
+      goal: entry.plan.goal,
+      acceptance: entry.plan.acceptance,
+      steps,
+      totalDurationMs: 0,
+      summary: {
+        completed: steps.filter(step => step.status === 'completed').length,
+        failed,
+        skipped,
+        conditionSkipped,
+      },
+      lowConfidenceSteps: [],
+      digestContext: '',
+      digestInput: {
+        goal: entry.plan.goal,
+        acceptance: entry.plan.acceptance,
+        completedSteps: [],
+        failedSteps: steps.filter(step => step.status === 'failed' || step.status === 'timeout').map(step => ({ id: step.id, worker: step.worker, error: step.output })),
+        criticalFindings: [],
+        replanCandidates: [],
+      },
+      accepted: failed === 0,
+      convergenceIterations: 0,
+    }
+  }
+
+  const reapStaleRunningTasks = async (opts?: { graceMs?: number; startRepair?: boolean }) => {
+    const graceMs = opts?.graceMs ?? 30_000
+    const startRepair = opts?.startRepair ?? true
+    const reaped: Array<{ planId: string; stepId: string; ageMs: number; timeoutMs: number }> = []
+    for (const [planId, entry] of activePlans()) {
+      const stepsById = new Map(entry.plan.steps.map(step => [step.id, step]))
+      for (const task of buffer.list({ planId, status: 'running' })) {
+        const step = stepsById.get(task.id)
+        if (!step || !task.startedAt) continue
+        const timeoutMs = stepTimeoutMs(step)
+        const ageMs = Date.now() - task.startedAt.getTime()
+        if (ageMs <= timeoutMs + graceMs) continue
+        const message = `Stale running task exceeded timeout: ${task.id} age=${ageMs}ms timeout=${timeoutMs}ms`
+        activeEngines.get(planId)?.cancelStep(task.id)
+        buffer.timeout(task.id, message, planId)
+        planEvents.append({ type: 'step.failed', planId, stepId: task.id, worker: task.worker, status: 'timeout', output: message })
+        reaped.push({ planId, stepId: task.id, ageMs, timeoutMs })
+      }
+      if (reaped.some(item => item.planId === planId)) {
+        activeEngines.get(planId)?.cancelAll()
+        activeEngines.delete(planId)
+        entry.status = 'failed'
+        entry.completedAt = new Date().toISOString()
+        const result = syntheticPlanResult(planId, entry)
+        let repairStarted = false
+        if (startRepair) repairStarted = await maybeStartRepair(planId, entry, result, { maxAttempts: 3 })
+        planEvents.append({ type: 'plan.failed', planId, error: 'stale running task watchdog reaped plan' })
+        if (!repairStarted) releaseSchedulerLock(entry)
+        persistPlans()
+      }
+    }
+    if (reaped.length > 0) {
+      runtimeTrace.unshift({ type: 'watchdog.reaped_stale_tasks', timestamp: new Date().toISOString(), data: { reaped } })
+      runtimeTrace.splice(200)
+    }
+    return reaped
   }
 
   const classifyTaskError = (text: unknown): string | undefined => {
@@ -458,6 +553,9 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         currentObjective: null,
         activeWorktree: null,
         blockedReason: null,
+        lifecyclePhase: 'idle',
+        productReady: false,
+        merged: false,
         repairAttempt: 0,
         nextMergeGate: null,
         mergeReady: false,
@@ -473,6 +571,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     const statusPlanId = resumeTarget?.originalPlanId ?? planId
     const statusSteps = resumeTarget ? buffer.list({ planId: resumeTarget.originalPlanId }) : steps
     const gates = gateSummary(statusEntry, statusSteps)
+    const merged = planMerged(statusPlanId)
     const failed = blockingFailedSteps(planId, entry)
     const blockedGate = gates.gates.find(gate =>
       gate.status === 'completed' && (gate.verdict === 'fail' || gate.verdict === 'blocked' || gate.verdict === 'unknown'),
@@ -498,9 +597,17 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       },
       activeWorktree: worktreeJson(entry.worktree) ?? null,
       blockedReason,
+      lifecyclePhase: merged ? 'product_ready'
+        : gates.mergeReady && statusEntry.status === 'completed' ? 'merge_ready'
+          : activeRepair ? 'repair'
+            : entry.status === 'executing' ? 'executing'
+              : entry.status === 'failed' ? 'blocked'
+                : entry.status,
+      productReady: merged,
+      merged,
       repairAttempt: Math.max(entry.repairAttempt ?? 0, ...repairPlans.map(candidate => candidate.repairAttempt ?? 0), 0),
-      nextMergeGate: gates.nextGate ?? null,
-      mergeReady: gates.mergeReady,
+      nextMergeGate: merged ? null : (gates.nextGate ?? null),
+      mergeReady: !merged && gates.mergeReady,
       gateStatus: gates,
       activePlans: activePlans().map(([activePlanId, activeEntry]) => ({
         planId: activePlanId,
@@ -534,8 +641,81 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     } satisfies SupervisorPlanSnapshot)),
   })
 
+  const autoMergeReadyPlan = (planId?: string, opts?: MergeRequest): { ok: true; planId: string; targetBranch: string; method: 'ff' | 'squash' } | { ok: false; error: string; message?: string } => {
+    if (!planId) return { ok: false, error: 'missing_plan_id' }
+    const entry = plans.get(planId)
+    if (!entry) return { ok: false, error: 'not_found' }
+    if (!entry.worktree) return { ok: false, error: 'no_worktree', message: 'Plan has no isolated worktree to merge.' }
+
+    const method = opts?.method ?? 'ff'
+    const requiredGates = opts?.requiredGates ?? ['review', 'qa', 'release']
+    const steps = buffer.list({ planId })
+    const gates = gateSummary(entry, steps)
+    const missingGates = requiredGates.filter(required =>
+      !gates.gates.some(gate => gate.gate === required && gate.status === 'completed' && gate.verdict === 'pass'),
+    )
+    const failed = blockingFailedSteps(planId, entry)
+    if (entry.status !== 'completed') return { ok: false, error: 'plan_not_completed', message: `status=${entry.status}` }
+    if (failed.length > 0) return { ok: false, error: 'plan_has_failed_steps', message: failed.map(step => step.id).join(', ') }
+    if (missingGates.length > 0) return { ok: false, error: 'merge_gate_blocked', message: missingGates.join(', ') }
+
+    const dirty = gitStatus(entry.worktree.worktreePath)
+    if (dirty.length > 0) return { ok: false, error: 'worktree_has_uncommitted_changes', message: dirty.join(', ') }
+
+    const targetBranch = opts?.targetBranch ?? git(entry.worktree.repoRoot, ['branch', '--show-current'])
+    try {
+      git(entry.worktree.repoRoot, ['switch', targetBranch])
+      if (method === 'squash') {
+        git(entry.worktree.repoRoot, ['merge', '--squash', entry.worktree.branchName])
+        git(entry.worktree.repoRoot, ['commit', '-m', opts?.commitMessage ?? `Merge ${planId}`])
+      } else {
+        git(entry.worktree.repoRoot, ['merge', '--ff-only', entry.worktree.branchName])
+      }
+      if (opts?.cleanupWorktree) cleanupCycleWorktree(entry.worktree)
+      planEvents.append({ type: 'merge.completed', planId, targetBranch, method })
+      runtimeTrace.unshift({ type: 'merge.completed', timestamp: new Date().toISOString(), data: { planId, targetBranch, method } })
+      runtimeTrace.splice(200)
+      releaseSchedulerLock(entry)
+      persistPlans()
+      return { ok: true, planId, targetBranch, method }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      planEvents.append({ type: 'merge.failed', planId, error: message })
+      runtimeTrace.unshift({ type: 'merge.failed', timestamp: new Date().toISOString(), data: { planId, targetBranch, method, message } })
+      runtimeTrace.splice(200)
+      return { ok: false, error: 'merge_failed', message }
+    }
+  }
+
   const supervisorTick = async (input: SupervisorTickInput = {}): Promise<SupervisorTickResult> => {
+    const reaped = await reapStaleRunningTasks()
+    if (reaped.length > 0) {
+      return {
+        action: 'repair_workspace',
+        decision: {
+          action: 'repair_workspace',
+          failureType: 'unknown',
+          reason: 'stale running task watchdog reaped timed-out work; repair was started when possible',
+          targetPlanId: reaped[0]?.planId,
+          targetStepId: reaped[0]?.stepId,
+          requiresBoss: false,
+        },
+        status: 'executing',
+      }
+    }
     const decision = supervisorDecision()
+    if (decision.action === 'run_merge_gate') {
+      if (input.dryRun) return { action: decision.action, decision, status: 'dry_run', submittedPlanId: decision.targetPlanId }
+      const merge = autoMergeReadyPlan(decision.targetPlanId)
+      return {
+        action: decision.action,
+        decision,
+        submittedPlanId: decision.targetPlanId,
+        status: merge.ok ? 'completed' : 'blocked',
+        error: merge.ok ? undefined : merge.error,
+        errors: merge.ok ? undefined : [merge.message ?? merge.error ?? 'merge failed'],
+      }
+    }
     if (decision.action === 'resume_downstream') {
       const repairPlanId = decision.targetStepId
       const repairEntry = repairPlanId ? plans.get(repairPlanId) : undefined
@@ -717,8 +897,9 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const maybeStartRepair = async (failedPlanId: string, entry: PlanEntry, result: PlanResult, repair?: PlanRequest['repair'], boundaryError?: string): Promise<boolean> => {
     if (repair?.enabled === false || (result.summary.failed === 0 && !boundaryError)) return false
     const attempt = (entry.repairAttempt ?? 0) + 1
-    const maxAttempts = repair?.maxAttempts ?? 1
+    const maxAttempts = repair?.maxAttempts ?? 3
     if (attempt > maxAttempts) return false
+    entry.repairAttempt = attempt
     const stepById = new Map(entry.plan.steps.map(step => [step.id, step]))
     const failedSteps = result.steps.filter(step =>
       (step.status === 'failed' || step.status === 'timeout')
@@ -942,6 +1123,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     supervisorTick,
     approvalDecisions,
     runtimeTrace,
+    reapStaleRunningTasks,
+    autoMergeReadyPlan,
     startPlanExecution,
     gitStatus,
     schedulerLock,
@@ -1183,6 +1366,20 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   })
 
   app.get('/objective/status', c => c.json(mw.objectiveStatus()))
+  app.get('/product/status', c => {
+    const status = mw.objectiveStatus()
+    return c.json({
+      productReady: status.productReady ?? false,
+      lifecyclePhase: status.lifecyclePhase ?? 'idle',
+      currentObjective: status.currentObjective,
+      activeWorktree: status.activeWorktree,
+      blockedReason: status.blockedReason,
+      mergeReady: status.mergeReady,
+      nextMergeGate: status.nextMergeGate,
+      gateStatus: status.gateStatus,
+      repairAttempt: status.repairAttempt,
+    })
+  })
   app.get('/supervisor/decision', c => c.json(mw.supervisorDecision()))
   app.get('/approvals', c => c.json({ approvals: mw.approvalDecisions.slice(0, 50) }))
   app.get('/runtime/trace', c => c.json({ events: mw.runtimeTrace.slice(0, 100) }))
@@ -1333,52 +1530,13 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
 
   app.post('/plan/:id/merge', async c => {
     const planId = c.req.param('id')
-    const entry = mw.plans.get(planId)
-    if (!entry) return c.json({ error: 'not_found' }, 404)
-    if (!entry.worktree) return c.json({ error: 'no_worktree', message: 'Plan has no isolated worktree to merge.' }, 400)
-
     const body: MergeRequest = await c.req.json<MergeRequest>().catch(() => ({}))
-    const method = body.method ?? 'ff'
-    const requiredGates = body.requiredGates ?? ['review', 'qa', 'release']
-    const steps = mw.buffer.list({ planId })
-    const gates = gateSummary(entry, steps)
-    const missingGates = requiredGates.filter(required =>
-      !gates.gates.some(gate => gate.gate === required && gate.status === 'completed' && gate.verdict === 'pass'),
-    )
-    const failed = mw.blockingFailedSteps(planId, entry)
-
-    if (entry.status !== 'completed') {
-      return c.json({ error: 'plan_not_completed', status: entry.status, gateStatus: gates }, 409)
-    }
-    if (failed.length > 0) {
-      return c.json({ error: 'plan_has_failed_steps', failed, gateStatus: gates }, 409)
-    }
-    if (missingGates.length > 0) {
-      return c.json({ error: 'merge_gate_blocked', missingGates, gateStatus: gates }, 409)
-    }
-
-    const dirty = mw.gitStatus(entry.worktree.worktreePath)
-    if (dirty.length > 0) {
-      return c.json({ error: 'worktree_has_uncommitted_changes', dirty, message: 'Commit or discard worktree changes before merge.' }, 409)
-    }
-
-    const targetBranch = body.targetBranch ?? git(entry.worktree.repoRoot, ['branch', '--show-current'])
-    try {
-      git(entry.worktree.repoRoot, ['switch', targetBranch])
-      if (method === 'squash') {
-        git(entry.worktree.repoRoot, ['merge', '--squash', entry.worktree.branchName])
-        git(entry.worktree.repoRoot, ['commit', '-m', body.commitMessage ?? `Merge ${planId}`])
-      } else {
-        git(entry.worktree.repoRoot, ['merge', '--ff-only', entry.worktree.branchName])
-      }
-      if (body.cleanupWorktree) cleanupCycleWorktree(entry.worktree)
-      mw.planEvents.append({ type: 'merge.completed', planId, targetBranch, method })
-      return c.json({ ok: true, planId, targetBranch, method })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      mw.planEvents.append({ type: 'merge.failed', planId, error: message })
-      return c.json({ error: 'merge_failed', message, targetBranch, method }, 409)
-    }
+    const result = mw.autoMergeReadyPlan(planId, body)
+    if (result.ok) return c.json(result)
+    const status = result.error === 'not_found' ? 404
+      : result.error === 'no_worktree' ? 400
+        : 409
+    return c.json(result, status)
   })
 
   app.get('/plan/:id/merge-policy', c => {

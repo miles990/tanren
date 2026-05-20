@@ -35,7 +35,7 @@ export interface TaskRecord {
 }
 
 export type TaskEvent = {
-  type: 'task.submitted' | 'task.started' | 'task.completed' | 'task.failed' | 'task.cancelled';
+  type: 'task.submitted' | 'task.started' | 'task.completed' | 'task.failed' | 'task.timeout' | 'task.cancelled';
   task: TaskRecord;
   timestamp: Date;
 };
@@ -134,6 +134,18 @@ export class ResultBuffer {
     task.durationMs = task.startedAt ? Date.now() - task.startedAt.getTime() : 0;
     this.persist(task);
     this.emit({ type: 'task.failed', task, timestamp: new Date() });
+  }
+
+  /** Mark task as timed out */
+  timeout(id: string, error: string, planId?: string): void {
+    const task = this.tasks.get(this.key(id, planId));
+    if (!task) return;
+    task.status = 'timeout';
+    task.error = error;
+    task.completedAt = new Date();
+    task.durationMs = task.startedAt ? Date.now() - task.startedAt.getTime() : 0;
+    this.persist(task);
+    this.emit({ type: 'task.timeout', task, timestamp: new Date() });
   }
 
   /** Cancel a task */

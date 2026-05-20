@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -136,6 +137,89 @@ test('objective status requires completed gates to return PASS verdicts', () => 
     assert.match(status.blockedReason ?? '', /release gate fail/)
   } finally {
     rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('stale running watchdog marks timed-out steps and fails the plan', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-watchdog-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const plan: ActionPlan = {
+      goal: 'stale plan',
+      steps: [{ id: 'hang', worker: 'shell', task: 'sleep 999', dependsOn: [], timeoutSeconds: 1 }],
+    }
+    mw.plans.set('plan-stale', { plan, status: 'executing', createdAt: new Date().toISOString(), schedulerLock: false })
+    mw.buffer.submit({ id: 'hang', planId: 'plan-stale', worker: 'shell', task: 'sleep 999' })
+    mw.buffer.start('hang', 'plan-stale')
+    const task = mw.buffer.get('hang', 'plan-stale')!
+    task.startedAt = new Date(Date.now() - 5_000)
+
+    const reaped = await mw.reapStaleRunningTasks({ graceMs: 0, startRepair: false })
+    assert.equal(reaped.length, 1)
+    assert.equal(mw.buffer.get('hang', 'plan-stale')?.status, 'timeout')
+    assert.equal(mw.plans.get('plan-stale')?.status, 'failed')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('supervisor tick auto-merges a completed gated worktree plan', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tanren-merge-repo-'))
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+    mkdirSync(join(repo, 'src'), { recursive: true })
+    writeFileSync(join(repo, 'src/index.txt'), 'base\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+    const worktree = join(tmpdir(), `tanren-merge-wt-${Date.now()}`)
+    execFileSync('git', ['worktree', 'add', '-b', 'plan-branch', worktree], { cwd: repo, stdio: 'ignore' })
+    writeFileSync(join(worktree, 'src/index.txt'), 'base\nslice\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: worktree })
+    execFileSync('git', ['commit', '-m', 'slice'], { cwd: worktree, stdio: 'ignore' })
+
+    const mw = createOrchestrationMiddleware({ cwd: repo })
+    const plan: ActionPlan = {
+      goal: 'merge slice',
+      steps: [
+        { id: 'implement', worker: 'shell', mode: 'write', task: 'true', dependsOn: [] },
+        { id: 'review', worker: 'shell', mode: 'verify', gate: 'review', task: 'printf PASS', dependsOn: ['implement'] },
+        { id: 'qa', worker: 'shell', mode: 'verify', gate: 'qa', task: 'printf PASS', dependsOn: ['review'] },
+        { id: 'release', worker: 'shell', mode: 'verify', gate: 'release', task: 'printf PASS', dependsOn: ['qa'] },
+      ],
+    }
+    mw.plans.set('plan-merge', {
+      plan,
+      status: 'completed',
+      createdAt: new Date().toISOString(),
+      schedulerLock: false,
+      worktree: {
+        mode: 'cycle-worktree',
+        repoRoot: repo,
+        originalCwd: repo,
+        cwd: worktree,
+        worktreePath: worktree,
+        branchName: 'plan-branch',
+        baseRef: 'HEAD',
+        cleanup: 'never',
+      },
+    })
+    for (const step of plan.steps) {
+      mw.buffer.submit({ id: step.id, planId: 'plan-merge', worker: step.worker, task: step.task })
+      mw.buffer.start(step.id, 'plan-merge')
+      mw.buffer.complete(step.id, step.gate ? 'PASS\nok' : 'implemented', 'plan-merge')
+    }
+
+    const decision = mw.supervisorDecision()
+    assert.equal(decision.action, 'run_merge_gate')
+    const result = await mw.supervisorTick()
+    assert.equal(result.status, 'completed')
+    assert.match(execFileSync('git', ['log', '--oneline', '-1'], { cwd: repo, encoding: 'utf-8' }), /slice/)
+    assert.equal(mw.objectiveStatus().productReady, true)
+  } finally {
+    try { execFileSync('git', ['worktree', 'prune'], { cwd: repo, stdio: 'ignore' }) } catch { /* ignore */ }
+    rmSync(repo, { recursive: true, force: true })
   }
 })
 
