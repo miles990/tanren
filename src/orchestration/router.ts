@@ -779,6 +779,44 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     if (!shouldDispatchSmallestSlice) {
       return { action: decision.action, decision, status: 'no_action' }
     }
+    const hygiene = branchHygieneStatus()
+    if (
+      hygiene.consolidation.required
+      && hygiene.consolidation.mode === 'block-new-cycles'
+      && activePlans().length === 0
+    ) {
+      const consolidationDecision = {
+        action: 'consolidate_unmerged_work' as const,
+        failureType: 'none' as const,
+        reason: hygiene.consolidation.reason ?? 'unmerged work must be consolidated before starting new product cycles',
+        requiresBoss: false,
+      }
+      runtimeTrace.unshift({
+        type: 'supervisor.consolidation_required',
+        timestamp: new Date().toISOString(),
+        data: {
+          reason: consolidationDecision.reason,
+          candidates: hygiene.consolidation.candidates.map(branch => ({
+            name: branch.name,
+            aheadCanonical: branch.aheadCanonical,
+            latestSubject: branch.latestSubject,
+          })),
+        },
+      })
+      runtimeTrace.splice(200)
+      writeProductionSnapshot({ type: 'consolidation-required' })
+      return {
+        action: 'consolidate_unmerged_work',
+        decision: consolidationDecision,
+        status: 'blocked',
+        error: 'consolidation_required',
+        errors: [
+          consolidationDecision.reason,
+          ...hygiene.consolidation.candidates.map(branch => `${branch.name}: ${branch.aheadCanonical} commits ahead; ${branch.latestSubject ?? 'no subject'}`),
+        ],
+        branchHygiene: hygiene,
+      }
+    }
     if (!input.smallestProductSlice) {
       return {
         action: decision.action,

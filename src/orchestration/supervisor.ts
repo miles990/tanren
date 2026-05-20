@@ -9,6 +9,7 @@ export type SupervisorAction =
   | 'repair_workspace'
   | 'resume_downstream'
   | 'run_merge_gate'
+  | 'consolidate_unmerged_work'
   | 'escalate_boss';
 
 export type SupervisorFailureType =
@@ -106,6 +107,7 @@ export interface SupervisorTickResult {
   errors?: string[];
   approvals?: Array<ActionApprovalDecision & { stepId?: string; worker?: string }>;
   selectedWorkers?: ReturnType<typeof selectSmallestProductSliceWorkers>;
+  branchHygiene?: unknown;
 }
 
 export function classifySupervisorFailure(text: string): SupervisorFailureType {

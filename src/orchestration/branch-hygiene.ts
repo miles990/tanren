@@ -4,6 +4,13 @@ export interface BranchHygienePolicy {
   canonicalBranch?: string
   cyclePrefixes?: string[]
   protectedBranches?: string[]
+  consolidation?: {
+    mode?: 'off' | 'audit' | 'block-new-cycles'
+    /** Number of unmerged cycle branches tolerated before consolidation is required. Defaults to Infinity. */
+    maxUnmergedCycleBranches?: number
+    /** Number of review candidates to surface. Defaults to 5. */
+    maxCandidates?: number
+  }
 }
 
 export interface BranchHygieneBranch {
@@ -14,6 +21,9 @@ export interface BranchHygieneBranch {
   status: 'canonical' | 'protected' | 'active-cycle' | 'merged-cycle' | 'unmerged-cycle' | 'unmanaged'
   mergedIntoCanonical: boolean
   sameAsCanonical: boolean
+  aheadCanonical: number
+  behindCanonical: number
+  latestSubject?: string
   recommendedAction: 'use_as_source_of_truth' | 'wait' | 'cleanup_worktree_and_branch' | 'review_or_cherry_pick_before_cleanup' | 'keep'
 }
 
@@ -28,6 +38,12 @@ export interface BranchHygieneReport {
     activeCycles: number
     cleanupCandidates: number
     needsReview: number
+  }
+  consolidation: {
+    required: boolean
+    mode: 'off' | 'audit' | 'block-new-cycles'
+    reason: string | null
+    candidates: BranchHygieneBranch[]
   }
 }
 
@@ -58,6 +74,26 @@ function branchHead(cwd: string, branch: string): string {
   }
 }
 
+function aheadBehind(cwd: string, canonicalBranch: string, branch: string): { ahead: number; behind: number } {
+  if (branch === canonicalBranch) return { ahead: 0, behind: 0 }
+  try {
+    const [behind, ahead] = git(cwd, ['rev-list', '--left-right', '--count', `${canonicalBranch}...${branch}`])
+      .split(/\s+/)
+      .map(value => Number.parseInt(value, 10))
+    return { ahead: Number.isFinite(ahead) ? ahead : 0, behind: Number.isFinite(behind) ? behind : 0 }
+  } catch {
+    return { ahead: 0, behind: 0 }
+  }
+}
+
+function latestSubject(cwd: string, branch: string): string | undefined {
+  try {
+    return git(cwd, ['log', '-1', '--format=%s', branch])
+  } catch {
+    return undefined
+  }
+}
+
 function localBranches(cwd: string): Array<{ name: string; head: string; current: boolean }> {
   return git(cwd, ['for-each-ref', '--format=%(refname:short)%09%(objectname)%09%(HEAD)', 'refs/heads'])
     .split('\n')
@@ -82,7 +118,32 @@ function worktreeBranches(cwd: string): Map<string, string> {
 }
 
 export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = [], policy: BranchHygienePolicy = {}): BranchHygieneReport {
-  const repoRoot = git(cwd, ['rev-parse', '--show-toplevel'])
+  let repoRoot: string
+  try {
+    repoRoot = git(cwd, ['rev-parse', '--show-toplevel'])
+  } catch {
+    const canonicalBranch = policy.canonicalBranch ?? 'unknown'
+    const mode = policy.consolidation?.mode ?? 'audit'
+    return {
+      repoRoot: cwd,
+      currentBranch: 'unknown',
+      canonicalBranch,
+      sourceOfTruth: canonicalBranch,
+      activeCycleBranches,
+      branches: [],
+      summary: {
+        activeCycles: 0,
+        cleanupCandidates: 0,
+        needsReview: 0,
+      },
+      consolidation: {
+        required: false,
+        mode,
+        reason: null,
+        candidates: [],
+      },
+    }
+  }
   const currentBranch = git(repoRoot, ['branch', '--show-current'])
   const canonicalBranch = policy.canonicalBranch ?? currentBranch
   const cyclePrefixes = policy.cyclePrefixes ?? ['tanren/cycle', 'tanren/autopilot']
@@ -95,6 +156,7 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
     const isCycle = cyclePrefixes.some(prefix => branch.name === prefix || branch.name.startsWith(`${prefix}/`))
     const mergedIntoCanonical = branch.name === canonicalBranch || gitOk(repoRoot, ['merge-base', '--is-ancestor', branch.name, canonicalBranch])
     const sameAsCanonical = Boolean(canonicalHead) && branch.head === canonicalHead
+    const relative = aheadBehind(repoRoot, canonicalBranch, branch.name)
     const protectedBranch = protectedBranches.has(branch.name)
     let status: BranchHygieneBranch['status'] = 'unmanaged'
     let recommendedAction: BranchHygieneBranch['recommendedAction'] = 'keep'
@@ -124,9 +186,20 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
       status,
       mergedIntoCanonical,
       sameAsCanonical,
+      aheadCanonical: relative.ahead,
+      behindCanonical: relative.behind,
+      latestSubject: latestSubject(repoRoot, branch.name),
       recommendedAction,
     }
   })
+  const candidates = branches
+    .filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup')
+    .sort((a, b) => (b.aheadCanonical - a.aheadCanonical) || a.name.localeCompare(b.name))
+    .slice(0, policy.consolidation?.maxCandidates ?? 5)
+  const mode = policy.consolidation?.mode ?? 'audit'
+  const maxUnmerged = policy.consolidation?.maxUnmergedCycleBranches ?? Number.POSITIVE_INFINITY
+  const needsReview = branches.filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup').length
+  const required = mode !== 'off' && needsReview > maxUnmerged
 
   return {
     repoRoot,
@@ -138,7 +211,13 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
     summary: {
       activeCycles: branches.filter(branch => branch.status === 'active-cycle').length,
       cleanupCandidates: branches.filter(branch => branch.recommendedAction === 'cleanup_worktree_and_branch').length,
-      needsReview: branches.filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup').length,
+      needsReview,
+    },
+    consolidation: {
+      required,
+      mode,
+      reason: required ? `unmerged cycle branches (${needsReview}) exceed allowed threshold (${maxUnmerged})` : null,
+      candidates,
     },
   }
 }

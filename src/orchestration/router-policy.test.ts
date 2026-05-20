@@ -348,15 +348,46 @@ test('branch hygiene marks canonical, active, merged, and unmerged cycle branche
     execFileSync('git', ['commit', '-m', 'slice'], { cwd: repo, stdio: 'ignore' })
     execFileSync('git', ['checkout', 'productization/cycle-1'], { cwd: repo, stdio: 'ignore' })
 
-    const report = auditBranchHygiene(repo, ['tanren/cycle/unmerged'], { canonicalBranch: 'productization/cycle-1' })
+    const report = auditBranchHygiene(repo, ['tanren/cycle/unmerged'], {
+      canonicalBranch: 'productization/cycle-1',
+      consolidation: { mode: 'block-new-cycles', maxUnmergedCycleBranches: 0 },
+    })
     assert.equal(report.sourceOfTruth, 'productization/cycle-1')
     assert.equal(report.branches.find(branch => branch.name === 'productization/cycle-1')?.status, 'canonical')
     assert.equal(report.branches.find(branch => branch.name === 'tanren/cycle/merged')?.recommendedAction, 'cleanup_worktree_and_branch')
     assert.equal(report.branches.find(branch => branch.name === 'tanren/cycle/unmerged')?.status, 'active-cycle')
+    assert.equal(report.consolidation.required, false)
 
     const dryRun = cleanupMergedCycleBranches(repo, ['tanren/cycle/unmerged'], { canonicalBranch: 'productization/cycle-1' })
     assert.deepEqual(dryRun.removed.map(item => item.branch), ['tanren/cycle/merged'])
     assert.equal(execFileSync('git', ['branch', '--list', 'tanren/cycle/merged'], { cwd: repo, encoding: 'utf-8' }).trim(), 'tanren/cycle/merged')
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('branch hygiene requires consolidation when unmerged cycle branches exceed policy', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tanren-branch-consolidation-'))
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+    writeFileSync(join(repo, 'base.txt'), 'base\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', '-b', 'tanren/cycle/product-work'], { cwd: repo, stdio: 'ignore' })
+    writeFileSync(join(repo, 'feature.txt'), 'feature\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'product feature'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', 'main'], { cwd: repo, stdio: 'ignore' })
+
+    const report = auditBranchHygiene(repo, [], {
+      canonicalBranch: 'main',
+      consolidation: { mode: 'block-new-cycles', maxUnmergedCycleBranches: 0 },
+    })
+    assert.equal(report.consolidation.required, true)
+    assert.equal(report.consolidation.candidates[0]?.name, 'tanren/cycle/product-work')
+    assert.equal(report.consolidation.candidates[0]?.aheadCanonical, 1)
   } finally {
     rmSync(repo, { recursive: true, force: true })
   }
