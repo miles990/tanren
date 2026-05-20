@@ -39,6 +39,37 @@ test('PlanEngine fails a step that changes files outside artifactContract.allowe
   }
 })
 
+test('PlanEngine verifies expected artifacts from git root when cwd is a subdirectory', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-plan-subdir-'))
+  try {
+    gitInit(cwd)
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd })
+    mkdirSync(join(cwd, 'studio'), { recursive: true })
+    mkdirSync(join(cwd, 'docs'), { recursive: true })
+    writeFileSync(join(cwd, 'docs/report.md'), 'PASS\n', 'utf-8')
+
+    const engine = new PlanEngine(async () => 'already written', { cwd: join(cwd, 'studio') })
+    const plan: ActionPlan = {
+      goal: 'subdir verification',
+      steps: [{
+        id: 'verify',
+        worker: 'writer',
+        task: 'verify root artifact',
+        dependsOn: [],
+        verifyCommand: 'test -e docs/report.md',
+        artifactContract: { allowedPaths: ['docs'], expectedPaths: ['docs/report.md'] },
+      }],
+    }
+
+    const result = await engine.execute(plan)
+    assert.equal(result.summary.completed, 1)
+    assert.equal(result.steps[0].status, 'completed')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test('PlanEngine lets downstream steps continue after non-blocking support failure', async () => {
   const engine = new PlanEngine(async (_worker, task) => {
     if (task === 'support') throw new Error('support unavailable')

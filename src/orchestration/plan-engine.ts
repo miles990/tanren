@@ -247,7 +247,7 @@ export interface PlanEngineOptions {
   getWorkerTimeoutSeconds?: (workerName: string) => number;
   /** Resolve max concurrency for a worker — lets role definitions enforce single-writer execution. */
   getWorkerMaxConcurrency?: (workerName: string) => number | undefined;
-  /** Working directory used for verifyCommand and artifact contract checks. */
+  /** Working directory used to resolve the repository root for verifyCommand and artifact contract checks. */
   cwd?: string;
 }
 
@@ -571,7 +571,7 @@ export class PlanEngine {
           try {
             const { exec } = await import('node:child_process');
             const { promisify } = await import('node:util');
-            await promisify(exec)(step.verifyCommand, { timeout: 30_000, cwd: this.opts.cwd });
+            await promisify(exec)(step.verifyCommand, { timeout: 30_000, cwd: this.contractRoot(this.opts.cwd ?? process.cwd()) });
           } catch (verifyErr) {
             const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
             // Verification failed — treat as step failure (may retry)
@@ -616,9 +616,10 @@ export class PlanEngine {
     const contract = step.artifactContract;
     if (!contract) return null;
     const cwd = this.opts.cwd ?? process.cwd();
+    const root = this.contractRoot(cwd);
 
     for (const expected of contract.expectedPaths ?? []) {
-      if (!existsSync(`${cwd}/${expected}`)) return `expected path missing: ${expected}`;
+      if (!existsSync(`${root}/${expected}`)) return `expected path missing: ${expected}`;
     }
 
     const changed = this.gitChangedFiles(cwd).filter(file => !changedBefore.includes(file));
@@ -644,6 +645,14 @@ export class PlanEngine {
         .map(line => line.includes(' -> ') ? line.split(' -> ').at(-1)! : line);
     } catch {
       return [];
+    }
+  }
+
+  private contractRoot(cwd: string): string {
+    try {
+      return execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }).trim();
+    } catch {
+      return cwd;
     }
   }
 }

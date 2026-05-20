@@ -86,8 +86,72 @@ function gateText(value: unknown): string {
   }
 }
 
-export function buildBossReport(snapshot: ProductionSnapshot): string {
+function readinessText(snapshot: ProductionSnapshot): string {
+  if (snapshot.objective.productReady) return '已達 product ready，可進入真人測試或下一個產品切片。'
+  if (snapshot.objective.blockedReason) return `尚未 product ready，主要 blocker: ${snapshot.objective.blockedReason}`
+  if (snapshot.objective.currentObjective?.repairOf) return '尚未 product ready，目前正在 repair cycle 收斂既有失敗。'
+  if (snapshot.objective.currentObjective?.status === 'executing') return '尚未 product ready，目前自主產品 cycle 正在執行。'
+  return '尚未 product ready，目前等待 supervisor 啟動或收斂下一個產品切片。'
+}
+
+function bossConclusion(snapshot: ProductionSnapshot): string {
   const objective = snapshot.objective.currentObjective
+  if (snapshot.objective.productReady) {
+    return '目前已通過產品交付條件，下一步是安排真人測試、收集證據，並由產品負責人決定下一個切片。'
+  }
+  if (objective?.repairOf) {
+    return `目前正在修復 ${objective.repairOf}，重點是把既有產出收斂到可 review / QA / release 的狀態，不是擴大 scope。`
+  }
+  if (objective?.status === 'executing') {
+    return `目前正在執行 ${objective.planId}，團隊有在前進；交付前仍需通過 review / QA / release gate。`
+  }
+  if (snapshot.objective.blockedReason) {
+    return `目前被 blocker 擋住：${snapshot.objective.blockedReason}。需要先解除 blocker，再啟動下一個產品切片。`
+  }
+  return '目前沒有 active product objective。Supervisor 應根據 source of truth 啟動下一個最小產品切片或整理未合併成果。'
+}
+
+function objectiveTable(snapshot: ProductionSnapshot): string[] {
+  const objective = snapshot.objective.currentObjective
+  return [
+    '| 項目 | 狀態 |',
+    '| --- | --- |',
+    `| 產品狀態 | ${markdownCell(readinessText(snapshot))} |`,
+    `| lifecycle | ${markdownCell(snapshot.objective.lifecyclePhase ?? 'unknown')} |`,
+    `| 目前 objective | ${markdownCell(objective?.goal ?? '無')} |`,
+    `| planId | ${markdownCell(objective?.planId ?? '無')} |`,
+    `| plan status | ${markdownCell(objective?.status ?? 'idle')} |`,
+    `| repair of | ${markdownCell(objective?.repairOf ?? '無')} |`,
+    `| blocked reason | ${markdownCell(snapshot.objective.blockedReason ?? '無')} |`,
+    `| repair attempt | ${markdownCell(String(snapshot.objective.repairAttempt ?? 0))} |`,
+    `| next merge gate | ${markdownCell(gateText(snapshot.objective.nextMergeGate))} |`,
+    `| active worktree | ${markdownCell(snapshot.objective.activeWorktree?.branchName ?? '無')} |`,
+  ]
+}
+
+function branchSummaryTable(snapshot: ProductionSnapshot): string[] {
+  const hygiene = snapshot.branchHygiene
+  if (!hygiene) return ['- Branch hygiene: unavailable']
+  return [
+    '| 項目 | 狀態 |',
+    '| --- | --- |',
+    `| Source of truth | ${markdownCell(hygiene.sourceOfTruth)} |`,
+    `| Active cycle branches | ${markdownCell(hygiene.activeCycleBranches.length ? hygiene.activeCycleBranches.join(', ') : 'none')} |`,
+    `| Cleanup candidates | ${hygiene.summary.cleanupCandidates} |`,
+    `| Need review/cherry-pick | ${hygiene.summary.needsReview} |`,
+    `| Consolidation required | ${hygiene.consolidation.required ? 'yes' : 'no'} |`,
+  ]
+}
+
+function nextAction(snapshot: ProductionSnapshot): string {
+  const configured = snapshot.config?.notReadyNextAction
+  if (snapshot.objective.productReady) return '安排真人測試，收集證據，讓產品負責人決定下一個產品內容切片。'
+  if (snapshot.objective.blockedReason) return `先解除 blocker: ${snapshot.objective.blockedReason}`
+  if (snapshot.objective.currentObjective?.repairOf) return '完成 repair cycle，確認 artifact contract、review、QA、release gate，再合併回 source of truth。'
+  return configured ?? '收斂目前 active cycle 或審查未合併成果；不要盲目新增產品分支。'
+}
+
+export function buildBossReport(snapshot: ProductionSnapshot): string {
   const owner = snapshot.config?.productOwner ?? 'product lead'
   const milestoneTargets = snapshot.config?.milestoneTargets ?? defaultMilestoneTargets()
   const reportingOwners = reportOwnerRows(snapshot, owner)
@@ -95,41 +159,35 @@ export function buildBossReport(snapshot: ProductionSnapshot): string {
     '# 老闆報告',
     '',
     `更新時間: ${snapshot.timestamp}`,
-    '語言: 繁體中文',
+    '語言: 繁體中文（專有名詞保留英文）',
+    '',
+    '## 一句話結論',
+    '',
+    bossConclusion(snapshot),
     '',
     '## 目前狀態',
     '',
-    `- 產品狀態: ${snapshot.objective.productReady ? '已合併為 product ready' : '尚未 product ready'}`,
-    `- 閉環階段: ${snapshot.objective.lifecyclePhase ?? 'unknown'}`,
-    `- 目前 objective: ${objective?.goal ?? '無'}`,
-    `- planId: ${objective?.planId ?? '無'}`,
-    `- plan status: ${objective?.status ?? 'idle'}`,
-    `- repair of: ${objective?.repairOf ?? '無'}`,
-    `- blocked reason: ${snapshot.objective.blockedReason ?? '無'}`,
-    `- repair attempt: ${snapshot.objective.repairAttempt ?? 0}`,
-    `- next merge gate: ${gateText(snapshot.objective.nextMergeGate)}`,
-    `- active worktree: ${snapshot.objective.activeWorktree?.branchName ?? '無'}`,
-    `- 對老闆窗口: ${owner}`,
+    ...objectiveTable(snapshot),
+    '',
+    '## 負責人與分工',
+    '',
+    `對老闆窗口: ${owner}`,
+    '',
+    '| 負責人 | 職責 | 目前產出 | 狀態 | blocker | 下一步 | final-spec alignment |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+    ...reportingOwners,
     '',
     '## 產品版本目標',
     '',
     ...milestoneTargets.map(item => `- ${item}`),
     '',
-    '## Owner 進度',
-    '',
-    '| owner | responsibility | current output | status | blocker | next action | final-spec alignment |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
-    ...reportingOwners,
-    '',
     '## Git 版本規則',
     '',
-    branchSummary(snapshot),
+    ...branchSummaryTable(snapshot),
     '',
     '## 下一步',
     '',
-    snapshot.objective.productReady
-      ? '- 可以安排真人測試與下一個產品切片。'
-      : '- 優先收斂目前 active cycle 或審查未合併成果；不要盲目新增產品分支。',
+    `- ${nextAction(snapshot)}`,
     '',
     '## 更新來源',
     '',
@@ -154,11 +212,15 @@ export function buildProductBrief(snapshot: ProductionSnapshot): string {
     '# 目前產品企劃',
     '',
     `更新時間: ${snapshot.timestamp}`,
+    `主責: ${owner}`,
     '',
-    '## 企劃主責',
+    '## 產品',
     '',
-    `- 主責: ${owner}`,
-    `- 支援: ${support.join(', ')}`,
+    `${productName} 目前由 ${owner} 負責最後規格、取捨與對外溝通。`,
+    '',
+    '## 目前產品目標',
+    '',
+    readinessText(snapshot),
     '',
     '## 目前產品方向',
     '',
@@ -175,6 +237,7 @@ export function buildProductBrief(snapshot: ProductionSnapshot): string {
     `- productReady: ${snapshot.objective.productReady ? 'yes' : 'no'}`,
     `- active objective: ${snapshot.objective.currentObjective?.goal ?? '無'}`,
     `- blocked reason: ${snapshot.objective.blockedReason ?? '無'}`,
+    `- support: ${support.join(', ')}`,
     '',
   ].join('\n')
 }
@@ -194,9 +257,7 @@ export function buildRoadmap(snapshot: ProductionSnapshot): string {
     '',
     '## 當前 Gate',
     '',
-    `- lifecycle: ${snapshot.objective.lifecyclePhase ?? 'unknown'}`,
-    `- next merge gate: ${gateText(snapshot.objective.nextMergeGate)}`,
-    `- productReady: ${snapshot.objective.productReady ? 'yes' : 'no'}`,
+    ...objectiveTable(snapshot),
     '',
     '## Milestone / Version Targets',
     '',
@@ -204,13 +265,11 @@ export function buildRoadmap(snapshot: ProductionSnapshot): string {
     '',
     '## Branch Hygiene',
     '',
-    branchSummary(snapshot),
+    ...branchSummaryTable(snapshot),
     '',
     '## 下一個切片',
     '',
-    snapshot.objective.blockedReason
-      ? `- 先解除 blocker: ${snapshot.objective.blockedReason}`
-      : `- ${notReadyNextAction}`,
+    `- ${snapshot.objective.productReady ? '基於真人測試證據，由產品負責人決定下一個產品內容切片。' : snapshot.objective.blockedReason ? `先解除 blocker: ${snapshot.objective.blockedReason}` : snapshot.objective.currentObjective?.repairOf ? '完成 repair cycle，確認 artifact contract、review、QA、release gate，再合併回 source of truth。' : notReadyNextAction}`,
     '',
   ].join('\n')
 }
