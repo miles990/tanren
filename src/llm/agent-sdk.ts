@@ -34,7 +34,7 @@ export interface AgentSdkOptions {
   cwd?: string
   /** Allowed tools (default: all standard tools) */
   allowedTools?: string[]
-  /** Additional directories to access beyond cwd */
+  /** Additional directories to access beyond cwd. Defaults to none for worktree isolation. */
   additionalDirectories?: string[]
   /**
    * MCP servers to expose to the Agent SDK subprocess. Object format matches
@@ -129,7 +129,7 @@ export function createAgentSdkProvider(opts?: AgentSdkOptions): SessionAwareLLMP
           prompt: context,
           options: {
             cwd: opts?.cwd ?? process.cwd(),
-            additionalDirectories: opts?.additionalDirectories ?? ['/Users'],
+            additionalDirectories: opts?.additionalDirectories ?? [],
             allowedTools: opts?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent'],
             maxTurns,
             maxBudgetUsd: opts?.maxBudgetUsd ?? 30,

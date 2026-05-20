@@ -37,7 +37,16 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
 
   const workerPrompt = (def: WorkerDefinition): string => {
     const skillsPrompt = def.skills?.length ? `\n\n<skills>\n${def.skills.join('\n---\n')}\n</skills>` : ''
-    return `${def.agent.prompt ?? ''}${skillsPrompt}`
+    const boundaryPrompt = [
+      '',
+      '## Execution Boundary',
+      `- Working directory: ${cwd}`,
+      '- Treat this directory as the task root.',
+      '- Read and write inside the working directory unless the task explicitly authorizes another path.',
+      '- Do not start broad filesystem discovery from home directories such as /Users or ~.',
+      '- Prefer relative paths from the working directory.',
+    ].join('\n')
+    return `${def.agent.prompt ?? ''}${skillsPrompt}${boundaryPrompt}`
   }
 
   for (const [name, def] of Object.entries(allWorkers())) {
