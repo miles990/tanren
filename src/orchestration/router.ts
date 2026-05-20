@@ -371,7 +371,18 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const supervisorTick = async (input: SupervisorTickInput = {}): Promise<SupervisorTickResult> => {
     const decision = supervisorDecision()
-    if (decision.action !== 'start_smallest_product_slice') {
+    const fallbackProductSliceActions = new Set<SupervisorTickResult['action']>([
+      'decompose_failed_step',
+      'repair_workspace',
+      'retry_same_step',
+    ])
+    const shouldDispatchSmallestSlice = decision.action === 'start_smallest_product_slice'
+      || (
+        fallbackProductSliceActions.has(decision.action)
+        && activePlans().length === 0
+        && Boolean(input.smallestProductSlice)
+      )
+    if (!shouldDispatchSmallestSlice) {
       return { action: decision.action, decision, status: 'no_action' }
     }
     if (!input.smallestProductSlice) {
@@ -388,6 +399,20 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           'smallestProductSlice.verifyCommand is required',
         ],
       }
+    }
+    if (decision.action !== 'start_smallest_product_slice') {
+      runtimeTrace.unshift({
+        type: 'supervisor.fallback_smallest_slice',
+        timestamp: new Date().toISOString(),
+        data: {
+          action: decision.action,
+          failureType: decision.failureType,
+          reason: decision.reason,
+          targetPlanId: decision.targetPlanId,
+          targetStepId: decision.targetStepId,
+        },
+      })
+      runtimeTrace.splice(200)
     }
 
     let plan: ActionPlan

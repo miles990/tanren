@@ -163,6 +163,49 @@ test('supervisor tick dry-run builds a valid smallest product slice plan', async
   }
 })
 
+test('supervisor tick falls back to smallest product slice after stale failed repair state', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const failedPlan: ActionPlan = {
+      goal: 'old failed repair',
+      steps: [
+        { id: 'repair-verify', worker: 'reviewer', mode: 'verify', task: 'verify old repair', dependsOn: [] },
+      ],
+    }
+    mw.plans.set('plan-old', {
+      plan: failedPlan,
+      status: 'failed',
+      createdAt: new Date().toISOString(),
+      repairAttempt: 1,
+    })
+    mw.buffer.submit({ id: 'repair-verify', planId: 'plan-old', worker: 'reviewer', task: 'verify old repair' })
+    mw.buffer.start('repair-verify', 'plan-old')
+    mw.buffer.fail('repair-verify', 'Reached maximum number of turns while verifying old repair.', 'plan-old')
+
+    const result = await mw.supervisorTick({
+      dryRun: true,
+      smallestProductSlice: {
+        goal: 'demo slice',
+        implementationTask: 'Create a visible demo slice.',
+        allowedPaths: ['src'],
+        expectedPaths: ['src/index.ts'],
+        verifyCommand: 'test -e src/index.ts',
+      },
+    })
+
+    assert.equal(result.status, 'dry_run')
+    assert.equal(result.action, 'decompose_failed_step')
+    assert.equal(result.decision.failureType, 'max_turns')
+    assert.equal(result.plan?.goal, 'demo slice')
+    assert.equal(result.plan?.steps.length, 4)
+    assert.equal(mw.runtimeTrace[0]?.type, 'approval.preflight')
+    assert.equal(mw.runtimeTrace[1]?.type, 'supervisor.fallback_smallest_slice')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test('supervisor tick enforces approval policy before submission', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
   try {

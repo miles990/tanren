@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { formatSupervisorLoopResult, runSupervisorLoop } from './supervisor-loop.js'
+import { formatSupervisorLoopResult, runSupervisorHttpLoop, runSupervisorLoop } from './supervisor-loop.js'
 import type { SupervisorTickResult } from './supervisor.js'
 
 test('runSupervisorLoop submits ticks until maxTicks', async () => {
@@ -53,4 +53,20 @@ test('formatSupervisorLoopResult includes action, status, and submitted plan', (
   assert.match(line, /tick=3/)
   assert.match(line, /action=start_smallest_product_slice/)
   assert.match(line, /submitted=plan-x/)
+})
+
+test('runSupervisorHttpLoop treats startup connection failure as retryable tick', async () => {
+  const summary = await runSupervisorHttpLoop({
+    apiUrl: 'http://localhost:3100',
+    pollMs: 0,
+    maxTicks: 1,
+    fetchImpl: async () => {
+      throw new TypeError('fetch failed')
+    },
+  })
+
+  assert.equal(summary.ticks, 1)
+  assert.equal(summary.lastResult?.action, 'wait')
+  assert.equal(summary.lastResult?.error, 'supervisor_tick_unavailable')
+  assert.equal(summary.stoppedReason, 'max_ticks')
 })

@@ -59,19 +59,38 @@ export function runSupervisorHttpLoop(options: SupervisorHttpLoopOptions): Promi
   return runSupervisorLoop({
     ...options,
     tick: async () => {
-      const response = await fetcher(`${apiUrl}/supervisor/tick`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(options.tickInput ?? {}),
-      });
-      const text = await response.text();
-      const body = text ? JSON.parse(text) as SupervisorTickResult : {} as SupervisorTickResult;
-      if (!response.ok && body.error !== 'scheduler_locked') {
-        throw new Error(`supervisor tick failed: ${response.status} ${text}`);
+      try {
+        const response = await fetcher(`${apiUrl}/supervisor/tick`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(options.tickInput ?? {}),
+        });
+        const text = await response.text();
+        const body = text ? JSON.parse(text) as SupervisorTickResult : {} as SupervisorTickResult;
+        if (!response.ok && body.error !== 'scheduler_locked') {
+          return transientSupervisorFailure(`supervisor tick failed: ${response.status} ${text}`);
+        }
+        return body;
+      } catch (err) {
+        return transientSupervisorFailure(err instanceof Error ? err.message : String(err));
       }
-      return body;
     },
   });
+}
+
+function transientSupervisorFailure(message: string): SupervisorTickResult {
+  return {
+    action: 'wait',
+    decision: {
+      action: 'wait',
+      failureType: 'transient',
+      reason: `supervisor tick unavailable: ${message}`,
+      requiresBoss: false,
+    },
+    status: 'blocked',
+    error: 'supervisor_tick_unavailable',
+    errors: [message],
+  };
 }
 
 export function formatSupervisorLoopResult(tick: number, result: SupervisorTickResult): string {
@@ -84,7 +103,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise(resolve => {
     const timer = setTimeout(resolve, ms);
-    timer.unref?.();
     signal?.addEventListener('abort', () => {
       clearTimeout(timer);
       resolve();
