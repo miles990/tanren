@@ -245,6 +245,8 @@ export interface PlanEngineOptions {
   maxBackoffMs?: number;
   /** Resolve timeout for a worker — lets plan engine use worker-specific defaults instead of hardcoded 120s */
   getWorkerTimeoutSeconds?: (workerName: string) => number;
+  /** Resolve max concurrency for a worker — lets role definitions enforce single-writer execution. */
+  getWorkerMaxConcurrency?: (workerName: string) => number | undefined;
   /** Working directory used for verifyCommand and artifact contract checks. */
   cwd?: string;
 }
@@ -446,7 +448,7 @@ export class PlanEngine {
           }
 
           // Check concurrency
-          const maxConc = step.maxConcurrency ?? 4;
+          const maxConc = step.maxConcurrency ?? this.opts.getWorkerMaxConcurrency?.(step.worker) ?? 4;
           const currentConc = workerRunning.get(step.worker) ?? 0;
           if (currentConc >= maxConc) continue;
 

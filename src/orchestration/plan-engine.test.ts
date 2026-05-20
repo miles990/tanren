@@ -80,3 +80,29 @@ test('PlanEngine times out a stuck executor even if the worker never resolves', 
   assert.match(step?.output ?? '', /timeout/)
   assert.equal(result.summary.failed, 1)
 })
+
+test('PlanEngine respects worker-level max concurrency', async () => {
+  let active = 0
+  let peak = 0
+  const engine = new PlanEngine(async () => {
+    active += 1
+    peak = Math.max(peak, active)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    active -= 1
+    return 'done'
+  }, {
+    getWorkerMaxConcurrency: worker => worker === 'single-writer' ? 1 : undefined,
+  })
+
+  const plan: ActionPlan = {
+    goal: 'single writer',
+    steps: [
+      { id: 'a', worker: 'single-writer', task: 'a', dependsOn: [] },
+      { id: 'b', worker: 'single-writer', task: 'b', dependsOn: [] },
+    ],
+  }
+
+  const result = await engine.execute(plan)
+  assert.equal(result.summary.completed, 2)
+  assert.equal(peak, 1)
+})

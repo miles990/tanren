@@ -88,6 +88,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const planEngineOptions = (planId?: string, planCwd = cwd): PlanEngineOptions => ({
     cwd: planCwd,
     getWorkerTimeoutSeconds: workerName => allWorkers()[workerName]?.defaultTimeoutSeconds ?? 120,
+    getWorkerMaxConcurrency: workerName => allWorkers()[workerName]?.maxConcurrency,
     onEvent: event => {
       switch (event.type) {
         case 'step.dispatched':
