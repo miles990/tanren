@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { createOrchestrationMiddleware } from './router.js'
 import type { ActionPlan } from './plan-engine.js'
+import { extractStepLessons, recordStepLearningEvent } from './learning-events.js'
 
 test('orchestration policy rejects writer steps without artifact contract and verification', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
@@ -105,6 +106,86 @@ test('orchestration policy validates custom worker capabilities and backends', (
 
     const errors = mw.validateExecutionPolicy(plan)
     assert.ok(errors.some(error => error.includes("does not allow mode 'write'")))
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('orchestration policy supports docker and swarm workers as bounded execution adapters', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    mw.customWorkers.set('docker-agent', {
+      agent: { description: 'container agent', tools: [], prompt: '', model: 'container' },
+      backend: 'docker',
+      docker: { image: 'example/agent:latest' },
+      defaultTimeoutSeconds: 60,
+      policy: {
+        capabilities: ['write', 'verify'],
+        defaultMode: 'write',
+        allowedBackends: ['docker'],
+        requiresArtifactContract: true,
+      },
+    })
+    mw.customWorkers.set('external-swarm', {
+      agent: { description: 'external swarm', tools: [], prompt: '', model: 'swarm' },
+      backend: 'swarm',
+      swarm: { url: 'http://localhost:9999/dispatch' },
+      defaultTimeoutSeconds: 60,
+      policy: {
+        capabilities: ['verify'],
+        defaultMode: 'verify',
+        allowedBackends: ['swarm'],
+      },
+    })
+
+    const valid: ActionPlan = {
+      goal: 'adapter policy',
+      steps: [
+        {
+          id: 'write',
+          worker: 'docker-agent',
+          mode: 'write',
+          task: 'edit bounded files',
+          dependsOn: [],
+          verifyCommand: 'test -e game/main.gd',
+          artifactContract: { allowedPaths: ['game'], expectedPaths: ['game/main.gd'] },
+        },
+        { id: 'verify', worker: 'external-swarm', task: 'review output', dependsOn: ['write'] },
+      ],
+    }
+    assert.deepEqual(mw.validateExecutionPolicy(valid), [])
+
+    const missingContract: ActionPlan = {
+      goal: 'adapter policy fail',
+      steps: [{ id: 'write', worker: 'docker-agent', mode: 'write', task: 'edit files', dependsOn: [] }],
+    }
+    assert.ok(mw.validateExecutionPolicy(missingContract).some(error => error.includes('artifactContract.allowedPaths')))
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('step learning extraction records root-cause style lessons', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-learning-'))
+  try {
+    const lessons = extractStepLessons('Summary\nRoot cause: task scope was too broad.\nNext time: split work before dispatch.')
+    assert.deepEqual(lessons, ['Root cause: task scope was too broad.', 'Next time: split work before dispatch.'])
+
+    const event = recordStepLearningEvent({
+      cwd,
+      planId: 'plan-1',
+      result: {
+        id: 'qa',
+        worker: 'reviewer',
+        status: 'completed',
+        output: '根因: verification command did not cover the UI.\n防範: add a browser check.',
+        durationMs: 1,
+        dispatchOrder: 0,
+      },
+    })
+    assert.equal(event?.lessons.length, 2)
+    assert.equal(event?.worker, 'reviewer')
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }

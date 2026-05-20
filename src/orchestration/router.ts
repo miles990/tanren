@@ -7,6 +7,7 @@ import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
 import { evaluateExecutionHarnessFailure, evaluatePlanStepApproval, type ApprovalEvaluation } from './execution-harness.js'
+import { readStepLearningEvents, recordStepLearningEvent, type StepLearningEvent } from './learning-events.js'
 import { PlanEventLog } from './plan-events.js'
 import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type PlanStep, type StepResult } from './plan-engine.js'
 import { PresetManager } from './presets.js'
@@ -61,6 +62,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const activeEngines = new Map<string, PlanEngine>()
   const approvalDecisions: ApprovalEvaluation[] = []
   const runtimeTrace: Array<{ type: string; timestamp: string; data: unknown }> = []
+  const learningTrace: StepLearningEvent[] = readStepLearningEvents(cwd, 100)
 
   const allWorkers = () => ({ ...WORKERS, ...Object.fromEntries(customWorkers) })
   const persistCustomWorkers = () => {
@@ -98,6 +100,18 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           break
         case 'step.completed':
           buffer.complete(event.result.id, event.result.output, planId)
+          if (planId) {
+            const plan = plans.get(planId)?.plan
+            const step = plan?.steps.find(candidate => candidate.id === event.result.id)
+            const worker = step ? allWorkers()[step.worker] : allWorkers()[event.result.worker]
+            const learned = recordStepLearningEvent({ cwd, planId, step, result: event.result, worker })
+            if (learned) {
+              learningTrace.unshift(learned)
+              learningTrace.splice(100)
+              runtimeTrace.unshift({ type: 'learning.extracted', timestamp: learned.timestamp, data: learned })
+              runtimeTrace.splice(200)
+            }
+          }
           if (planId) planEvents.appendEngineEvent(planId, event)
           break
         case 'step.failed':
@@ -120,13 +134,13 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     .sort(([, a], [, b]) => b.createdAt.localeCompare(a.createdAt))[0]
 
   const writerWorkers = () => new Set(Object.entries(allWorkers())
-    .filter(([, def]) => def.backend === 'shell' || (def.agent.tools ?? []).some(tool => ['Write', 'Edit'].includes(String(tool))))
+    .filter(([, def]) => def.backend === 'shell' || def.backend === 'docker' || def.backend === 'swarm' || (def.agent.tools ?? []).some(tool => ['Write', 'Edit'].includes(String(tool))))
     .map(([name]) => name))
 
   const inferStepMode = (step: PlanStep, def: WorkerDefinition): NonNullable<PlanStep['mode']> => {
     if (step.mode) return step.mode
     if (def.policy?.defaultMode) return def.policy.defaultMode
-    if (def.backend === 'shell') return 'verify'
+    if (def.backend === 'shell' || def.backend === 'docker' || def.backend === 'swarm') return 'verify'
     if ((def.agent.tools ?? []).some(tool => ['Write', 'Edit'].includes(String(tool)))) return 'write'
     return 'read'
   }
@@ -1123,6 +1137,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     supervisorTick,
     approvalDecisions,
     runtimeTrace,
+    learningTrace,
     reapStaleRunningTasks,
     autoMergeReadyPlan,
     startPlanExecution,
@@ -1218,6 +1233,7 @@ function gateSummary(entry: { plan: ActionPlan }, steps: ReturnType<ResultBuffer
 }
 
 export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig = {}): Hono {
+  const routerCwd = config.cwd ?? process.cwd()
   const mw = createOrchestrationMiddleware(config)
   const app = new Hono()
 
@@ -1383,6 +1399,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
   app.get('/supervisor/decision', c => c.json(mw.supervisorDecision()))
   app.get('/approvals', c => c.json({ approvals: mw.approvalDecisions.slice(0, 50) }))
   app.get('/runtime/trace', c => c.json({ events: mw.runtimeTrace.slice(0, 100) }))
+  app.get('/learning/events', c => c.json({ events: [...mw.learningTrace, ...readStepLearningEvents(routerCwd, 50)].slice(0, 50) }))
   app.post('/approval/evaluate', async c => {
     const body = await c.req.json<{
       userObjective: string
@@ -1411,6 +1428,8 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       backend: def.backend,
       vendor: def.vendor,
       providerOptions: def.providerOptions,
+      docker: def.docker,
+      swarm: def.swarm,
       model: def.agent.model,
       description: def.agent.description,
       prompt: def.agent.prompt,
@@ -1453,6 +1472,9 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       mcpServers: body.mcpServers,
       skills: body.skills,
       policy: body.policy,
+      docker: body.docker,
+      swarm: body.swarm,
+      learning: body.learning,
     }
     mw.customWorkers.set(body.name, def)
     mw.refreshProvider(body.name, def)

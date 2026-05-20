@@ -7,6 +7,7 @@
  *   auto-derived from maxTurns (2min/turn) at execution time. defaultTimeoutSeconds
  *   is only a fallback for non-plan dispatch.
  * - Shell workers: timeout is the real control (deterministic execution).
+ * - Docker / swarm workers are execution adapters for external agent harnesses.
  */
 
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
@@ -20,6 +21,8 @@ export type WorkerBackend =
   | 'codex'
   | 'acp'
   | 'shell'
+  | 'docker'
+  | 'swarm'
   | 'middleware'
   | 'webhook'
   | 'logic';
@@ -53,6 +56,24 @@ export interface WorkerDefinition {
   middlewareUrl?: string;
   /** For middleware backend: worker name on the upstream middleware */
   middlewareWorker?: string;
+  /** For docker backend: run an isolated containerized worker. */
+  docker?: {
+    image: string;
+    command?: string[];
+    args?: string[];
+    env?: Record<string, string>;
+    mounts?: Array<{ source: string; target: string; readonly?: boolean }>;
+    network?: 'none' | 'host' | 'bridge';
+    workdir?: string;
+    resultPath?: string;
+  };
+  /** For swarm backend: dispatch to an external multi-agent orchestrator. */
+  swarm?: {
+    url: string;
+    worker?: string;
+    headers?: Record<string, string>;
+    resultPath?: string;
+  };
   /** For webhook backend: HTTP config */
   webhook?: {
     url: string;
@@ -80,6 +101,12 @@ export interface WorkerDefinition {
   skills?: string[];
   /** Policy contract used by orchestration validation. */
   policy?: WorkerPolicy;
+  /** Optional per-worker learning extraction config for orchestration result capture. */
+  learning?: {
+    enabled?: boolean;
+    outputPath?: string;
+    maxLessons?: number;
+  };
 }
 
 export const WORKERS: Record<string, WorkerDefinition> = {
@@ -262,7 +289,7 @@ export function removeCustomWorker(name: string): boolean {
 export function getSdkAgentDefinitions(): Record<string, { description: string; tools: string[]; model?: string; prompt?: string }> {
   const result: Record<string, { description: string; tools: string[]; model?: string; prompt?: string }> = {};
   for (const [name, def] of Object.entries(allWorkers())) {
-    if (def.backend === 'sdk' || def.backend === 'agent-sdk' || def.backend === 'claude-code' || def.backend === 'codex' || def.backend === 'acp') {
+    if (def.backend === 'sdk' || def.backend === 'agent-sdk' || def.backend === 'claude-code' || def.backend === 'codex' || def.backend === 'acp' || def.backend === 'docker' || def.backend === 'swarm') {
       result[name] = { description: def.agent.description ?? '', tools: (def.agent.tools ?? []) as string[], model: def.agent.model, prompt: def.agent.prompt };
     }
   }

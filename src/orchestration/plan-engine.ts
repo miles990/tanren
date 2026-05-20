@@ -29,7 +29,7 @@ export interface PlanStep {
   /** Human-readable label for dashboard */
   label?: string;
   dependsOn: string[];
-  backend?: 'sdk' | 'agent-sdk' | 'claude-code' | 'codex' | 'acp' | 'shell' | 'middleware';
+  backend?: 'sdk' | 'agent-sdk' | 'claude-code' | 'codex' | 'acp' | 'shell' | 'docker' | 'swarm' | 'middleware';
   /** Declares the behavioral intent so orchestration policy can distinguish read/verify/report work from file-writing work. */
   mode?: 'read' | 'write' | 'verify' | 'report';
   /** Marks this step as a named production gate for policy checks. */

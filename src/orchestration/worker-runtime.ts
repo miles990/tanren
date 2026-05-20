@@ -5,7 +5,8 @@
  * Hono, MCP, CLI, or any other transport.
  */
 
-import { execSync } from 'node:child_process'
+import { execFile, execSync } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { LLMProvider, PromptContentBlock } from '../types.js'
 import { promptToText } from '../content-adapter.js'
 import { createModelIO } from '../model-io.js'
@@ -13,6 +14,8 @@ import { createAgentSdkProvider } from '../llm/agent-sdk.js'
 import { createProvider } from '../provider-registry.js'
 import { createGateway, type ACPGateway } from './acp-gateway.js'
 import { WORKERS, type WorkerDefinition } from './workers.js'
+
+const execFileAsync = promisify(execFile)
 
 export interface WorkerRuntimeOptions {
   cwd?: string
@@ -62,6 +65,85 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
     || def.backend === 'claude-code'
     || def.backend === 'codex'
     || def.backend === 'acp'
+
+  const extractPath = (value: unknown, path?: string): unknown => {
+    if (!path) return value
+    return path.split('.').reduce((obj: unknown, key) => (obj as Record<string, unknown>)?.[key], value)
+  }
+
+  const stringifyResult = (value: unknown): string => {
+    if (typeof value === 'string') return value
+    const json = JSON.stringify(value)
+    return json === undefined ? String(value) : json
+  }
+
+  const executeDockerWorker = async (worker: string, def: WorkerDefinition, task: string | PromptContentBlock[], timeoutMs: number, signal?: AbortSignal): Promise<string> => {
+    const docker = def.docker
+    if (!docker?.image) throw new Error(`Worker ${worker}: docker.image not configured`)
+    const taskText = promptToText(task)
+    const workspace = docker.workdir ?? '/workspace'
+    const args = [
+      'run',
+      '--rm',
+      '--network',
+      docker.network ?? 'none',
+      '-v',
+      `${cwd}:${workspace}`,
+      '-w',
+      workspace,
+      '-e',
+      'TANREN_TASK',
+    ]
+    for (const [key, value] of Object.entries(docker.env ?? {})) {
+      args.push('-e', `${key}=${value}`)
+    }
+    for (const mount of docker.mounts ?? []) {
+      args.push('-v', `${mount.source}:${mount.target}${mount.readonly ? ':ro' : ''}`)
+    }
+    args.push(docker.image, ...(docker.command ?? ['sh', '-lc', 'printf "%s" "$TANREN_TASK"']), ...(docker.args ?? []))
+    try {
+      const { stdout, stderr } = await execFileAsync('docker', args, {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, TANREN_TASK: taskText },
+        signal,
+      })
+      const text = String(stdout || stderr || '')
+      if (!docker.resultPath) return text
+      try {
+        return stringifyResult(extractPath(JSON.parse(text), docker.resultPath))
+      } catch {
+        return text
+      }
+    } catch (err) {
+      throw new Error(`Docker worker ${worker} error: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`)
+    }
+  }
+
+  const executeSwarmWorker = async (worker: string, def: WorkerDefinition, task: string | PromptContentBlock[], timeoutMs: number): Promise<string> => {
+    const swarm = def.swarm
+    if (!swarm?.url) throw new Error(`Worker ${worker}: swarm.url not configured`)
+    const response = await fetch(swarm.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...swarm.headers },
+      body: JSON.stringify({
+        worker: swarm.worker ?? worker,
+        task,
+        timeout: timeoutMs / 1000,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const text = await response.text()
+    if (!response.ok) throw new Error(`Swarm ${swarm.url} returned ${response.status}: ${text.slice(0, 300)}`)
+    try {
+      const json = JSON.parse(text)
+      const value = extractPath(json, swarm.resultPath) ?? json.result ?? json.output ?? json
+      return stringifyResult(value)
+    } catch {
+      return text
+    }
+  }
 
   for (const [name, def] of Object.entries(allWorkers())) {
     if (!isProviderBacked(def)) continue
@@ -123,6 +205,10 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
           throw new Error(`Shell error: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`)
         }
       }
+      case 'docker':
+        return executeDockerWorker(worker, def, task, timeoutMs, signal)
+      case 'swarm':
+        return executeSwarmWorker(worker, def, task, timeoutMs)
       case 'acp': {
         const systemPrompt = workerPrompt(def)
         const taskText = promptToText(task)

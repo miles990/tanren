@@ -244,6 +244,7 @@ export { createPlanSystem, loadPlans, parsePlan, type Plan, type PlanStep } from
 export { PlanEngine, parsePlan as parseActionPlan, type ActionPlan, type PlanStep as OrchestrationPlanStep, type PlanResult, type StepResult, type WorkerExecutor, type PlanEngineOptions, type StructuredOutput as PlanStructuredOutput, type DigestInput, type StepRisk, type ConfirmationResult, type PlanEvent } from './orchestration/plan-engine.js'
 export { ResultBuffer, type TaskRecord, type TaskStatus, type TaskEvent } from './orchestration/result-buffer.js'
 export { WORKERS, allWorkers, getSdkAgentDefinitions, getWorkerNames, addCustomWorker, removeCustomWorker, type WorkerBackend, type WorkerDefinition } from './orchestration/workers.js'
+export { extractStepLessons, learningEventsPath, readStepLearningEvents, recordStepLearningEvent, type StepLearningEvent } from './orchestration/learning-events.js'
 export { createWorkerRuntime, type WorkerRuntime, type WorkerRuntimeOptions } from './orchestration/worker-runtime.js'
 export { ACPGateway, createGateway, DEFAULT_BACKENDS, type CLIBackend, type ACPSession, type GatewayStats } from './orchestration/acp-gateway.js'
 export { PLAN_TEMPLATES, type PlanTemplate } from './orchestration/templates.js'
