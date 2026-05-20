@@ -1761,6 +1761,8 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
         planId,
         goal: entry.plan.goal,
         status: entry.status,
+        repairOf: entry.repairOf,
+        repairAttempt: entry.repairAttempt,
         totalSteps: entry.plan.steps.length,
         completed: steps.filter(s => s.status === 'completed').length,
         failed: mw.blockingFailedSteps(planId, entry).length,
