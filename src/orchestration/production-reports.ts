@@ -13,6 +13,7 @@ export interface ProductionReportConfig {
   supportRoles?: string[]
   northStar?: string
   currentDirection?: string[]
+  milestoneTargets?: string[]
   notReadyNextAction?: string
 }
 
@@ -76,6 +77,8 @@ function gateText(value: unknown): string {
 
 export function buildBossReport(snapshot: ProductionSnapshot): string {
   const objective = snapshot.objective.currentObjective
+  const owner = snapshot.config?.productOwner ?? 'product lead'
+  const milestoneTargets = snapshot.config?.milestoneTargets ?? defaultMilestoneTargets()
   return [
     '# 老闆報告',
     '',
@@ -94,6 +97,23 @@ export function buildBossReport(snapshot: ProductionSnapshot): string {
     `- repair attempt: ${snapshot.objective.repairAttempt ?? 0}`,
     `- next merge gate: ${gateText(snapshot.objective.nextMergeGate)}`,
     `- active worktree: ${snapshot.objective.activeWorktree?.branchName ?? '無'}`,
+    `- 對老闆窗口: ${owner}`,
+    '',
+    '## 產品版本目標',
+    '',
+    ...milestoneTargets.map(item => `- ${item}`),
+    '',
+    '## Owner 進度',
+    '',
+    '| owner | responsibility | current output | status | blocker | next action | final-spec alignment |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+    `| ${owner} | 產品方向、目標、最後規格、老闆溝通 | docs/final-product-decision-current.md / docs/boss-report.md | ${objective?.status ?? 'idle'} | ${snapshot.objective.blockedReason ?? '無'} | ${snapshot.objective.productReady ? '安排真人測試與下一切片' : '收斂目前 cycle 或解除 blocker'} | 以 final spec 為準 |`,
+    '| game-designer | 卡牌規則、取捨、平衡假設 | docs/support-game-designer-brief.md | pending/running by cycle | 無即時摘要 | 依 final spec 修正設計輸入 | 必須對齊 final spec |',
+    '| ui-ux-designer | 首屏理解、資訊階層、操作清楚度 | docs/support-ui-ux-designer-brief.md | pending/running by cycle | 無即時摘要 | 依 final spec 修正 UX acceptance | 必須對齊 final spec |',
+    '| technical-artist | demo 畫面可展示性、視覺一致性 | docs/support-technical-artist-brief.md / docs/art-direction-current.md | pending/running by cycle | 無即時摘要 | 依 final spec 修正視覺標準 | 必須對齊 final spec |',
+    '| gameplay-engineer | Godot 實作與可玩性 | game/ | pending/running by cycle | 無即時摘要 | 實作最小可驗收切片 | 必須對齊 final spec |',
+    '| qa-reality-checker | 玩家是否真的能玩懂 | QA gate output | pending/running by cycle | 無即時摘要 | 用 final spec 判定 PASS/FAIL/BLOCKED | 必須對齊 final spec |',
+    '| release-engineer | 交付、啟動、repo clean | release gate output | pending/running by cycle | 無即時摘要 | 確認可合併與可交付狀態 | 必須對齊 final spec |',
     '',
     '## Git 版本規則',
     '',
@@ -123,6 +143,7 @@ export function buildProductBrief(snapshot: ProductionSnapshot): string {
     'Prefer the smallest reviewable product slice.',
     'Do not expand scope until evidence gates pass.',
   ]
+  const milestones = snapshot.config?.milestoneTargets ?? defaultMilestoneTargets()
   return [
     '# 目前產品企劃',
     '',
@@ -138,6 +159,10 @@ export function buildProductBrief(snapshot: ProductionSnapshot): string {
     `- 產品: ${productName}`,
     ...direction.map(item => `- ${item}`),
     '',
+    '## 產品版本目標',
+    '',
+    ...milestones.map(item => `- ${item}`),
+    '',
     '## 目前產品狀態',
     '',
     `- lifecycle: ${snapshot.objective.lifecyclePhase ?? 'unknown'}`,
@@ -151,6 +176,7 @@ export function buildProductBrief(snapshot: ProductionSnapshot): string {
 export function buildRoadmap(snapshot: ProductionSnapshot): string {
   const northStar = snapshot.config?.northStar ?? 'Deliver the smallest product slice that can pass review, QA, release, and merge gates.'
   const notReadyNextAction = snapshot.config?.notReadyNextAction ?? '收斂目前 active cycle 或審查未合併成果；不要盲目新增產品分支。'
+  const milestones = snapshot.config?.milestoneTargets ?? defaultMilestoneTargets()
   return [
     '# 目前藍圖',
     '',
@@ -166,6 +192,10 @@ export function buildRoadmap(snapshot: ProductionSnapshot): string {
     `- next merge gate: ${gateText(snapshot.objective.nextMergeGate)}`,
     `- productReady: ${snapshot.objective.productReady ? 'yes' : 'no'}`,
     '',
+    '## Milestone / Version Targets',
+    '',
+    ...milestones.map(item => `- ${item}`),
+    '',
     '## Branch Hygiene',
     '',
     branchSummary(snapshot),
@@ -177,6 +207,15 @@ export function buildRoadmap(snapshot: ProductionSnapshot): string {
       : `- ${notReadyNextAction}`,
     '',
   ].join('\n')
+}
+
+function defaultMilestoneTargets(): string[] {
+  return [
+    'M0: Team system can plan, execute, gate, report, and consolidate without boss babysitting.',
+    'M1: Tester-ready first battle demo with visible win/loss, enemy intent, card costs/effects, energy, draw/discard, and clear feedback.',
+    'M2: First human playtest evidence loop with H1-H5 findings and one Product Owner decision.',
+    'M3: Replayable MVP direction selected from evidence; only then consider enemy/card reward/map/shop/progression expansion.',
+  ]
 }
 
 export function writeProductionReports(cwd: string, config: ProductionReportConfig, snapshot: ProductionSnapshot): void {

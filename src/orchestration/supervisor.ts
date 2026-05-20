@@ -84,10 +84,34 @@ export interface SmallestProductSliceInput {
   qaWorker?: string;
   releaseWorker?: string;
   reportWorker?: string;
+  bossLiaisonWorker?: string;
   supportWorkers?: string[];
   supportWorkerTasks?: Record<string, string>;
   supportOutputDir?: string;
   supportBlocking?: boolean;
+  implementationDependsOnSupport?: boolean;
+  parallelTracks?: Array<{
+    id: string;
+    worker: string;
+    task: string;
+    mode?: 'read' | 'write' | 'verify' | 'report';
+    label?: string;
+    blocking?: boolean;
+    dependsOnSupport?: boolean;
+    allowedPaths?: string[];
+    expectedPaths?: string[];
+    verifyCommand?: string;
+  }>;
+  specAlignment?: {
+    worker?: string;
+    path?: string;
+    task?: string;
+  };
+  finalDecision?: {
+    worker?: string;
+    path?: string;
+    task?: string;
+  };
 }
 
 export interface SupervisorTickInput {
@@ -214,9 +238,11 @@ export function buildSmallestProductSlicePlan(
   const qaWorker = selected.qaWorker;
   const releaseWorker = selected.releaseWorker;
   const reportWorker = selected.reportWorker;
+  const bossLiaisonWorker = selected.bossLiaisonWorker;
   const supportOutputDir = input.supportOutputDir ?? 'docs';
   const supportStepIds = selected.supportWorkers.map(worker => supportStepId(worker));
   const supportBlocking = input.supportBlocking ?? true;
+  const implementationDependsOnSupport = input.implementationDependsOnSupport ?? true;
   const supportSteps = selected.supportWorkers.map((worker): ActionPlan['steps'][number] => {
     const outputPath = `${supportOutputDir}/support-${worker}-brief.md`;
     const task = input.supportWorkerTasks?.[worker] ?? [
@@ -246,6 +272,91 @@ export function buildSmallestProductSlicePlan(
       task,
     };
   });
+  const parallelTrackSteps = (input.parallelTracks ?? []).map((track): ActionPlan['steps'][number] => ({
+    id: parallelTrackStepId(track.id),
+    worker: track.worker,
+    mode: track.mode ?? 'report',
+    label: track.label ?? `Run ${track.id} product lane`,
+    dependsOn: track.dependsOnSupport === true ? supportStepIds : [],
+    blocking: track.blocking ?? true,
+    verifyCommand: track.verifyCommand,
+    artifactContract: track.allowedPaths?.length || track.expectedPaths?.length
+      ? {
+          allowedPaths: track.allowedPaths ?? [],
+          expectedPaths: track.expectedPaths ?? [],
+        }
+      : undefined,
+    task: track.task,
+  }));
+  const integrationDependencies = [
+    'implement-slice',
+    ...supportStepIds,
+    ...parallelTrackSteps.map(step => step.id),
+  ];
+  const finalDecisionPath = input.finalDecision?.path ?? 'docs/final-product-decision-current.md';
+  const finalDecisionStep: ActionPlan['steps'][number] | undefined = input.finalDecision === undefined ? undefined : {
+    id: 'final-product-decision',
+    worker: input.finalDecision.worker ?? pickWorker(availableWorkers, ['product-owner', 'game-director', reportWorker]),
+    mode: 'report',
+    gate: 'review',
+    label: 'Make final product direction decision',
+    dependsOn: integrationDependencies,
+    verifyCommand: `test -e ${finalDecisionPath}`,
+    artifactContract: {
+      allowedPaths: ['docs'],
+      expectedPaths: [finalDecisionPath],
+    },
+    task: input.finalDecision.task ?? [
+      `Create ${finalDecisionPath} as the final product-direction decision for this slice.`,
+      '',
+      'Read all available lane outputs, discipline briefs, implementation evidence, and product docs.',
+      'Make one clear decision that downstream review, QA, release, and reporting must treat as the current direction.',
+      '',
+      'The decision must include:',
+      '- final direction: proceed, narrow, revise, or block',
+      '- accepted product tradeoffs',
+      '- rejected alternatives',
+      '- owner assignments for any follow-up work',
+      '- exact criteria that review and QA must use',
+      '',
+      'First line must be one of: PASS, FAIL, BLOCKED.',
+      'Do not defer product-direction decisions to the boss unless the blocker is genuinely outside the team boundary.',
+    ].join('\n'),
+  };
+  const alignmentDependencies = finalDecisionStep ? ['final-product-decision'] : integrationDependencies;
+  const specAlignmentPath = input.specAlignment?.path ?? 'docs/spec-alignment-current.md';
+  const specAlignmentStep: ActionPlan['steps'][number] | undefined = input.specAlignment === undefined ? undefined : {
+    id: 'spec-alignment',
+    worker: input.specAlignment.worker ?? reportWorker,
+    mode: 'report',
+    gate: 'review',
+    label: 'Align outputs with spec',
+    dependsOn: alignmentDependencies,
+    verifyCommand: `test -e ${specAlignmentPath}`,
+    artifactContract: {
+      allowedPaths: ['docs'],
+      expectedPaths: [specAlignmentPath],
+    },
+    task: input.specAlignment.task ?? [
+      `Create ${specAlignmentPath} as the spec-alignment matrix for this product slice.`,
+      '',
+      'For every completed lane output, map:',
+      '- source spec or requirement',
+      '- produced artifact or code path',
+      '- verification evidence',
+      '- deviation, tradeoff, or unresolved gap',
+      '- whether review, QA, or release must block',
+      finalDecisionStep ? '- whether it matches the final product-direction decision' : '',
+      '',
+      'First line must be one of: PASS, FAIL, BLOCKED.',
+      'Do not claim PASS if any output is not traceable to a spec or accepted deviation.',
+    ].join('\n'),
+  };
+  const reviewDependencies = specAlignmentStep
+    ? ['spec-alignment']
+    : finalDecisionStep
+      ? ['final-product-decision']
+      : integrationDependencies;
 
   return {
     goal: input.goal,
@@ -261,7 +372,7 @@ export function buildSmallestProductSlicePlan(
         worker: implementationWorker,
         mode: 'write',
         label: 'Implement smallest product slice',
-        dependsOn: supportStepIds,
+        dependsOn: implementationDependsOnSupport ? supportStepIds : [],
         verifyCommand: input.verifyCommand,
         artifactContract: {
           allowedPaths: input.allowedPaths,
@@ -276,17 +387,21 @@ export function buildSmallestProductSlicePlan(
           '- Produce every expected output path.',
           '- Run or satisfy the verification command before reporting done.',
           selected.supportWorkers.length > 0 ? `- Read and honor these discipline briefs first: ${supportSteps.map(step => step.artifactContract?.expectedPaths?.[0]).filter(Boolean).join(', ')}.` : '',
+          parallelTrackSteps.length > 0 ? `- Coordinate with these parallel product lanes before review: ${parallelTrackSteps.map(step => step.artifactContract?.expectedPaths ?? []).flat().join(', ')}.` : '',
         ].join('\n'),
       },
+      ...parallelTrackSteps,
+      ...(finalDecisionStep ? [finalDecisionStep] : []),
+      ...(specAlignmentStep ? [specAlignmentStep] : []),
       {
         id: 'review-slice',
         worker: reviewWorker,
         mode: 'verify',
         gate: 'review',
         label: 'Review product slice',
-        dependsOn: ['implement-slice'],
+        dependsOn: reviewDependencies,
         task: [
-          'Review the implemented product slice for correctness, scope control, maintainability, and contract compliance.',
+          'Review the implemented product slice, all parallel product-lane artifacts, and the spec-alignment matrix for correctness, scope control, maintainability, and contract compliance.',
           'First line must be one of: PASS, FAIL, BLOCKED.',
           'If not PASS, list the smallest focused fix needed.',
         ].join('\n'),
@@ -319,10 +434,10 @@ export function buildSmallestProductSlicePlan(
       },
       {
         id: 'publish-product-status',
-        worker: reportWorker,
+        worker: bossLiaisonWorker,
         mode: 'report',
         gate: 'boss-report',
-        label: 'Publish product status',
+        label: 'Product Owner publishes product status to boss',
         dependsOn: ['release-slice'],
         verifyCommand: 'test -e docs/boss-report.md && test -e docs/product-brief-current.md && test -e docs/roadmap-current.md',
         artifactContract: {
@@ -330,9 +445,13 @@ export function buildSmallestProductSlicePlan(
           expectedPaths: ['docs/boss-report.md', 'docs/product-brief-current.md', 'docs/roadmap-current.md'],
         },
         task: [
+          'Act as the Product Owner and communication window between the team and the boss.',
           'Update the boss-facing productization reports after this cycle.',
           'Write in the boss preferred language: Traditional Chinese except proper nouns.',
           'Update docs/boss-report.md with current objective, completed work, blockers, branch/worktree, gate status, and next action.',
+          'Include an owner progress table: owner, responsibility, current output, status, blocker, next action, and final-spec alignment.',
+          'Summarize the current product goal, final product direction, and final slice spec from docs/final-product-decision-current.md when it exists.',
+          'Use a single Product Owner voice: do not make the boss read raw worker logs to understand direction, progress, or blockers.',
           'Update docs/product-brief-current.md only if product direction changed; otherwise refresh its status timestamp and owner notes.',
           'Update docs/roadmap-current.md with the latest milestone/gate state and next planned slice.',
           'Do not claim productReady unless review, QA, release, and merge gate have actually passed.',
@@ -346,6 +465,10 @@ function supportStepId(worker: string): string {
   return `support-${worker.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
 }
 
+function parallelTrackStepId(id: string): string {
+  return `parallel-${id.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
+}
+
 export function selectSmallestProductSliceWorkers(
   input: Partial<SmallestProductSliceInput> = {},
   availableWorkers?: Set<string>,
@@ -356,6 +479,7 @@ export function selectSmallestProductSliceWorkers(
     qaWorker: input.qaWorker ?? pickWorker(availableWorkers, ['qa-reality-checker', 'reviewer']),
     releaseWorker: input.releaseWorker ?? pickWorker(availableWorkers, ['release-engineer', 'reviewer']),
     reportWorker: input.reportWorker ?? pickWorker(availableWorkers, ['autopilot-producer', 'analyst']),
+    bossLiaisonWorker: input.bossLiaisonWorker ?? pickWorker(availableWorkers, ['product-owner', 'autopilot-producer', 'analyst']),
     supportWorkers: (input.supportWorkers ?? ['game-designer', 'ui-ux-designer', 'technical-artist', 'playtest-analyst'])
       .filter(worker => !availableWorkers || availableWorkers.has(worker)),
   };
