@@ -108,6 +108,20 @@ test('orchestration policy blocks production use until required worker qualifica
     }
     assert.deepEqual(mw.validateExecutionPolicy(qualificationPlan), [])
 
+    const writerQualificationPlan: ActionPlan = {
+      goal: 'Worker qualification: gameplay-engineer',
+      steps: [{
+        id: 'qualify-gameplay-engineer',
+        worker: 'gameplay-engineer',
+        mode: 'write',
+        task: 'qualify',
+        dependsOn: [],
+        verifyCommand: 'true',
+        artifactContract: { allowedPaths: ['game'], expectedPaths: ['game/scripts/main.gd'] },
+      }],
+    }
+    assert.deepEqual(mw.validateExecutionPolicy(writerQualificationPlan), [])
+
     writeFileSync(join(cwd, 'worker-qualification-results.json'), JSON.stringify({
       reviewer: {
         worker: 'reviewer',

@@ -333,7 +333,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         if (!step.artifactContract?.allowedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.allowedPaths`)
         if (!step.artifactContract?.expectedPaths?.length) errors.push(`Step ${step.id}: writer worker '${step.worker}' requires artifactContract.expectedPaths`)
       }
-      if (writes && policy?.gates?.length) {
+      if (writes && policy?.gates?.length && !isQualificationPlan(plan)) {
         for (const gate of policy.gates) {
           if (!hasDownstreamGate(plan, step.id, gate)) {
             errors.push(`Step ${step.id}: worker '${step.worker}' policy requires downstream '${gate}' gate`)
