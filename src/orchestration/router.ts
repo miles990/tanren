@@ -294,6 +294,21 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     )
   }
 
+  const classifyTaskError = (text: unknown): string | undefined => {
+    const message = String(text ?? '')
+    if (!message) return undefined
+    if (/timeout/i.test(message)) return 'timeout'
+    if (/max(?:imum)? number of turns|maxTurns/i.test(message)) return 'max_turns'
+    if (/ENOENT|no such file or directory|output error/i.test(message)) return 'missing_artifact'
+    if (/socket connection|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network|temporar/i.test(message)) return 'transient_infra'
+    if (/ARTIFACT CONTRACT FAILED/i.test(message)) return 'artifact_contract'
+    if (/VERIFY FAILED/i.test(message)) return 'verification'
+    if (/worktree|outside isolated worktree/i.test(message)) return 'worktree_boundary'
+    if (/exited with code/i.test(message)) return 'process_exit'
+    if (/aborted by user|cancelled/i.test(message)) return 'interrupted'
+    return 'worker_error'
+  }
+
   const completedRepairResumeTarget = (repairPlanId: string, repairEntry: PlanEntry) => {
     if (repairEntry.status !== 'completed' || !repairEntry.repairOf) return null
     const originalPlanId = repairEntry.repairOf
@@ -743,6 +758,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           mode: 'read' as const,
           label: `Classify ${step.id}`,
           dependsOn: [],
+          timeoutSeconds: 180,
           task: [
             `Classify failed step ${step.id} from plan ${failedPlanId}.`,
             `Failure type hint: ${runtimeEvaluation(step)?.failureType ?? classifyFailure(step)}`,
@@ -759,6 +775,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
             worker: repairWorker,
             label: `Fix ${step.id}`,
             dependsOn: [`classify-${step.id}`],
+            timeoutSeconds: 300,
             task: [
               `Apply a focused repair for failed step ${step.id} from plan ${failedPlanId}.`,
               `Failure type: ${runtimeEvaluation(step)?.failureType ?? classifyFailure(step)}`,
@@ -777,6 +794,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           mode: 'verify',
           label: 'Verify repair',
           dependsOn: failedSteps.map(step => `fix-${step.id}`),
+          timeoutSeconds: 180,
           task: [
             `Verify repair for failed plan ${failedPlanId}.`,
             'Check the repaired files, run available verification commands, and report remaining blockers first.',
@@ -788,6 +806,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
           mode: 'report',
           label: 'Repair report',
           dependsOn: ['repair-verify'],
+          timeoutSeconds: 180,
           verifyCommand: `test -e ${repairReportPath}`,
           artifactContract: { allowedPaths: ['docs'], expectedPaths: [repairReportPath] },
           task: [
@@ -864,13 +883,20 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const refreshProvider = (name: string, def: WorkerDefinition) => {
     runtime.workerProviders.delete(name)
-    if (def.backend !== 'sdk' && def.backend !== 'acp') return
-    if ((def.vendor ?? 'agent-sdk') === 'agent-sdk') {
+    const providerKey = def.backend === 'agent-sdk'
+      ? 'agent-sdk'
+      : def.backend === 'claude-code'
+        ? 'claude-cli'
+        : def.backend === 'codex'
+          ? 'codex'
+          : (def.vendor ?? 'agent-sdk')
+    if (!['sdk', 'agent-sdk', 'claude-code', 'codex', 'acp'].includes(def.backend)) return
+    if (providerKey === 'agent-sdk') {
       const next = createWorkerRuntime({ cwd, workers: { [name]: def }, acpGateway })
       const provider = next.workerProviders.get(name)
       if (provider) runtime.workerProviders.set(name, provider)
     } else {
-      runtime.workerProviders.set(name, createProvider({ provider: def.vendor ?? 'agent-sdk', model: def.agent.model, options: def.providerOptions, cwd }))
+      runtime.workerProviders.set(name, createProvider({ provider: providerKey, model: def.agent.model, options: def.providerOptions, cwd }))
     }
   }
 
@@ -896,6 +922,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     activePlans,
     hasActivePlan,
     validateExecutionPolicy,
+    classifyTaskError,
     blockingFailedSteps,
     objectiveStatus,
     supervisorDecision,
@@ -1278,6 +1305,8 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
           dependsOn: s.dependsOn,
           status: steps.find(t => t.id === s.id)?.status ?? 'pending',
           durationMs: steps.find(t => t.id === s.id)?.durationMs,
+          errorKind: mw.classifyTaskError(steps.find(t => t.id === s.id)?.error ?? steps.find(t => t.id === s.id)?.result),
+          error: steps.find(t => t.id === s.id)?.error,
         })),
       }
     }),

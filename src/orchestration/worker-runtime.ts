@@ -21,7 +21,7 @@ export interface WorkerRuntimeOptions {
 }
 
 export interface WorkerRuntime {
-  executeWorker(worker: string, task: string | PromptContentBlock[], timeoutMs: number): Promise<string>
+  executeWorker(worker: string, task: string | PromptContentBlock[], timeoutMs: number, signal?: AbortSignal): Promise<string>
   workerProviders: Map<string, LLMProvider>
   acpGateway: ACPGateway
   allWorkers(): Record<string, WorkerDefinition>
@@ -49,9 +49,23 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
     return `${def.agent.prompt ?? ''}${skillsPrompt}${boundaryPrompt}`
   }
 
+  const providerKeyFor = (def: WorkerDefinition) => {
+    if (def.backend === 'agent-sdk') return 'agent-sdk'
+    if (def.backend === 'claude-code') return 'claude-cli'
+    if (def.backend === 'codex') return 'codex'
+    return def.vendor ?? 'agent-sdk'
+  }
+
+  const isProviderBacked = (def: WorkerDefinition) =>
+    def.backend === 'sdk'
+    || def.backend === 'agent-sdk'
+    || def.backend === 'claude-code'
+    || def.backend === 'codex'
+    || def.backend === 'acp'
+
   for (const [name, def] of Object.entries(allWorkers())) {
-    if (def.backend !== 'sdk' && def.backend !== 'acp') continue
-    const vendor = def.vendor ?? 'agent-sdk'
+    if (!isProviderBacked(def)) continue
+    const vendor = providerKeyFor(def)
     if (vendor === 'agent-sdk') {
       workerProviders.set(name, createAgentSdkProvider({
         model: def.agent.model ?? 'sonnet',
@@ -72,22 +86,34 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
     }
   }
 
-  async function executeWorker(worker: string, task: string | PromptContentBlock[], timeoutMs: number): Promise<string> {
+  async function executeWorker(worker: string, task: string | PromptContentBlock[], timeoutMs: number, signal?: AbortSignal): Promise<string> {
     const def = allWorkers()[worker]
     if (!def) throw new Error(`Unknown worker: ${worker}`)
 
     switch (def.backend) {
+      case 'agent-sdk':
+      case 'claude-code':
+      case 'codex':
       case 'sdk': {
         const provider = workerProviders.get(worker)
         if (!provider) throw new Error(`No SDK provider for worker: ${worker}`)
-        const maxTurns = def.agent.maxTurns ?? 10
-        const safetyTimeout = Math.max(timeoutMs, maxTurns * 120_000)
+        const timeout = Math.max(1_000, timeoutMs)
+        let timer: NodeJS.Timeout | undefined
+        let abortListener: (() => void) | undefined
         return Promise.race([
           createModelIO(worker, provider).generate({ prompt: task, systemPrompt: workerPrompt(def) }).then(result => result.text),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`Worker ${worker} timeout after ${safetyTimeout}ms (maxTurns=${maxTurns})`)), safetyTimeout),
-          ),
-        ])
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`Worker ${worker} timeout after ${timeout}ms (backend=${def.backend}, maxTurns=${def.agent.maxTurns ?? 'unset'})`)), timeout)
+            timer.unref?.()
+            if (signal) {
+              abortListener = () => reject(new Error(`Worker ${worker} cancelled (backend=${def.backend})`))
+              signal.addEventListener('abort', abortListener, { once: true })
+            }
+          }),
+        ]).finally(() => {
+          if (timer) clearTimeout(timer)
+          if (signal && abortListener) signal.removeEventListener('abort', abortListener)
+        })
       }
       case 'shell': {
         try {

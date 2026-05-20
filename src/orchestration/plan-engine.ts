@@ -29,7 +29,7 @@ export interface PlanStep {
   /** Human-readable label for dashboard */
   label?: string;
   dependsOn: string[];
-  backend?: 'sdk' | 'acp' | 'shell' | 'middleware';
+  backend?: 'sdk' | 'agent-sdk' | 'claude-code' | 'codex' | 'acp' | 'shell' | 'middleware';
   /** Declares the behavioral intent so orchestration policy can distinguish read/verify/report work from file-writing work. */
   mode?: 'read' | 'write' | 'verify' | 'report';
   /** Marks this step as a named production gate for policy checks. */
@@ -134,7 +134,7 @@ export interface PlanResult {
   convergenceIterations: number;
 }
 
-export type WorkerExecutor = (worker: string, task: string | import('../types.js').PromptContentBlock[], timeoutMs: number) => Promise<string>;
+export type WorkerExecutor = (worker: string, task: string | import('../types.js').PromptContentBlock[], timeoutMs: number, signal?: AbortSignal) => Promise<string>;
 
 // =============================================================================
 // Helpers
@@ -193,6 +193,28 @@ function classifyStepRisk(step: PlanStep): StepRisk {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+async function withStepTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string, signal?: AbortSignal): Promise<T> {
+  if (timeoutMs <= 0) return promise;
+  let timer: NodeJS.Timeout | undefined;
+  let abortListener: (() => void) | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+    if (signal) {
+      abortListener = () => reject(new Error(`${label} cancelled`));
+      signal.addEventListener('abort', abortListener, { once: true });
+    }
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+  }
 }
 
 // =============================================================================
@@ -535,7 +557,12 @@ export class PlanEngine {
       const stepStart = Date.now();
       try {
         const changedBefore = this.gitChangedFiles(this.opts.cwd ?? process.cwd());
-        const output = await this.executor(step.worker, task, timeoutMs);
+        const output = await withStepTimeout(
+          this.executor(step.worker, task, timeoutMs, signal),
+          timeoutMs,
+          `Step ${step.id} (${step.worker})`,
+          signal,
+        );
 
         // Mechanical verification: run verifyCommand if defined (async — won't block event loop)
         if (step.verifyCommand) {

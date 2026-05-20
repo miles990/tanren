@@ -13,7 +13,16 @@ import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { ProviderKey } from '../provider-registry.js';
 import type { PlanStep } from './plan-engine.js';
 
-export type WorkerBackend = 'sdk' | 'acp' | 'shell' | 'middleware' | 'webhook' | 'logic';
+export type WorkerBackend =
+  | 'sdk'
+  | 'agent-sdk'
+  | 'claude-code'
+  | 'codex'
+  | 'acp'
+  | 'shell'
+  | 'middleware'
+  | 'webhook'
+  | 'logic';
 export type WorkerCapability = NonNullable<PlanStep['mode']>;
 export type WorkerGate = NonNullable<PlanStep['gate']>;
 export type WorkerRiskLevel = 'low' | 'medium' | 'high';
@@ -253,7 +262,7 @@ export function removeCustomWorker(name: string): boolean {
 export function getSdkAgentDefinitions(): Record<string, { description: string; tools: string[]; model?: string; prompt?: string }> {
   const result: Record<string, { description: string; tools: string[]; model?: string; prompt?: string }> = {};
   for (const [name, def] of Object.entries(allWorkers())) {
-    if (def.backend === 'sdk' || def.backend === 'acp') {
+    if (def.backend === 'sdk' || def.backend === 'agent-sdk' || def.backend === 'claude-code' || def.backend === 'codex' || def.backend === 'acp') {
       result[name] = { description: def.agent.description ?? '', tools: (def.agent.tools ?? []) as string[], model: def.agent.model, prompt: def.agent.prompt };
     }
   }

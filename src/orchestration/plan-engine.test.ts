@@ -60,3 +60,23 @@ test('PlanEngine lets downstream steps continue after non-blocking support failu
   assert.equal(result.summary.failed, 0)
   assert.equal(result.accepted, true)
 })
+
+test('PlanEngine times out a stuck executor even if the worker never resolves', async () => {
+  const engine = new PlanEngine(async () => {
+    await new Promise(() => undefined)
+    return 'unreachable'
+  })
+
+  const plan: ActionPlan = {
+    goal: 'stuck worker',
+    steps: [
+      { id: 'hang', worker: 'worker', task: 'hang', dependsOn: [], timeoutSeconds: 0.01 },
+    ],
+  }
+
+  const result = await engine.execute(plan)
+  const step = result.steps.find(candidate => candidate.id === 'hang')
+  assert.equal(step?.status, 'timeout')
+  assert.match(step?.output ?? '', /timeout/)
+  assert.equal(result.summary.failed, 1)
+})
