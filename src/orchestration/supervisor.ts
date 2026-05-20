@@ -85,6 +85,9 @@ export interface SmallestProductSliceInput {
   releaseWorker?: string;
   reportWorker?: string;
   supportWorkers?: string[];
+  supportWorkerTasks?: Record<string, string>;
+  supportOutputDir?: string;
+  supportBlocking?: boolean;
 }
 
 export interface SupervisorTickInput {
@@ -210,6 +213,38 @@ export function buildSmallestProductSlicePlan(
   const qaWorker = selected.qaWorker;
   const releaseWorker = selected.releaseWorker;
   const reportWorker = selected.reportWorker;
+  const supportOutputDir = input.supportOutputDir ?? 'docs';
+  const supportStepIds = selected.supportWorkers.map(worker => supportStepId(worker));
+  const supportBlocking = input.supportBlocking ?? true;
+  const supportSteps = selected.supportWorkers.map((worker): ActionPlan['steps'][number] => {
+    const outputPath = `${supportOutputDir}/support-${worker}-brief.md`;
+    const task = input.supportWorkerTasks?.[worker] ?? [
+      `Create ${outputPath} as this discipline's professional brief for the product slice.`,
+      '',
+      'The brief must include:',
+      '- discipline verdict: PASS, FAIL, or BLOCKED',
+      '- the exact product quality bar this discipline owns',
+      '- concrete requirements for the implementation worker',
+      '- acceptance checks for review, QA, and release',
+      '- known tradeoffs or risks',
+      '',
+      'Keep the scope narrow and do not implement the slice yourself.',
+    ].join('\n');
+    return {
+      id: supportStepId(worker),
+      worker,
+      mode: 'report',
+      label: `Prepare ${worker} product brief`,
+      dependsOn: [],
+      blocking: supportBlocking,
+      verifyCommand: `test -e ${outputPath}`,
+      artifactContract: {
+        allowedPaths: [supportOutputDir],
+        expectedPaths: [outputPath],
+      },
+      task,
+    };
+  });
 
   return {
     goal: input.goal,
@@ -219,12 +254,13 @@ export function buildSmallestProductSlicePlan(
       'All gates must return PASS, FAIL, or BLOCKED on the first line.',
     ].join('\n'),
     steps: [
+      ...supportSteps,
       {
         id: 'implement-slice',
         worker: implementationWorker,
         mode: 'write',
         label: 'Implement smallest product slice',
-        dependsOn: [],
+        dependsOn: supportStepIds,
         verifyCommand: input.verifyCommand,
         artifactContract: {
           allowedPaths: input.allowedPaths,
@@ -238,6 +274,7 @@ export function buildSmallestProductSlicePlan(
           '- Stay inside allowed paths.',
           '- Produce every expected output path.',
           '- Run or satisfy the verification command before reporting done.',
+          selected.supportWorkers.length > 0 ? `- Read and honor these discipline briefs first: ${supportSteps.map(step => step.artifactContract?.expectedPaths?.[0]).filter(Boolean).join(', ')}.` : '',
         ].join('\n'),
       },
       {
@@ -302,6 +339,10 @@ export function buildSmallestProductSlicePlan(
       },
     ],
   };
+}
+
+function supportStepId(worker: string): string {
+  return `support-${worker.replace(/[^a-zA-Z0-9_-]+/g, '-')}`;
 }
 
 export function selectSmallestProductSliceWorkers(

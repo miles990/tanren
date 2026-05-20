@@ -131,6 +131,29 @@ test('buildSmallestProductSlicePlan creates a gated writer contract', () => {
   assert.deepEqual(plan.steps[4].artifactContract?.expectedPaths, ['docs/boss-report.md', 'docs/product-brief-current.md', 'docs/roadmap-current.md'])
 })
 
+test('buildSmallestProductSlicePlan includes professional support briefs before implementation', () => {
+  const plan = buildSmallestProductSlicePlan({
+    goal: 'Playable demo slice',
+    implementationTask: 'Implement one visible gameplay improvement.',
+    allowedPaths: ['game', 'docs'],
+    expectedPaths: ['game/project.godot'],
+    verifyCommand: 'test -e game/project.godot',
+    supportWorkers: ['game-designer', 'ui-ux-designer'],
+    supportWorkerTasks: {
+      'game-designer': 'Create docs/support-game-designer-brief.md with card-design acceptance checks.',
+    },
+  }, new Set(['gameplay-engineer', 'qa-reality-checker', 'reviewer', 'game-designer', 'ui-ux-designer']))
+
+  assert.equal(plan.steps[0].id, 'support-game-designer')
+  assert.equal(plan.steps[0].worker, 'game-designer')
+  assert.equal(plan.steps[0].mode, 'report')
+  assert.equal(plan.steps[0].blocking, true)
+  assert.deepEqual(plan.steps[0].artifactContract?.expectedPaths, ['docs/support-game-designer-brief.md'])
+  assert.equal(plan.steps[1].id, 'support-ui-ux-designer')
+  assert.deepEqual(plan.steps[2].dependsOn, ['support-game-designer', 'support-ui-ux-designer'])
+  assert.match(String(plan.steps[2].task), /discipline briefs/)
+})
+
 test('selectSmallestProductSliceWorkers keeps support workers dynamic and optional', () => {
   const selected = selectSmallestProductSliceWorkers({}, new Set(['coder', 'reviewer', 'game-designer']))
   assert.equal(selected.implementationWorker, 'coder')
