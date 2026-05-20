@@ -34,7 +34,6 @@ export function createCodexCliProvider(opts?: CodexCliOptions): LLMProvider {
         'exec',
         '--cd', opts?.cwd ?? process.cwd(),
         '--sandbox', opts?.sandbox ?? 'read-only',
-        '--ask-for-approval', 'never',
         '--output-last-message', outputPath,
         '--color', 'never',
       ]
@@ -82,10 +81,15 @@ export function createCodexCliProvider(opts?: CodexCliOptions): LLMProvider {
           }
         } catch (err) {
           cleanup()
-          if (code === 0 && stdout.trim()) {
+          if (stdout.trim()) {
             resolve(stdout.trim())
           } else {
-            reject(err instanceof Error ? err : new Error(String(err)))
+            const detail = [
+              `Codex CLI exited with code ${code}`,
+              stderr ? `stderr: ${stderr.slice(0, 500)}` : '',
+              err instanceof Error ? `output error: ${err.message}` : `output error: ${String(err)}`,
+            ].filter(Boolean).join('; ')
+            reject(new Error(detail))
           }
         }
       })
