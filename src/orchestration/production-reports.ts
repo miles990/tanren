@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import type { BranchHygieneReport } from './branch-hygiene.js'
 
@@ -43,7 +43,15 @@ function resolvePath(cwd: string, path: string): string {
 function writeText(cwd: string, path: string, content: string): void {
   const fullPath = resolvePath(cwd, path)
   mkdirSync(dirname(fullPath), { recursive: true })
+  if (existsSync(fullPath)) {
+    const existing = readFileSync(fullPath, 'utf-8')
+    if (normalizeReportTimestamp(existing) === normalizeReportTimestamp(content)) return
+  }
   writeFileSync(fullPath, content, 'utf-8')
+}
+
+function normalizeReportTimestamp(content: string): string {
+  return content.replace(/^更新時間: .+$/m, '更新時間: <timestamp>')
 }
 
 function branchSummary(snapshot: ProductionSnapshot): string {

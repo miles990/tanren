@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -214,6 +214,35 @@ test('production reports write boss, product brief, and roadmap snapshots', () =
     assert.match(execFileSync('cat', [join(cwd, 'docs/boss-report.md')], { encoding: 'utf-8' }), /qa gate failed/)
     assert.match(execFileSync('cat', [join(cwd, 'docs/product-brief-current.md')], { encoding: 'utf-8' }), /Current product/)
     assert.match(execFileSync('cat', [join(cwd, 'docs/roadmap-current.md')], { encoding: 'utf-8' }), /Branch Hygiene/)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('production reports avoid timestamp-only rewrites', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-production-reports-stable-'))
+  try {
+    const config = {
+      bossReportPath: 'docs/boss-report.md',
+      productBriefPath: 'docs/product-brief-current.md',
+      roadmapPath: 'docs/roadmap-current.md',
+    }
+    const snapshot = {
+      timestamp: '2026-05-20T00:00:00.000Z',
+      objective: {
+        lifecyclePhase: 'blocked',
+        productReady: false,
+        blockedReason: 'qa gate failed',
+        repairAttempt: 2,
+        currentObjective: { planId: 'plan-1', goal: 'demo', status: 'failed' },
+      },
+      trigger: { type: 'test', planId: 'plan-1', status: 'failed' },
+    }
+    writeProductionReports(cwd, config, snapshot)
+    const before = statSync(join(cwd, 'docs/boss-report.md')).mtimeMs
+    await new Promise(resolve => setTimeout(resolve, 20))
+    writeProductionReports(cwd, config, { ...snapshot, timestamp: '2026-05-20T00:01:00.000Z' })
+    assert.equal(statSync(join(cwd, 'docs/boss-report.md')).mtimeMs, before)
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }
