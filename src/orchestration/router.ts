@@ -6,13 +6,13 @@ import { join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
-import { evaluateExecutionHarnessFailure } from './execution-harness.js'
+import { evaluateExecutionHarnessFailure, evaluatePlanStepApproval, type ApprovalEvaluation } from './execution-harness.js'
 import { PlanEventLog } from './plan-events.js'
 import { PlanEngine, type ActionPlan, type PlanEngineOptions, type PlanResult, type PlanStep, type StepResult } from './plan-engine.js'
 import { PresetManager } from './presets.js'
 import { ResultBuffer, type TaskEvent, type TaskStatus } from './result-buffer.js'
 import { RepoSchedulerLock, SchedulerLockError, type SchedulerLockHandle } from './scheduler-lock.js'
-import { buildSmallestProductSlicePlan, evaluateSupervisor, type SupervisorPlanSnapshot, type SupervisorStepSnapshot, type SupervisorTickInput, type SupervisorTickResult } from './supervisor.js'
+import { buildSmallestProductSlicePlan, evaluateSupervisor, selectSmallestProductSliceWorkers, type SupervisorPlanSnapshot, type SupervisorStepSnapshot, type SupervisorTickInput, type SupervisorTickResult } from './supervisor.js'
 import { PLAN_TEMPLATES } from './templates.js'
 import { cleanupCycleWorktree, createCycleWorktree, type WorktreeContext, type WorktreeIsolationConfig } from './worktree.js'
 import { createWorkerRuntime } from './worker-runtime.js'
@@ -58,6 +58,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const planEvents = new PlanEventLog(cwd)
   const schedulerLock = new RepoSchedulerLock(cwd)
   const heartbeatTimers = new Map<string, NodeJS.Timeout>()
+  const approvalDecisions: ApprovalEvaluation[] = []
+  const runtimeTrace: Array<{ type: string; timestamp: string; data: unknown }> = []
 
   const allWorkers = () => ({ ...WORKERS, ...Object.fromEntries(customWorkers) })
   const persistCustomWorkers = () => {
@@ -389,6 +391,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     }
 
     let plan: ActionPlan
+    const selectedWorkers = selectSmallestProductSliceWorkers(input.smallestProductSlice, new Set(Object.keys(allWorkers())))
     try {
       plan = buildSmallestProductSlicePlan(input.smallestProductSlice, new Set(Object.keys(allWorkers())))
     } catch (err) {
@@ -408,7 +411,38 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     if (errors.length > 0) {
       return { action: decision.action, decision, plan, status: 'blocked', error: 'validation_failed', errors }
     }
-    if (input.dryRun) return { action: decision.action, decision, plan, status: 'dry_run' }
+
+    const approvalPolicy = input.approval?.policy ?? {
+      repoRoot: cwd,
+      trustedPaths: input.smallestProductSlice.allowedPaths,
+    }
+    const approvals = plan.steps
+      .filter(step => step.mode === 'write' || step.mode === 'report')
+      .map(step => evaluatePlanStepApproval({
+        userObjective: plan.goal,
+        step,
+        policy: approvalPolicy,
+        explicitAuthorization: input.approval?.explicitAuthorization,
+      }))
+    approvalDecisions.unshift(...approvals)
+    approvalDecisions.splice(100)
+    runtimeTrace.unshift({ type: 'approval.preflight', timestamp: new Date().toISOString(), data: { goal: plan.goal, approvals, selectedWorkers } })
+    runtimeTrace.splice(200)
+    const blockedApprovals = approvals.filter(item => item.status !== 'approved')
+    if ((input.approval?.enforce ?? true) && blockedApprovals.length > 0) {
+      return {
+        action: decision.action,
+        decision,
+        plan,
+        approvals,
+        selectedWorkers,
+        status: blockedApprovals.some(item => item.status === 'needs_boss') ? 'needs_boss' : 'blocked',
+        error: 'approval_blocked',
+        errors: blockedApprovals.map(item => `${item.stepId ?? 'unknown'}: ${item.reason}`),
+      }
+    }
+
+    if (input.dryRun) return { action: decision.action, decision, plan, approvals, selectedWorkers, status: 'dry_run' }
 
     const planId = nextPlanId()
     let lockHandle: SchedulerLockHandle | undefined
@@ -469,7 +503,9 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     planEvents.append({ type: 'plan.created', planId, plan, worktree, boundaryStatus, schedulerLock: true, lockPlanId: planId })
     startPlanExecution(planId, entry, planRuntime, planCwd, 'supervisor-tick')
 
-    return { action: decision.action, decision, plan, submittedPlanId: planId, status: 'executing' }
+    runtimeTrace.unshift({ type: 'supervisor.submitted', timestamp: new Date().toISOString(), data: { planId, selectedWorkers } })
+    runtimeTrace.splice(200)
+    return { action: decision.action, decision, plan, approvals, selectedWorkers, submittedPlanId: planId, status: 'executing' }
   }
 
   const classifyFailure = (step: StepResult): 'timeout' | 'artifact_contract' | 'verification' | 'worktree_boundary' | 'worker_error' => {
@@ -694,6 +730,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     objectiveStatus,
     supervisorDecision,
     supervisorTick,
+    approvalDecisions,
+    runtimeTrace,
     startPlanExecution,
     gitStatus,
     schedulerLock,
@@ -936,6 +974,21 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
 
   app.get('/objective/status', c => c.json(mw.objectiveStatus()))
   app.get('/supervisor/decision', c => c.json(mw.supervisorDecision()))
+  app.get('/approvals', c => c.json({ approvals: mw.approvalDecisions.slice(0, 50) }))
+  app.get('/runtime/trace', c => c.json({ events: mw.runtimeTrace.slice(0, 100) }))
+  app.post('/approval/evaluate', async c => {
+    const body = await c.req.json<{
+      userObjective: string
+      step: PlanStep
+      policy: Parameters<typeof evaluatePlanStepApproval>[0]['policy']
+      explicitAuthorization?: string[]
+    }>()
+    if (!body.userObjective || !body.step || !body.policy) return c.json({ error: 'userObjective, step, and policy required' }, 400)
+    const decision = evaluatePlanStepApproval(body)
+    mw.approvalDecisions.unshift(decision)
+    mw.approvalDecisions.splice(100)
+    return c.json(decision)
+  })
   app.post('/supervisor/tick', async c => {
     const body = await c.req.json<SupervisorTickInput>().catch(() => ({}))
     const result = await mw.supervisorTick(body)
@@ -1110,6 +1163,36 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       mw.planEvents.append({ type: 'merge.failed', planId, error: message })
       return c.json({ error: 'merge_failed', message, targetBranch, method }, 409)
     }
+  })
+
+  app.get('/plan/:id/merge-policy', c => {
+    const planId = c.req.param('id')
+    const entry = mw.plans.get(planId)
+    if (!entry) return c.json({ error: 'not_found' }, 404)
+    const requiredGates: WorkerGate[] = ['review', 'qa', 'release']
+    const steps = mw.buffer.list({ planId })
+    const gates = gateSummary(entry, steps)
+    const missingGates = requiredGates.filter(required =>
+      !gates.gates.some(gate => gate.gate === required && gate.status === 'completed' && gate.verdict === 'pass'),
+    )
+    const dirty = entry.worktree ? mw.gitStatus(entry.worktree.worktreePath) : []
+    const failed = mw.blockingFailedSteps(planId, entry)
+    const mergeReady = entry.status === 'completed'
+      && !!entry.worktree
+      && missingGates.length === 0
+      && failed.length === 0
+      && dirty.length === 0
+    return c.json({
+      planId,
+      mergeReady,
+      recommendedAction: mergeReady ? 'merge' : 'wait_or_repair',
+      requiredGates,
+      missingGates,
+      failed: failed.map(step => ({ id: step.id, status: step.status, worker: step.worker })),
+      dirty,
+      worktree: worktreeJson(entry.worktree),
+      gateStatus: gates,
+    })
   })
 
   app.post('/plan/validate', async c => {

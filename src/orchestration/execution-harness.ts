@@ -1,10 +1,14 @@
 import {
+  approveAction,
   classifyFailure,
   decideNextAction,
   verifyContract,
+  type ActionApprovalDecision,
+  type ActionApprovalRequest,
   type FailureType,
   type NextAction,
   type RuntimeResult,
+  type TrustBoundaryPolicy,
   type TaskEnvelope,
 } from '@miles990/autonomy-runtime';
 import type { PlanStep, StepResult } from './plan-engine.js';
@@ -24,6 +28,12 @@ export interface ExecutionHarnessEvaluation {
   failureType: FailureType;
   nextAction: NextAction;
   runtimeResult: RuntimeResult;
+}
+
+export type ApprovalEvaluation = ActionApprovalDecision & {
+  stepId?: string;
+  worker?: string;
+  action?: string;
 }
 
 export function evaluateExecutionHarnessFailure(input: ExecutionHarnessInput): ExecutionHarnessEvaluation {
@@ -67,5 +77,31 @@ export function toTaskEnvelope(input: ExecutionHarnessInput): TaskEnvelope {
       maxAttempts: 3,
       escalateOn: ['strategic'],
     },
+  };
+}
+
+export function evaluatePlanStepApproval(input: {
+  userObjective: string;
+  step: PlanStep;
+  policy: TrustBoundaryPolicy;
+  explicitAuthorization?: string[];
+}): ApprovalEvaluation {
+  const request: ActionApprovalRequest = {
+    userObjective: input.userObjective,
+    action: input.step.task,
+    actor: input.step.worker,
+    command: input.step.verifyCommand,
+    targetPaths: [
+      ...(input.step.artifactContract?.allowedPaths ?? []),
+      ...(input.step.artifactContract?.expectedPaths ?? []),
+    ],
+    explicitAuthorization: input.explicitAuthorization,
+    policy: input.policy,
+  };
+  return {
+    ...approveAction(request),
+    stepId: input.step.id,
+    worker: input.step.worker,
+    action: input.step.task,
   };
 }

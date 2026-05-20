@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildSmallestProductSlicePlan, classifySupervisorFailure, evaluateSupervisor, type SupervisorInput } from './supervisor.js'
+import { buildSmallestProductSlicePlan, classifySupervisorFailure, evaluateSupervisor, selectSmallestProductSliceWorkers, type SupervisorInput } from './supervisor.js'
 
 const baseInput = (overrides: Partial<SupervisorInput> = {}): SupervisorInput => ({
   objective: {
@@ -92,4 +92,11 @@ test('buildSmallestProductSlicePlan creates a gated writer contract', () => {
   assert.equal(plan.steps[2].worker, 'qa-reality-checker')
   assert.equal(plan.steps[2].gate, 'qa')
   assert.equal(plan.steps[3].gate, 'release')
+})
+
+test('selectSmallestProductSliceWorkers keeps support workers dynamic and optional', () => {
+  const selected = selectSmallestProductSliceWorkers({}, new Set(['coder', 'reviewer', 'game-designer']))
+  assert.equal(selected.implementationWorker, 'coder')
+  assert.equal(selected.reviewWorker, 'reviewer')
+  assert.deepEqual(selected.supportWorkers, ['game-designer'])
 })

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { evaluateExecutionHarnessFailure } from './execution-harness.js'
+import { evaluateExecutionHarnessFailure, evaluatePlanStepApproval } from './execution-harness.js'
 
 test('execution harness maps plan step contracts into autonomy-runtime decisions', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-exec-harness-'))
@@ -70,4 +70,34 @@ test('execution harness treats missing expected output as contract failure', () 
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }
+})
+
+test('execution harness approves bounded plan steps and blocks credential paths', () => {
+  const policy = { repoRoot: '/repo', trustedPaths: ['game', 'docs', 'tools'] }
+  const ok = evaluatePlanStepApproval({
+    userObjective: 'Build the demo.',
+    policy,
+    step: {
+      id: 'write',
+      worker: 'coder',
+      task: 'edit game script',
+      dependsOn: [],
+      artifactContract: { allowedPaths: ['game'], expectedPaths: ['game/scripts/main.gd'] },
+    },
+  })
+  assert.equal(ok.status, 'approved')
+
+  const blocked = evaluatePlanStepApproval({
+    userObjective: 'Build the demo.',
+    policy,
+    step: {
+      id: 'secret',
+      worker: 'coder',
+      task: 'inspect .env',
+      dependsOn: [],
+      artifactContract: { allowedPaths: ['.'], expectedPaths: ['.env'] },
+    },
+  })
+  assert.equal(blocked.status, 'blocked')
+  assert.equal(blocked.riskType, 'credential_access')
 })

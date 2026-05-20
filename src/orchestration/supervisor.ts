@@ -1,4 +1,5 @@
 import type { ActionPlan } from './plan-engine.js';
+import type { ActionApprovalDecision, TrustBoundaryPolicy } from '@miles990/autonomy-runtime';
 
 export type SupervisorAction =
   | 'wait'
@@ -81,11 +82,17 @@ export interface SmallestProductSliceInput {
   reviewWorker?: string;
   qaWorker?: string;
   releaseWorker?: string;
+  supportWorkers?: string[];
 }
 
 export interface SupervisorTickInput {
   dryRun?: boolean;
   smallestProductSlice?: SmallestProductSliceInput;
+  approval?: {
+    enforce?: boolean;
+    explicitAuthorization?: string[];
+    policy?: TrustBoundaryPolicy;
+  };
 }
 
 export interface SupervisorTickResult {
@@ -96,6 +103,8 @@ export interface SupervisorTickResult {
   status?: string;
   error?: string;
   errors?: string[];
+  approvals?: Array<ActionApprovalDecision & { stepId?: string; worker?: string }>;
+  selectedWorkers?: ReturnType<typeof selectSmallestProductSliceWorkers>;
 }
 
 export function classifySupervisorFailure(text: string): SupervisorFailureType {
@@ -181,10 +190,11 @@ export function buildSmallestProductSlicePlan(
     throw new Error(`smallestProductSlice contract invalid: ${errors.join('; ')}`);
   }
 
-  const implementationWorker = input.implementationWorker ?? pickWorker(availableWorkers, ['gameplay-engineer', 'coder']);
-  const reviewWorker = input.reviewWorker ?? pickWorker(availableWorkers, ['codex-reviewer', 'reviewer']);
-  const qaWorker = input.qaWorker ?? pickWorker(availableWorkers, ['qa-reality-checker', 'reviewer']);
-  const releaseWorker = input.releaseWorker ?? pickWorker(availableWorkers, ['release-engineer', 'reviewer']);
+  const selected = selectSmallestProductSliceWorkers(input, availableWorkers);
+  const implementationWorker = selected.implementationWorker;
+  const reviewWorker = selected.reviewWorker;
+  const qaWorker = selected.qaWorker;
+  const releaseWorker = selected.releaseWorker;
 
   return {
     goal: input.goal,
@@ -255,6 +265,20 @@ export function buildSmallestProductSlicePlan(
         ].join('\n'),
       },
     ],
+  };
+}
+
+export function selectSmallestProductSliceWorkers(
+  input: Partial<SmallestProductSliceInput> = {},
+  availableWorkers?: Set<string>,
+) {
+  return {
+    implementationWorker: input.implementationWorker ?? pickWorker(availableWorkers, ['gameplay-engineer', 'coder']),
+    reviewWorker: input.reviewWorker ?? pickWorker(availableWorkers, ['codex-reviewer', 'reviewer']),
+    qaWorker: input.qaWorker ?? pickWorker(availableWorkers, ['qa-reality-checker', 'reviewer']),
+    releaseWorker: input.releaseWorker ?? pickWorker(availableWorkers, ['release-engineer', 'reviewer']),
+    supportWorkers: (input.supportWorkers ?? ['game-designer', 'ui-ux-designer', 'technical-artist', 'playtest-analyst'])
+      .filter(worker => !availableWorkers || availableWorkers.has(worker)),
   };
 }
 

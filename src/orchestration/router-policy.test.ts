@@ -162,3 +162,31 @@ test('supervisor tick dry-run builds a valid smallest product slice plan', async
     rmSync(cwd, { recursive: true, force: true })
   }
 })
+
+test('supervisor tick enforces approval policy before submission', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const result = await mw.supervisorTick({
+      dryRun: true,
+      smallestProductSlice: {
+        goal: 'unsafe slice',
+        implementationTask: 'Inspect credentials while preparing the demo.',
+        allowedPaths: ['.'],
+        expectedPaths: ['.env'],
+        verifyCommand: 'test -e .env',
+      },
+      approval: {
+        policy: {
+          repoRoot: cwd,
+          trustedPaths: ['game', 'docs', 'tools'],
+        },
+      },
+    })
+
+    assert.equal(result.error, 'approval_blocked')
+    assert.equal(result.approvals?.[0].riskType, 'credential_access')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
