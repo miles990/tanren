@@ -141,6 +141,17 @@ export function evaluateSupervisor(input: SupervisorInput): SupervisorDecision {
     return decision('wait', 'none', 'an active plan is already executing', false, objective.activePlans[0]?.planId);
   }
 
+  if (objective.currentObjective.status === 'completed' && objective.currentObjective.repairOf) {
+    return decision(
+      'resume_downstream',
+      'none',
+      'repair completed; resume the original product DAG downstream gates',
+      false,
+      objective.currentObjective.repairOf,
+      objective.currentObjective.planId,
+    );
+  }
+
   if (objective.nextMergeGate && objective.nextMergeGate.status === 'pending') {
     return decision('wait', 'none', `waiting for ${objective.nextMergeGate.gate} gate`, false, objective.currentObjective.planId);
   }

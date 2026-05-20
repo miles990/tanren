@@ -42,6 +42,41 @@ test('supervisor waits while an active plan is executing', () => {
   assert.equal(result.action, 'wait')
 })
 
+test('supervisor resumes downstream when a repair plan completed', () => {
+  const result = evaluateSupervisor(baseInput({
+    objective: {
+      currentObjective: { planId: 'repair-a', goal: 'repair demo', status: 'completed', repairOf: 'plan-a' },
+      activePlans: [],
+      blockedReason: 'repair repair-a completed; original plan plan-a needs downstream resume',
+      repairAttempt: 1,
+      mergeReady: false,
+      nextMergeGate: { gate: 'review', status: 'pending', verdict: 'unknown' },
+    },
+    plans: [
+      {
+        planId: 'plan-a',
+        goal: 'demo',
+        status: 'failed',
+        steps: [
+          { id: 'implement-slice', worker: 'gameplay-engineer', status: 'failed', output: 'Reached maximum number of turns' },
+          { id: 'review-slice', worker: 'reviewer', status: 'pending', gate: 'review' },
+        ],
+      },
+      {
+        planId: 'repair-a',
+        goal: 'repair demo',
+        status: 'completed',
+        repairOf: 'plan-a',
+        repairAttempt: 1,
+        steps: [{ id: 'repair-verify', worker: 'qa', status: 'completed', output: 'PASS' }],
+      },
+    ],
+  }))
+  assert.equal(result.action, 'resume_downstream')
+  assert.equal(result.targetPlanId, 'plan-a')
+  assert.equal(result.targetStepId, 'repair-a')
+})
+
 test('supervisor decomposes max-turn failures', () => {
   const result = evaluateSupervisor(baseInput({ objective: { ...baseInput().objective, repairAttempt: 1 } }))
   assert.equal(result.action, 'decompose_failed_step')

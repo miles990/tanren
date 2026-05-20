@@ -267,10 +267,14 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       const shouldRepair = result.summary.failed > 0 || !!boundaryError
       entry.status = shouldRepair ? 'failed' : 'completed'
       let repairStarted = false
+      let downstreamResumed = false
       if (shouldRepair) repairStarted = await maybeStartRepair(planId, entry, result, repair, boundaryError ?? undefined)
-      if (!shouldRepair && entry.worktree && shouldCleanupWorktree(entry.worktree, result)) cleanupCycleWorktree(entry.worktree)
-      if (!repairStarted) releaseSchedulerLock(entry)
       planEvents.append({ type: 'plan.completed', planId, status: entry.status })
+      if (!shouldRepair && entry.repairOf) {
+        downstreamResumed = resumeDownstreamAfterRepair(planId, entry).status === 'executing'
+      }
+      if (!shouldRepair && !downstreamResumed && entry.worktree && shouldCleanupWorktree(entry.worktree, result)) cleanupCycleWorktree(entry.worktree)
+      if (!repairStarted && !downstreamResumed) releaseSchedulerLock(entry)
       persistPlans()
     }).catch(() => {
       entry.completedAt = new Date().toISOString()
@@ -288,6 +292,115 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       (step.status === 'failed' || step.status === 'timeout')
       && stepById.get(step.id)?.blocking !== false,
     )
+  }
+
+  const completedRepairResumeTarget = (repairPlanId: string, repairEntry: PlanEntry) => {
+    if (repairEntry.status !== 'completed' || !repairEntry.repairOf) return null
+    const originalPlanId = repairEntry.repairOf
+    const originalEntry = plans.get(originalPlanId)
+    if (!originalEntry) return null
+    if (activePlans().some(([planId]) => planId === originalPlanId)) return null
+    const originalStepIds = new Set(originalEntry.plan.steps.map(step => step.id))
+    const failedSteps = blockingFailedSteps(originalPlanId, originalEntry)
+      .filter(task => originalStepIds.has(task.id))
+    const hasPendingDownstream = originalEntry.plan.steps.some(step => {
+      const task = buffer.get(step.id, originalPlanId)
+      return step.dependsOn.length > 0 && (!task || task.status === 'pending')
+    })
+    const gates = gateSummary(originalEntry, buffer.list({ planId: originalPlanId }))
+    if (originalEntry.status === 'failed' && (failedSteps.length > 0 || hasPendingDownstream || gates.nextGate)) {
+      return { originalPlanId, originalEntry, failedSteps, gates }
+    }
+    return null
+  }
+
+  const resumeDownstreamAfterRepair = (repairPlanId: string, repairEntry: PlanEntry, opts?: { dryRun?: boolean }): SupervisorTickResult => {
+    const target = completedRepairResumeTarget(repairPlanId, repairEntry)
+    const decision = {
+      action: 'resume_downstream' as const,
+      failureType: 'none' as const,
+      reason: 'repair completed; resume original product DAG downstream gates',
+      targetPlanId: repairEntry.repairOf,
+      targetStepId: repairPlanId,
+      requiresBoss: false,
+    }
+    if (!target) return { action: 'resume_downstream', decision, status: 'no_action', error: 'no_repair_resume_target' }
+    if (opts?.dryRun) {
+      return {
+        action: 'resume_downstream',
+        decision: { ...decision, targetPlanId: target.originalPlanId },
+        status: 'dry_run',
+        submittedPlanId: target.originalPlanId,
+      }
+    }
+
+    if (target.originalEntry.schedulerLock !== false && !target.originalEntry.lockHandle) {
+      try {
+        target.originalEntry.lockHandle = schedulerLock.acquire({
+          planId: target.originalEntry.lockPlanId ?? target.originalPlanId,
+          goal: target.originalEntry.plan.goal,
+        })
+        target.originalEntry.schedulerLock = true
+        target.originalEntry.lockPlanId = target.originalEntry.lockPlanId ?? target.originalPlanId
+        planEvents.append({ type: 'lock.acquired', planId: target.originalEntry.lockPlanId })
+      } catch (err) {
+        if (err instanceof SchedulerLockError) {
+          return {
+            action: 'resume_downstream',
+            decision: { ...decision, targetPlanId: target.originalPlanId },
+            status: 'blocked',
+            error: 'scheduler_locked',
+            errors: [`Another plan is already executing for this repo: ${err.conflict.record?.planId ?? 'unknown plan'}`],
+          }
+        }
+        throw err
+      }
+    } else if (!target.originalEntry.lockHandle && repairEntry.lockHandle) {
+      target.originalEntry.lockHandle = repairEntry.lockHandle
+      target.originalEntry.schedulerLock = repairEntry.schedulerLock
+      target.originalEntry.lockPlanId = repairEntry.lockPlanId ?? target.originalPlanId
+    }
+
+    for (const step of target.failedSteps) {
+      buffer.complete(step.id, [
+        `REPAIRED by ${repairPlanId}.`,
+        'The focused repair plan completed successfully; resuming downstream product gates.',
+        `Original failure was: ${String(step.error ?? step.result ?? '').slice(0, 500)}`,
+      ].join('\n'), target.originalPlanId)
+    }
+
+    target.originalEntry.completedAt = undefined
+    target.originalEntry.status = 'executing'
+    planEvents.append({
+      type: 'repair.resumed_downstream',
+      planId: target.originalPlanId,
+      repairPlanId,
+      repairedStepIds: target.failedSteps.map(step => step.id),
+    })
+    runtimeTrace.unshift({
+      type: 'repair.resumed_downstream',
+      timestamp: new Date().toISOString(),
+      data: {
+        planId: target.originalPlanId,
+        repairPlanId,
+        repairedStepIds: target.failedSteps.map(step => step.id),
+        nextGate: target.gates.nextGate ?? null,
+      },
+    })
+    runtimeTrace.splice(200)
+
+    const planCwd = target.originalEntry.worktree?.worktreePath ?? cwd
+    const runtimeCwd = target.originalEntry.worktree?.cwd ?? cwd
+    const planRuntime = target.originalEntry.worktree
+      ? createWorkerRuntime({ cwd: runtimeCwd, workers: Object.fromEntries(customWorkers), acpGateway })
+      : runtime
+    startPlanExecution(target.originalPlanId, target.originalEntry, planRuntime, planCwd, 'repair-resume')
+    return {
+      action: 'resume_downstream',
+      decision: { ...decision, targetPlanId: target.originalPlanId },
+      submittedPlanId: target.originalPlanId,
+      status: 'executing',
+    }
   }
 
   const objectiveStatus = () => {
@@ -308,19 +421,24 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
     const [planId, entry] = latest
     const steps = buffer.list({ planId })
-    const gates = gateSummary(entry, steps)
+    const resumeTarget = completedRepairResumeTarget(planId, entry)
+    const statusEntry = resumeTarget?.originalEntry ?? entry
+    const statusPlanId = resumeTarget?.originalPlanId ?? planId
+    const statusSteps = resumeTarget ? buffer.list({ planId: resumeTarget.originalPlanId }) : steps
+    const gates = gateSummary(statusEntry, statusSteps)
     const failed = blockingFailedSteps(planId, entry)
     const blockedGate = gates.gates.find(gate =>
       gate.status === 'completed' && (gate.verdict === 'fail' || gate.verdict === 'blocked' || gate.verdict === 'unknown'),
     )
-    const repairPlans = [...plans.values()].filter(candidate => candidate.repairOf === planId)
+    const repairPlans = [...plans.values()].filter(candidate => candidate.repairOf === statusPlanId)
     const activeRepair = repairPlans.find(candidate => candidate.status === 'executing')
     const blockedReason =
-      activeRepair ? `repair running: attempt ${activeRepair.repairAttempt ?? 1}`
-        : failed[0] ? `blocking step ${failed[0].id} ${failed[0].status}`
-          : blockedGate ? `${blockedGate.gate} gate ${blockedGate.verdict}`
-            : entry.status === 'failed' ? 'plan failed'
-              : null
+      resumeTarget ? `repair ${planId} completed; original plan ${resumeTarget.originalPlanId} needs downstream resume`
+        : activeRepair ? `repair running: attempt ${activeRepair.repairAttempt ?? 1}`
+          : failed[0] ? `blocking step ${failed[0].id} ${failed[0].status}`
+            : blockedGate ? `${blockedGate.gate} gate ${blockedGate.verdict}`
+              : entry.status === 'failed' ? 'plan failed'
+                : null
 
     return {
       currentObjective: {
@@ -371,6 +489,14 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const supervisorTick = async (input: SupervisorTickInput = {}): Promise<SupervisorTickResult> => {
     const decision = supervisorDecision()
+    if (decision.action === 'resume_downstream') {
+      const repairPlanId = decision.targetStepId
+      const repairEntry = repairPlanId ? plans.get(repairPlanId) : undefined
+      if (!repairPlanId || !repairEntry) {
+        return { action: decision.action, decision, status: 'blocked', error: 'missing_repair_plan' }
+      }
+      return resumeDownstreamAfterRepair(repairPlanId, repairEntry, { dryRun: input.dryRun })
+    }
     const fallbackProductSliceActions = new Set<SupervisorTickResult['action']>([
       'decompose_failed_step',
       'repair_workspace',
