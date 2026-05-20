@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import { createOrchestrationMiddleware } from './router.js'
 import type { ActionPlan } from './plan-engine.js'
 import { extractStepLessons, recordStepLearningEvent } from './learning-events.js'
+import { auditBranchHygiene, cleanupMergedCycleBranches } from './branch-hygiene.js'
 
 test('orchestration policy rejects writer steps without artifact contract and verification', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-policy-'))
@@ -300,6 +301,36 @@ test('supervisor tick auto-merges a completed gated worktree plan', async () => 
     assert.equal(mw.objectiveStatus().productReady, true)
   } finally {
     try { execFileSync('git', ['worktree', 'prune'], { cwd: repo, stdio: 'ignore' }) } catch { /* ignore */ }
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('branch hygiene marks canonical, active, merged, and unmerged cycle branches', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tanren-branch-hygiene-'))
+  try {
+    execFileSync('git', ['init', '-b', 'productization/cycle-1'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+    writeFileSync(join(repo, 'base.txt'), 'base\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['branch', 'tanren/cycle/merged'], { cwd: repo })
+    execFileSync('git', ['checkout', '-b', 'tanren/cycle/unmerged'], { cwd: repo, stdio: 'ignore' })
+    writeFileSync(join(repo, 'slice.txt'), 'slice\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'slice'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', 'productization/cycle-1'], { cwd: repo, stdio: 'ignore' })
+
+    const report = auditBranchHygiene(repo, ['tanren/cycle/unmerged'], { canonicalBranch: 'productization/cycle-1' })
+    assert.equal(report.sourceOfTruth, 'productization/cycle-1')
+    assert.equal(report.branches.find(branch => branch.name === 'productization/cycle-1')?.status, 'canonical')
+    assert.equal(report.branches.find(branch => branch.name === 'tanren/cycle/merged')?.recommendedAction, 'cleanup_worktree_and_branch')
+    assert.equal(report.branches.find(branch => branch.name === 'tanren/cycle/unmerged')?.status, 'active-cycle')
+
+    const dryRun = cleanupMergedCycleBranches(repo, ['tanren/cycle/unmerged'], { canonicalBranch: 'productization/cycle-1' })
+    assert.deepEqual(dryRun.removed.map(item => item.branch), ['tanren/cycle/merged'])
+    assert.equal(execFileSync('git', ['branch', '--list', 'tanren/cycle/merged'], { cwd: repo, encoding: 'utf-8' }).trim(), 'tanren/cycle/merged')
+  } finally {
     rmSync(repo, { recursive: true, force: true })
   }
 })

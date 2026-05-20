@@ -245,6 +245,7 @@ export { PlanEngine, parsePlan as parseActionPlan, type ActionPlan, type PlanSte
 export { ResultBuffer, type TaskRecord, type TaskStatus, type TaskEvent } from './orchestration/result-buffer.js'
 export { WORKERS, allWorkers, getSdkAgentDefinitions, getWorkerNames, addCustomWorker, removeCustomWorker, type WorkerBackend, type WorkerDefinition } from './orchestration/workers.js'
 export { extractStepLessons, learningEventsPath, readStepLearningEvents, recordStepLearningEvent, type StepLearningEvent } from './orchestration/learning-events.js'
+export { auditBranchHygiene, cleanupMergedCycleBranches, type BranchHygieneBranch, type BranchHygienePolicy, type BranchHygieneReport } from './orchestration/branch-hygiene.js'
 export { createWorkerRuntime, type WorkerRuntime, type WorkerRuntimeOptions } from './orchestration/worker-runtime.js'
 export { ACPGateway, createGateway, DEFAULT_BACKENDS, type CLIBackend, type ACPSession, type GatewayStats } from './orchestration/acp-gateway.js'
 export { PLAN_TEMPLATES, type PlanTemplate } from './orchestration/templates.js'

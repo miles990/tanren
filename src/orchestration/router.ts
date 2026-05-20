@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
+import { auditBranchHygiene, cleanupMergedCycleBranches, type BranchHygienePolicy } from './branch-hygiene.js'
 import { evaluateExecutionHarnessFailure, evaluatePlanStepApproval, type ApprovalEvaluation } from './execution-harness.js'
 import { readStepLearningEvents, recordStepLearningEvent, type StepLearningEvent } from './learning-events.js'
 import { PlanEventLog } from './plan-events.js'
@@ -21,6 +22,7 @@ import { WORKERS, type WorkerDefinition, type WorkerGate } from './workers.js'
 
 export interface OrchestrationMiddlewareConfig {
   cwd?: string
+  branchHygiene?: BranchHygienePolicy
 }
 
 export function createOrchestrationMiddleware(config: OrchestrationMiddlewareConfig = {}) {
@@ -130,6 +132,11 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
 
   const activePlans = () => [...plans.entries()].filter(([, entry]) => entry.status === 'executing')
   const hasActivePlan = () => activePlans().length > 0
+  const activeCycleBranches = () => activePlans()
+    .map(([, entry]) => entry.worktree?.branchName)
+    .filter((branch): branch is string => Boolean(branch))
+  const branchHygieneStatus = () => auditBranchHygiene(cwd, activeCycleBranches(), config.branchHygiene)
+  const cleanupBranchHygiene = (opts?: { dryRun?: boolean }) => cleanupMergedCycleBranches(cwd, activeCycleBranches(), config.branchHygiene, opts)
   const latestPlan = () => [...plans.entries()]
     .sort(([, a], [, b]) => b.createdAt.localeCompare(a.createdAt))[0]
 
@@ -1129,6 +1136,9 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     refreshProvider,
     activePlans,
     hasActivePlan,
+    activeCycleBranches,
+    branchHygieneStatus,
+    cleanupBranchHygiene,
     validateExecutionPolicy,
     classifyTaskError,
     blockingFailedSteps,
@@ -1395,6 +1405,11 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
       gateStatus: status.gateStatus,
       repairAttempt: status.repairAttempt,
     })
+  })
+  app.get('/branch-hygiene', c => c.json(mw.branchHygieneStatus()))
+  app.post('/branch-hygiene/cleanup', async c => {
+    const body: { dryRun?: boolean } = await c.req.json<{ dryRun?: boolean }>().catch(() => ({}))
+    return c.json(mw.cleanupBranchHygiene({ dryRun: body.dryRun !== false }))
   })
   app.get('/supervisor/decision', c => c.json(mw.supervisorDecision()))
   app.get('/approvals', c => c.json({ approvals: mw.approvalDecisions.slice(0, 50) }))
