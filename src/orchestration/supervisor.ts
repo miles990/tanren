@@ -187,6 +187,16 @@ export function evaluateSupervisor(input: SupervisorInput): SupervisorDecision {
     return decision('wait', 'none', `waiting for ${objective.nextMergeGate.gate} gate`, false, objective.currentObjective.planId);
   }
 
+  if (objective.currentObjective.status === 'completed') {
+    return decision(
+      'start_smallest_product_slice',
+      'none',
+      'completed objective has no active work or pending gate; dispatch the next product slice',
+      false,
+      objective.currentObjective.planId,
+    );
+  }
+
   if (objective.currentObjective.status !== 'failed') {
     return decision('wait', 'none', `objective status is ${objective.currentObjective.status}`, false, objective.currentObjective.planId);
   }

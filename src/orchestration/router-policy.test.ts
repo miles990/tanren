@@ -531,6 +531,44 @@ test('supervisor tick dry-run builds a valid smallest product slice plan', async
   }
 })
 
+test('supervisor tick starts next product slice after completed objective with no pending gates', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-completed-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const completedPlan: ActionPlan = {
+      goal: 'completed consolidation',
+      steps: [
+        { id: 'verify', worker: 'reviewer', mode: 'verify', task: 'verify', dependsOn: [] },
+      ],
+    }
+    mw.plans.set('plan-completed', {
+      plan: completedPlan,
+      status: 'completed',
+      createdAt: new Date().toISOString(),
+    })
+    mw.buffer.submit({ id: 'verify', planId: 'plan-completed', worker: 'reviewer', task: 'verify' })
+    mw.buffer.complete('verify', 'PASS', 'plan-completed')
+
+    const result = await mw.supervisorTick({
+      dryRun: true,
+      smallestProductSlice: {
+        goal: 'demo slice',
+        implementationTask: 'Create a visible demo slice.',
+        allowedPaths: ['src'],
+        expectedPaths: ['src/index.ts'],
+        verifyCommand: 'test -e src/index.ts',
+      },
+    })
+
+    assert.equal(result.status, 'dry_run')
+    assert.equal(result.action, 'start_smallest_product_slice')
+    assert.equal(result.decision.targetPlanId, 'plan-completed')
+    assert.equal(result.plan?.goal, 'demo slice')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test('supervisor tick falls back to smallest product slice after stale failed repair state', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
   try {
