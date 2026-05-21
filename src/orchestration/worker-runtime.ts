@@ -6,6 +6,8 @@
  */
 
 import { execFile, execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { LLMProvider, PromptContentBlock } from '../types.js'
 import { promptToText } from '../content-adapter.js'
@@ -38,8 +40,23 @@ export function createWorkerRuntime(opts: WorkerRuntimeOptions = {}): WorkerRunt
 
   const allWorkers = () => ({ ...WORKERS, ...customWorkers })
 
+  // A `skills` entry is either an inline skill body or a path to a `.md`
+  // skill file. Resolve paths to their file content so the worker prompt
+  // carries the actual skill, not just a filename.
+  const resolveSkill = (entry: string): string => {
+    const looksLikePath = entry.endsWith('.md') || entry.includes('/')
+    if (!looksLikePath) return entry
+    try {
+      return readFileSync(isAbsolute(entry) ? entry : resolve(cwd, entry), 'utf-8').trim()
+    } catch {
+      return entry
+    }
+  }
+
   const workerPrompt = (def: WorkerDefinition): string => {
-    const skillsPrompt = def.skills?.length ? `\n\n<skills>\n${def.skills.join('\n---\n')}\n</skills>` : ''
+    const skillsPrompt = def.skills?.length
+      ? `\n\n<skills>\n${def.skills.map(resolveSkill).join('\n\n---\n\n')}\n</skills>`
+      : ''
     const boundaryPrompt = [
       '',
       '## Execution Boundary',
