@@ -386,6 +386,91 @@ test('stale running watchdog marks timed-out steps and fails the plan', async ()
   }
 })
 
+test('qualification boundary failure overrides worker PASS result', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tanren-qualification-boundary-'))
+  const worktree = join(tmpdir(), `tanren-qualification-boundary-wt-${Date.now()}`)
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+    writeFileSync(join(repo, 'worker-qualifications.json'), JSON.stringify({
+      workers: [{
+        worker: 'shell',
+        requiredForProduction: true,
+        task: 'write qualification artifact',
+        verifyCommand: 'test -s docs/qualification/shell.md',
+        artifactContract: {
+          allowedPaths: ['docs/qualification'],
+          expectedPaths: ['docs/qualification/shell.md'],
+        },
+      }],
+    }), 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+    mkdirSync(join(worktree, 'docs', 'qualification'), { recursive: true })
+
+    const mw = createOrchestrationMiddleware({ cwd: repo })
+    const plan: ActionPlan = {
+      goal: 'Worker qualification: shell',
+      steps: [{
+        id: 'qualify-shell',
+        worker: 'shell',
+        mode: 'report',
+        task: 'write qualification artifact',
+        dependsOn: [],
+        verifyCommand: 'test -s docs/qualification/shell.md',
+        artifactContract: {
+          allowedPaths: ['docs/qualification'],
+          expectedPaths: ['docs/qualification/shell.md'],
+        },
+      }],
+    }
+    const entry = {
+      plan,
+      status: 'executing' as const,
+      createdAt: new Date().toISOString(),
+      schedulerLock: false,
+      worktree: {
+        mode: 'cycle-worktree' as const,
+        repoRoot: repo,
+        originalCwd: repo,
+        cwd: worktree,
+        worktreePath: worktree,
+        branchName: 'qualification-work',
+        baseRef: 'HEAD',
+        cleanup: 'never' as const,
+      },
+      boundaryStatus: mw.gitStatus(repo),
+    }
+    mw.plans.set('plan-qualification-boundary', entry)
+    const fakeRuntime = {
+      ...mw.runtime,
+      executeWorker: async () => {
+        writeFileSync(join(worktree, 'docs', 'qualification', 'shell.md'), 'PASS\nok\n', 'utf-8')
+        writeFileSync(join(repo, 'leak.txt'), 'leak\n', 'utf-8')
+        return 'PASS\nok\n'
+      },
+    }
+    mw.startPlanExecution(
+      'plan-qualification-boundary',
+      entry,
+      fakeRuntime,
+      worktree,
+      'worker-qualification',
+      { enabled: false },
+    )
+    await mw.plans.get('plan-qualification-boundary')?.resultPromise
+
+    assert.equal(mw.buffer.get('qualify-shell', 'plan-qualification-boundary')?.status, 'completed')
+    assert.equal(mw.buffer.get('worktree-boundary', 'plan-qualification-boundary')?.status, 'failed')
+    assert.equal(mw.qualificationStatusFor('shell').status, 'failed')
+    assert.match(mw.qualificationStatusFor('shell').summary ?? '', /outside isolated worktree/)
+  } finally {
+    rmSync(worktree, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test('supervisor tick auto-merges a completed gated worktree plan', async () => {
   const repo = mkdtempSync(join(tmpdir(), 'tanren-merge-repo-'))
   try {
@@ -580,6 +665,103 @@ test('supervisor tick dry-runs consolidation plan when branch hygiene blocks new
     assert.equal(result.status, 'dry_run')
     assert.equal(result.branchHygiene && typeof result.branchHygiene === 'object', true)
     assert.equal(result.plan?.goal, 'consolidate')
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('branch hygiene exposes a consolidation fingerprint that tracks branch heads', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tanren-branch-fingerprint-'))
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+    writeFileSync(join(repo, 'base.txt'), 'base\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', '-b', 'tanren/cycle/product-work'], { cwd: repo, stdio: 'ignore' })
+    writeFileSync(join(repo, 'feature.txt'), 'feature\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'product feature'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', 'main'], { cwd: repo, stdio: 'ignore' })
+
+    const policy = { canonicalBranch: 'main', consolidation: { mode: 'block-new-cycles' as const, maxUnmergedCycleBranches: 0 } }
+    const first = auditBranchHygiene(repo, [], policy)
+    assert.notEqual(first.consolidation.fingerprint, '')
+    assert.match(first.consolidation.fingerprint, /^tanren\/cycle\/product-work@[0-9a-f]+$/)
+
+    // re-audit without changes -> identical fingerprint
+    assert.equal(auditBranchHygiene(repo, [], policy).consolidation.fingerprint, first.consolidation.fingerprint)
+
+    // advance the branch head -> fingerprint changes
+    execFileSync('git', ['checkout', 'tanren/cycle/product-work'], { cwd: repo, stdio: 'ignore' })
+    writeFileSync(join(repo, 'feature.txt'), 'feature v2\n', 'utf-8')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'product feature v2'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['checkout', 'main'], { cwd: repo, stdio: 'ignore' })
+    assert.notEqual(auditBranchHygiene(repo, [], policy).consolidation.fingerprint, first.consolidation.fingerprint)
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+function initRepoWithUnmergedCycleBranch(prefix: string): string {
+  const repo = mkdtempSync(join(tmpdir(), prefix))
+  execFileSync('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' })
+  execFileSync('git', ['config', 'user.email', 'tanren@example.test'], { cwd: repo })
+  execFileSync('git', ['config', 'user.name', 'Tanren Test'], { cwd: repo })
+  mkdirSync(join(repo, 'docs'), { recursive: true })
+  writeFileSync(join(repo, 'docs/base.md'), 'base\n', 'utf-8')
+  execFileSync('git', ['add', '.'], { cwd: repo })
+  execFileSync('git', ['commit', '-m', 'base'], { cwd: repo, stdio: 'ignore' })
+  execFileSync('git', ['checkout', '-b', 'tanren/cycle/needs-review'], { cwd: repo, stdio: 'ignore' })
+  writeFileSync(join(repo, 'docs/feature.md'), 'feature\n', 'utf-8')
+  execFileSync('git', ['add', '.'], { cwd: repo })
+  execFileSync('git', ['commit', '-m', 'feature'], { cwd: repo, stdio: 'ignore' })
+  execFileSync('git', ['checkout', 'main'], { cwd: repo, stdio: 'ignore' })
+  return repo
+}
+
+test('supervisor tick blocks with consolidation_stalled when the loop guard cap is reached', async () => {
+  const repo = initRepoWithUnmergedCycleBranch('tanren-consolidation-stalled-')
+  try {
+    const mw = createOrchestrationMiddleware({
+      cwd: repo,
+      branchHygiene: {
+        canonicalBranch: 'main',
+        consolidation: {
+          mode: 'block-new-cycles',
+          maxUnmergedCycleBranches: 0,
+          maxConsolidationAttempts: 0,
+          consolidationFallthrough: false,
+        },
+      },
+    })
+    const result = await mw.supervisorTick({ dryRun: true, approval: { enforce: false } })
+    assert.equal(result.action, 'consolidate_unmerged_work')
+    assert.equal(result.status, 'blocked')
+    assert.equal(result.error, 'consolidation_stalled')
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('supervisor tick falls through to product work when consolidation is stalled', async () => {
+  const repo = initRepoWithUnmergedCycleBranch('tanren-consolidation-fallthrough-')
+  try {
+    const mw = createOrchestrationMiddleware({
+      cwd: repo,
+      branchHygiene: {
+        canonicalBranch: 'main',
+        // maxConsolidationAttempts 0 stalls immediately; consolidationFallthrough defaults to true
+        consolidation: { mode: 'block-new-cycles', maxUnmergedCycleBranches: 0, maxConsolidationAttempts: 0 },
+      },
+    })
+    // stalled consolidation must not block forever: with no product-slice contract
+    // the tick proceeds past consolidation to the product-slice path.
+    const result = await mw.supervisorTick({ dryRun: true, approval: { enforce: false } })
+    assert.notEqual(result.error, 'consolidation_required')
+    assert.equal(result.error, 'missing_smallest_product_slice_contract')
   } finally {
     rmSync(repo, { recursive: true, force: true })
   }

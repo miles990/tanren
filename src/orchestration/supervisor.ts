@@ -1,4 +1,5 @@
 import type { ActionPlan } from './plan-engine.js';
+import { classifyFailure } from '@miles990/autonomy-runtime';
 import type { ActionApprovalDecision, TrustBoundaryPolicy } from '@miles990/autonomy-runtime';
 
 export type SupervisorAction =
@@ -87,6 +88,8 @@ export interface SmallestProductSliceInput {
   bossLiaisonWorker?: string;
   supportWorkers?: string[];
   supportWorkerTasks?: Record<string, string>;
+  /** Optional per-support-worker verifyCommand. Falls back to a file-existence check when absent. */
+  supportWorkerVerify?: Record<string, string>;
   supportOutputDir?: string;
   supportBlocking?: boolean;
   implementationDependsOnSupport?: boolean;
@@ -106,11 +109,15 @@ export interface SmallestProductSliceInput {
     worker?: string;
     path?: string;
     task?: string;
+    /** Optional verifyCommand. Falls back to a file-existence check when absent. */
+    verifyCommand?: string;
   };
   finalDecision?: {
     worker?: string;
     path?: string;
     task?: string;
+    /** Optional verifyCommand. Falls back to a file-existence check when absent. */
+    verifyCommand?: string;
   };
 }
 
@@ -138,18 +145,17 @@ export interface SupervisorTickResult {
   branchHygiene?: unknown;
 }
 
+/**
+ * Classify a supervisor failure string.
+ *
+ * Delegates to the autonomy-runtime reliability layer's `classifyFailure`
+ * (the canonical, shared classifier) instead of maintaining a duplicate
+ * regex set. Empty input means "no failure" and maps to `none`, which the
+ * runtime classifier does not emit.
+ */
 export function classifySupervisorFailure(text: string): SupervisorFailureType {
-  const value = text.toLowerCase();
-  if (!value.trim()) return 'none';
-  if (/socket connection was closed|econnreset|network|fetch failed|temporar/.test(value)) return 'transient';
-  if (/quota|rate.?limit|usage limit|hit your limit|out of extra usage|provider resource/.test(value)) return 'provider_hold';
-  if (/maximum number of turns|max turns|reached maximum/.test(value)) return 'max_turns';
-  if (/aborted by user|cancelled|canceled|sigint/.test(value)) return 'cancelled';
-  if (/worktree|workspace|wrote outside|wrong.directory|repo root|cwd/.test(value)) return 'workspace';
-  if (/artifact contract|allowed paths|expected paths|contract/.test(value)) return 'contract';
-  if (/verify failed|verification failed|repair-verify|test -e|command failed|assert/.test(value)) return 'verification';
-  if (/boss decision|product direction|external input|credential|permission|scope direction/.test(value)) return 'strategic';
-  return 'unknown';
+  if (!text.trim()) return 'none';
+  return classifyFailure(text);
 }
 
 export function evaluateSupervisor(input: SupervisorInput): SupervisorDecision {
@@ -274,7 +280,7 @@ export function buildSmallestProductSlicePlan(
       label: `Prepare ${worker} product brief`,
       dependsOn: [],
       blocking: supportBlocking,
-      verifyCommand: `test -e ${outputPath}`,
+      verifyCommand: input.supportWorkerVerify?.[worker] ?? `test -e ${outputPath}`,
       artifactContract: {
         allowedPaths: [supportOutputDir],
         expectedPaths: [outputPath],
@@ -311,7 +317,7 @@ export function buildSmallestProductSlicePlan(
     gate: 'review',
     label: 'Make final product direction decision',
     dependsOn: integrationDependencies,
-    verifyCommand: `test -e ${finalDecisionPath}`,
+    verifyCommand: input.finalDecision.verifyCommand ?? `test -e ${finalDecisionPath}`,
     artifactContract: {
       allowedPaths: ['docs'],
       expectedPaths: [finalDecisionPath],
@@ -342,7 +348,7 @@ export function buildSmallestProductSlicePlan(
     gate: 'review',
     label: 'Align outputs with spec',
     dependsOn: alignmentDependencies,
-    verifyCommand: `test -e ${specAlignmentPath}`,
+    verifyCommand: input.specAlignment.verifyCommand ?? `test -e ${specAlignmentPath}`,
     artifactContract: {
       allowedPaths: ['docs'],
       expectedPaths: [specAlignmentPath],

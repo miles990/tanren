@@ -10,6 +10,10 @@ export interface BranchHygienePolicy {
     maxUnmergedCycleBranches?: number
     /** Number of review candidates to surface. Defaults to 5. */
     maxCandidates?: number
+    /** Max consolidation plans submitted for one unchanged unmerged-branch fingerprint before the supervisor stops consolidating. Defaults to 2. */
+    maxConsolidationAttempts?: number
+    /** When the attempt cap is reached, fall through to normal product work instead of staying blocked. Defaults to true. */
+    consolidationFallthrough?: boolean
   }
 }
 
@@ -46,6 +50,8 @@ export interface BranchHygieneReport {
     mode: 'off' | 'audit' | 'block-new-cycles'
     reason: string | null
     candidates: BranchHygieneBranch[]
+    /** Stable fingerprint of the unmerged-branch set driving `needsReview` (`name@head` sorted, newline-joined). Empty when nothing needs review. */
+    fingerprint: string
   }
 }
 
@@ -155,6 +161,7 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
         mode,
         reason: null,
         candidates: [],
+        fingerprint: '',
       },
     }
   }
@@ -210,13 +217,17 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
       recommendedAction,
     }
   })
-  const candidates = branches
-    .filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup' || branch.recommendedAction === 'review_dirty_worktree_before_cleanup')
+  const reviewBranches = branches.filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup' || branch.recommendedAction === 'review_dirty_worktree_before_cleanup')
+  const candidates = [...reviewBranches]
     .sort((a, b) => (b.aheadCanonical - a.aheadCanonical) || a.name.localeCompare(b.name))
     .slice(0, policy.consolidation?.maxCandidates ?? 5)
   const mode = policy.consolidation?.mode ?? 'audit'
   const maxUnmerged = policy.consolidation?.maxUnmergedCycleBranches ?? Number.POSITIVE_INFINITY
-  const needsReview = branches.filter(branch => branch.recommendedAction === 'review_or_cherry_pick_before_cleanup' || branch.recommendedAction === 'review_dirty_worktree_before_cleanup').length
+  const needsReview = reviewBranches.length
+  const fingerprint = reviewBranches
+    .map(branch => `${branch.name}@${branch.head}`)
+    .sort()
+    .join('\n')
   const required = mode !== 'off' && needsReview > maxUnmerged
 
   return {
@@ -236,6 +247,7 @@ export function auditBranchHygiene(cwd: string, activeCycleBranches: string[] = 
       mode,
       reason: required ? `unmerged cycle branches (${needsReview}) exceed allowed threshold (${maxUnmerged})` : null,
       candidates,
+      fingerprint,
     },
   }
 }

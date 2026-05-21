@@ -6,6 +6,7 @@ import { basename, join } from 'node:path'
 import { createProvider } from '../provider-registry.js'
 import type { PromptContentBlock } from '../types.js'
 import { createGateway, type CLIBackend } from './acp-gateway.js'
+import { LoopGuard } from '@miles990/autonomy-runtime'
 import { auditBranchHygiene, cleanupMergedCycleBranches, type BranchHygienePolicy } from './branch-hygiene.js'
 import { evaluateExecutionHarnessFailure, evaluatePlanStepApproval, type ApprovalEvaluation } from './execution-harness.js'
 import { readStepLearningEvents, recordStepLearningEvent, type StepLearningEvent } from './learning-events.js'
@@ -95,6 +96,7 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
   const activeEngines = new Map<string, PlanEngine>()
   const approvalDecisions: ApprovalEvaluation[] = []
   const runtimeTrace: Array<{ type: string; timestamp: string; data: unknown }> = []
+  const consolidationGuard = new LoopGuard()
   const learningTrace: StepLearningEvent[] = readStepLearningEvents(cwd, 100)
 
   const allWorkers = () => ({ ...WORKERS, ...Object.fromEntries(customWorkers) })
@@ -248,6 +250,26 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         stepId: step.id,
         updatedAt: new Date().toISOString(),
         summary: step.output.slice(0, 1000),
+      }
+      writeQualificationContextToKg(results[spec.worker])
+    }
+    writeQualificationResults(results)
+  }
+  const failQualificationResultsForPlan = (planId: string, reason: string) => {
+    const entry = plans.get(planId)
+    if (!entry || !isQualificationPlan(entry.plan)) return
+    const specs = workerQualificationSpecs()
+    const results = readQualificationResults()
+    const planWorkers = new Set(entry.plan.steps.map(step => step.worker))
+    for (const spec of specs) {
+      if (!planWorkers.has(spec.worker)) continue
+      results[spec.worker] = {
+        worker: spec.worker,
+        status: 'failed',
+        planId,
+        stepId: qualificationStepId(spec.worker),
+        updatedAt: new Date().toISOString(),
+        summary: reason.slice(0, 1000),
       }
       writeQualificationContextToKg(results[spec.worker])
     }
@@ -438,7 +460,10 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       activeEngines.delete(planId)
       entry.completedAt = new Date().toISOString()
       const boundaryError = verifyWorktreeBoundary(entry)
-      if (boundaryError) failSyntheticStep(planId, 'worktree-boundary', boundaryError)
+      if (boundaryError) {
+        failSyntheticStep(planId, 'worktree-boundary', boundaryError)
+        failQualificationResultsForPlan(planId, boundaryError)
+      }
       const shouldRepair = result.summary.failed > 0 || !!boundaryError
       entry.status = shouldRepair ? 'failed' : 'completed'
       let repairStarted = false
@@ -942,11 +967,51 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       runtimeTrace.splice(200)
     }
     const hygiene = branchHygieneStatus()
-    if (
+    const consolidationCfg = config.branchHygiene?.consolidation
+    const maxConsolidationAttempts = consolidationCfg?.maxConsolidationAttempts ?? 2
+    const consolidationFallthrough = consolidationCfg?.consolidationFallthrough ?? true
+    const consolidationNeeded =
       hygiene.consolidation.required
       && hygiene.consolidation.mode === 'block-new-cycles'
       && activePlans().length === 0
-    ) {
+    const consolidationGuardResult = consolidationNeeded
+      ? consolidationGuard.evaluate(hygiene.consolidation.fingerprint, maxConsolidationAttempts)
+      : { decision: 'proceed' as const, attempts: 0 }
+    const consolidationStalled = consolidationNeeded && consolidationGuardResult.decision === 'stall'
+    if (consolidationStalled) {
+      const stalledReason = `consolidation stalled after ${maxConsolidationAttempts} attempts for an unchanged unmerged-branch set`
+      runtimeTrace.unshift({
+        type: 'supervisor.consolidation_stalled',
+        timestamp: new Date().toISOString(),
+        data: {
+          fingerprint: hygiene.consolidation.fingerprint,
+          attempts: consolidationGuardResult.attempts,
+          maxConsolidationAttempts,
+          fallthrough: consolidationFallthrough,
+        },
+      })
+      runtimeTrace.splice(200)
+      if (!consolidationFallthrough) {
+        return {
+          action: 'consolidate_unmerged_work',
+          decision: {
+            action: 'consolidate_unmerged_work' as const,
+            failureType: 'none' as const,
+            reason: stalledReason,
+            requiresBoss: true,
+          },
+          status: 'blocked',
+          error: 'consolidation_stalled',
+          errors: [
+            stalledReason,
+            ...hygiene.consolidation.candidates.map(branch => `${branch.name}: ${branch.aheadCanonical} commits ahead; ${branch.latestSubject ?? 'no subject'}`),
+          ],
+          branchHygiene: hygiene,
+        }
+      }
+      // fallthrough enabled: skip the consolidation block and continue to product work below
+    }
+    if (consolidationNeeded && !consolidationStalled) {
       const consolidationDecision = {
         action: 'consolidate_unmerged_work' as const,
         failureType: 'none' as const,
@@ -1067,7 +1132,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
         plans.set(planId, entry)
         planEvents.append({ type: 'plan.created', planId, plan, worktree, boundaryStatus, schedulerLock: true, lockPlanId: planId })
         startPlanExecution(planId, entry, planRuntime, planCwd, 'supervisor-consolidation')
-        runtimeTrace.unshift({ type: 'supervisor.consolidation_submitted', timestamp: new Date().toISOString(), data: { planId } })
+        consolidationGuard.record(hygiene.consolidation.fingerprint)
+        runtimeTrace.unshift({ type: 'supervisor.consolidation_submitted', timestamp: new Date().toISOString(), data: { planId, fingerprint: hygiene.consolidation.fingerprint, attempts: consolidationGuard.state.attempts } })
         runtimeTrace.splice(200)
         return { action: 'consolidate_unmerged_work', decision: consolidationDecision, plan, approvals, submittedPlanId: planId, status: 'executing', branchHygiene: hygiene }
       }
