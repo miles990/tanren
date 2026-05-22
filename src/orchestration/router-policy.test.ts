@@ -457,7 +457,6 @@ test('qualification boundary failure overrides worker PASS result', async () => 
       fakeRuntime,
       worktree,
       'worker-qualification',
-      { enabled: false },
     )
     await mw.plans.get('plan-qualification-boundary')?.resultPromise
 
@@ -465,6 +464,7 @@ test('qualification boundary failure overrides worker PASS result', async () => 
     assert.equal(mw.buffer.get('worktree-boundary', 'plan-qualification-boundary')?.status, 'failed')
     assert.equal(mw.qualificationStatusFor('shell').status, 'failed')
     assert.match(mw.qualificationStatusFor('shell').summary ?? '', /outside isolated worktree/)
+    assert.equal([...mw.plans.values()].some(planEntry => planEntry.repairOf === 'plan-qualification-boundary'), false)
   } finally {
     rmSync(worktree, { recursive: true, force: true })
     rmSync(repo, { recursive: true, force: true })
@@ -1032,6 +1032,58 @@ test('completed repair exposes and dry-runs downstream resume instead of waiting
     assert.equal(tick.status, 'dry_run')
     assert.equal(tick.action, 'resume_downstream')
     assert.equal(tick.submittedPlanId, 'plan-product')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('completed repair does not resume when original plan only has completed failing gates', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'tanren-supervisor-'))
+  try {
+    const mw = createOrchestrationMiddleware({ cwd })
+    const productPlan: ActionPlan = {
+      goal: 'demo product',
+      steps: [
+        { id: 'implement-slice', worker: 'shell', mode: 'write', task: 'true', dependsOn: [] },
+        { id: 'review-slice', worker: 'shell', mode: 'verify', gate: 'review', task: 'printf FAIL', dependsOn: ['implement-slice'] },
+        { id: 'qa-slice', worker: 'shell', mode: 'verify', gate: 'qa', task: 'printf BLOCKED', dependsOn: ['review-slice'] },
+        { id: 'release-slice', worker: 'shell', mode: 'verify', gate: 'release', task: 'printf FAIL', dependsOn: ['qa-slice'] },
+      ],
+    }
+    const repairPlan: ActionPlan = {
+      goal: 'repair worktree boundary',
+      steps: [{ id: 'repair-verify', worker: 'shell', mode: 'verify', task: 'printf PASS', dependsOn: [] }],
+    }
+
+    mw.plans.set('plan-product', { plan: productPlan, status: 'failed', createdAt: '2026-05-20T00:00:00.000Z', schedulerLock: false })
+    for (const step of productPlan.steps) {
+      mw.buffer.submit({ id: step.id, planId: 'plan-product', worker: step.worker, task: step.task })
+      mw.buffer.start(step.id, 'plan-product')
+      mw.buffer.complete(step.id, step.id === 'review-slice' ? 'FAIL' : step.id === 'qa-slice' ? 'BLOCKED' : step.id === 'release-slice' ? 'FAIL' : 'done', 'plan-product')
+    }
+    mw.buffer.submit({ id: 'worktree-boundary', planId: 'plan-product', worker: 'scheduler', task: 'boundary check' })
+    mw.buffer.start('worktree-boundary', 'plan-product')
+    mw.buffer.fail('worktree-boundary', 'Plan wrote outside isolated worktree', 'plan-product')
+
+    mw.plans.set('plan-repair', {
+      plan: repairPlan,
+      status: 'completed',
+      createdAt: '2026-05-20T00:01:00.000Z',
+      completedAt: '2026-05-20T00:02:00.000Z',
+      repairOf: 'plan-product',
+      repairAttempt: 1,
+      schedulerLock: false,
+    })
+    mw.buffer.submit({ id: 'repair-verify', planId: 'plan-repair', worker: 'shell', task: 'printf PASS' })
+    mw.buffer.start('repair-verify', 'plan-repair')
+    mw.buffer.complete('repair-verify', 'PASS', 'plan-repair')
+
+    const status = mw.objectiveStatus()
+    assert.equal(status.blockedReason, 'review gate fail')
+    assert.equal(status.lifecyclePhase, 'completed')
+
+    const decision = mw.supervisorDecision()
+    assert.notEqual(decision.action, 'resume_downstream')
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }

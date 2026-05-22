@@ -468,7 +468,8 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       entry.status = shouldRepair ? 'failed' : 'completed'
       let repairStarted = false
       let downstreamResumed = false
-      if (shouldRepair) repairStarted = await maybeStartRepair(planId, entry, result, repair, boundaryError ?? undefined)
+      const repairConfig = isQualificationPlan(entry.plan) ? { enabled: false as const } : repair
+      if (shouldRepair) repairStarted = await maybeStartRepair(planId, entry, result, repairConfig, boundaryError ?? undefined)
       planEvents.append({ type: 'plan.completed', planId, status: entry.status })
       if (!shouldRepair && entry.repairOf) {
         downstreamResumed = resumeDownstreamAfterRepair(planId, entry).status === 'executing'
@@ -653,10 +654,19 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
       return step.dependsOn.length > 0 && (!task || task.status === 'pending')
     })
     const gates = gateSummary(originalEntry, buffer.list({ planId: originalPlanId }))
-    if (originalEntry.status === 'failed' && (failedSteps.length > 0 || hasPendingDownstream || gates.nextGate)) {
+    if (originalEntry.status === 'failed' && (failedSteps.length > 0 || hasPendingDownstream)) {
       return { originalPlanId, originalEntry, failedSteps, gates }
     }
     return null
+  }
+
+  const completedRepairOriginalTarget = (repairPlanId: string, repairEntry: PlanEntry) => {
+    if (repairEntry.status !== 'completed' || !repairEntry.repairOf) return null
+    const originalPlanId = repairEntry.repairOf
+    const originalEntry = plans.get(originalPlanId)
+    if (!originalEntry) return null
+    if (activePlans().some(([planId]) => planId === originalPlanId)) return null
+    return { originalPlanId, originalEntry }
   }
 
   const resumeDownstreamAfterRepair = (repairPlanId: string, repairEntry: PlanEntry, opts?: { dryRun?: boolean }): SupervisorTickResult => {
@@ -789,9 +799,14 @@ export function createOrchestrationMiddleware(config: OrchestrationMiddlewareCon
     const [planId, entry] = latest
     const steps = buffer.list({ planId })
     const resumeTarget = completedRepairResumeTarget(planId, entry)
-    const statusEntry = resumeTarget?.originalEntry ?? entry
-    const statusPlanId = resumeTarget?.originalPlanId ?? planId
-    const statusSteps = resumeTarget ? buffer.list({ planId: resumeTarget.originalPlanId }) : steps
+    const repairOriginalTarget = completedRepairOriginalTarget(planId, entry)
+    const statusEntry = resumeTarget?.originalEntry ?? repairOriginalTarget?.originalEntry ?? entry
+    const statusPlanId = resumeTarget?.originalPlanId ?? repairOriginalTarget?.originalPlanId ?? planId
+    const statusSteps = resumeTarget
+      ? buffer.list({ planId: resumeTarget.originalPlanId })
+      : repairOriginalTarget
+        ? buffer.list({ planId: repairOriginalTarget.originalPlanId })
+        : steps
     const gates = gateSummary(statusEntry, statusSteps)
     const merged = planMerged(statusPlanId)
     const failed = blockingFailedSteps(planId, entry)
@@ -1656,7 +1671,7 @@ export function createOrchestrationRouter(config: OrchestrationMiddlewareConfig 
     status: 'ok',
     service: 'tanren-orchestration',
     workers: Object.keys(mw.allWorkers()),
-    tasks: mw.buffer.list({ limit: 1 }).length,
+    tasks: mw.buffer.list().filter(task => task.status === 'pending' || task.status === 'running').length,
   }))
 
   app.post('/dispatch', async c => {

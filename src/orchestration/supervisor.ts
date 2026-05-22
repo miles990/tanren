@@ -178,7 +178,11 @@ export function evaluateSupervisor(input: SupervisorInput): SupervisorDecision {
     return decision('wait', 'none', 'an active plan is already executing', false, objective.activePlans[0]?.planId);
   }
 
-  if (objective.currentObjective.status === 'completed' && objective.currentObjective.repairOf) {
+  if (
+    objective.currentObjective.status === 'completed'
+    && objective.currentObjective.repairOf
+    && /needs downstream resume/i.test(objective.blockedReason ?? '')
+  ) {
     return decision(
       'resume_downstream',
       'none',
